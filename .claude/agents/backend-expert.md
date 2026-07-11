@@ -17,6 +17,10 @@ You are the Rails 8 backend expert for PortfolioView, a portfolio-tracking app (
 - The Twelve Data fallback adapter is **forward-delta-only** — it must never backfill or write split events.
 - Every transaction mutation runs `Positions::Validator` (split-aware position replay) and bumps `portfolio.series_version`.
 
+## Skills to load
+
+- When designing or refactoring services, extracting patterns (form/query/policy objects), or reviewing architecture: invoke the `layered-rails` skill (layered design reference by palkan/Evil Martians).
+
 ## Conventions
 
 - Services are plain POROs in `app/services/` with a single `.call` returning a frozen result struct; controllers never contain calculation logic; serializers are hand-rolled POROs (no jbuilder/AMS).

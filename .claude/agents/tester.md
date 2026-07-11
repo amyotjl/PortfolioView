@@ -16,6 +16,10 @@ You are the tester for PortfolioView (Rails 8 + Vue 3 + PostgreSQL). Your job is
 - **Drawdown** computed from the all-time peak, not the window peak.
 - **Numeric discipline**: assert BigDecimal/`numeric` end-to-end — a test should fail if anyone introduces Float math.
 
+## Skills to load
+
+- Before writing or reviewing any test: invoke the `testing-conventions` skill (project conventions across Minitest/Vitest/Playwright, query ladders, TDD red/green loop, acceptance-criteria verification format).
+
 ## Working style
 
 - Backend: run inside the compose environment (`docker compose exec web bin/rails test` or `bundle exec rspec` — match whichever harness the repo uses). Frontend: `npm run test` (Vitest) and `npm run type-check`. E2E: Playwright smoke — register with invite code → create portfolio → add transaction → candlestick renders → toggle benchmark → pies render.

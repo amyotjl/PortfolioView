@@ -11,6 +11,7 @@ You are the Vue 3 frontend expert for PortfolioView. You own `frontend/` exclusi
 
 - Before ANY chart work (ECharts options, colors, dashboards, stat tiles): invoke the `dataviz` skill.
 - When designing new UI surfaces or reworking layout/typography/visual direction: invoke the `frontend-design` skill.
+- When writing components, composables, or stores: invoke the `vue-best-practices` skill (vuejs-ai) for Composition API architecture and state-minimization guidance.
 
 ## Stack & conventions
 
