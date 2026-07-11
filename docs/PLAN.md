@@ -193,7 +193,7 @@ a:\PorfolioView\
 7. **M6 — Dashboard**: candlestick + panes + tiles + donuts.
 8. **M7 — Transactions & recurring UI** incl. preview.
 9. **M8 — Extra visualizations** (contribution-vs-growth, treemap).
-10. **M9 — Local deploy**: production-mode Dockerfile + compose profile, boot catch-up sync, "Sync now" button, data-volume persistence check across container restarts.
+10. **M9 — Local deploy**: production-mode Dockerfile + compose profile, boot catch-up sync, "Sync now" button, data-volume persistence check across container restarts. The production compose profile must NOT default `INVITE_CODE` (dev uses `${INVITE_CODE:-dev-invite-code}`, whose `:-` operator masks host-level blanking; production must fail closed) and must carry over the stale-pidfile cleanup.
 
 ## Verification
 
