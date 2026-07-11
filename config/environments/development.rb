@@ -28,6 +28,12 @@ Rails.application.configure do
   # Change to :null_store to avoid any caching.
   config.cache_store = :memory_store
 
+  # Jobs run on Solid Queue against the dedicated queue database — same setup
+  # as production, so the in-Puma supervisor (SOLID_QUEUE_IN_PUMA=true in
+  # docker-compose.yml) boots identically in both.
+  config.active_job.queue_adapter = :solid_queue
+  config.solid_queue.connects_to = { database: { writing: :queue } }
+
   # Store uploaded files on the local file system (see config/storage.yml for options).
   config.active_storage.service = :local
 
