@@ -1,0 +1,6 @@
+# Containers (Linux) execute these files — keep LF everywhere, regardless of host OS.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff2 binary
