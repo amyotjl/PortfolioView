@@ -36,3 +36,7 @@ Thumbs.db
 /coverage
 /e2e/test-results/
 /e2e/playwright-report/
+
+# Ignore key files for decrypting credentials and more.
+/config/*.key
+

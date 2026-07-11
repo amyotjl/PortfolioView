@@ -1,0 +1,56 @@
+name: portfolio_view
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: portfolio
+      POSTGRES_PASSWORD: portfolio
+      POSTGRES_DB: portfolio_view_development
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U portfolio"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  web:
+    image: ruby:3.4
+    working_dir: /app
+    command: bash -c "bundle install && bin/rails db:prepare && bin/rails server -b 0.0.0.0"
+    volumes:
+      - .:/app
+      - bundle_cache:/usr/local/bundle
+    environment:
+      PGHOST: db
+      PGUSER: portfolio
+      PGPASSWORD: portfolio
+      SOLID_QUEUE_IN_PUMA: "true"
+      TZ: America/New_York
+    ports:
+      - "3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  vite:
+    image: node:22
+    working_dir: /app/frontend
+    command: bash -c "npm install && npm run dev"
+    volumes:
+      - .:/app
+      - frontend_node_modules:/app/frontend/node_modules
+    environment:
+      VITE_API_PROXY_TARGET: http://web:3000
+    ports:
+      - "5173:5173"
+    depends_on:
+      - web
+
+volumes:
+  pgdata:
+  bundle_cache:
+  frontend_node_modules:
