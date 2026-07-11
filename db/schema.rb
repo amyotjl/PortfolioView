@@ -10,10 +10,38 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_07_11_055001) do
+ActiveRecord::Schema[8.1].define(version: 2026_07_11_120002) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "citext"
   enable_extension "pg_catalog.plpgsql"
+
+  create_table "instruments", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.string "currency", default: "USD", null: false
+    t.date "earliest_price_on"
+    t.string "industry"
+    t.string "instrument_type", null: false
+    t.date "latest_price_on"
+    t.string "name"
+    t.datetime "prices_backfilled_at"
+    t.string "sector"
+    t.string "symbol", null: false
+    t.datetime "updated_at", null: false
+    t.index "upper((symbol)::text)", name: "index_instruments_on_upper_symbol", unique: true
+    t.check_constraint "instrument_type::text = ANY (ARRAY['stock'::character varying, 'etf'::character varying]::text[])", name: "instruments_instrument_type_check"
+  end
+
+  create_table "listed_instruments", force: :cascade do |t|
+    t.string "asset_type"
+    t.datetime "created_at", null: false
+    t.string "currency"
+    t.string "exchange"
+    t.string "name"
+    t.string "symbol", null: false
+    t.datetime "updated_at", null: false
+    t.index "upper((symbol)::text) text_pattern_ops", name: "index_listed_instruments_on_upper_symbol_pattern"
+    t.index ["symbol", "exchange"], name: "index_listed_instruments_on_symbol_and_exchange", unique: true, nulls_not_distinct: true
+  end
 
   create_table "sessions", force: :cascade do |t|
     t.datetime "created_at", null: false
