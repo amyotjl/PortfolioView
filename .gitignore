@@ -40,3 +40,6 @@ Thumbs.db
 # Ignore key files for decrypting credentials and more.
 /config/*.key
 
+
+# Claude harness artifacts
+.claude/scheduled_tasks.lock
