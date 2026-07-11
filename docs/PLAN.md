@@ -47,6 +47,8 @@ The app runs on the user's machine with `docker compose up`: one `web` container
 
 Nothing in the architecture is local-only (same-origin cookies, Postgres, containerized build), so a later move to hosted (Render/Fly/Kamal-on-VPS) is a deploy change, not a redesign.
 
+Development mirrors production's multi-database layout: Solid Queue and Solid Cache run against dedicated `app_development_queue` / `app_development_cache` databases in the same Postgres instance (created by `db:prepare` on boot) — do not "simplify" them back onto the primary DB. The compose web command clears a stale `tmp/pids/server.pid` before boot (a leftover pidfile from an unclean shutdown otherwise aborts Rails with "A server is already running"); carry this into the M9 production compose profile.
+
 ## Architecture
 
 ```
@@ -184,7 +186,7 @@ a:\PorfolioView\
 
 1. **M0 — Environment & project**: agent definitions in `.claude/agents/` + online skill discovery/install; gh CLI install + auth; git init, GitHub repo, milestones, labels; PM agent generates all issues. Then dev container + docker-compose; `rails new . --database=postgresql --skip-jbuilder --skip-hotwire --skip-asset-pipeline`; scaffold `frontend/` with Vite; `bin/dev` runs both.
 2. **M1 — Auth + schema**: auth generator, invite-gated registration, all migrations, benchmark seeds.
-3. **M2 — Price pipeline**: adapters, backfill, daily sync w/ overlap check, directory import, budget breakers. Verify against a real free Tiingo key.
+3. **M2 — Price pipeline**: adapters, backfill, daily sync w/ overlap check, directory import, budget breakers. Verify against a real free Tiingo key. Replace the generator-stub `config/recurring.yml` with the real schedule (daily ×7, America/New_York-pinned), keeping the generated hourly `clear_solid_queue_finished_jobs` cleanup task.
 4. **M3 — Domain services + validator** with the unit-test fixtures listed under Verification.
 5. **M4 — API**: controllers, serializers, caching, error envelope, request specs.
 6. **M5 — Frontend shell**: auth pages, routing, portfolio CRUD, layout/theme.

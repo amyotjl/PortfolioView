@@ -43,3 +43,6 @@ Thumbs.db
 
 # Claude harness artifacts
 .claude/scheduled_tasks.lock
+
+# Local ruflo/ruvector plugin state
+ruvector.db
