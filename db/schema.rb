@@ -10,10 +10,19 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_07_11_120103) do
+ActiveRecord::Schema[8.1].define(version: 2026_07_11_120202) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "citext"
   enable_extension "pg_catalog.plpgsql"
+
+  create_table "benchmarks", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.bigint "instrument_id", null: false
+    t.string "name", null: false
+    t.datetime "updated_at", null: false
+    t.index ["instrument_id"], name: "index_benchmarks_on_instrument_id", unique: true
+    t.index ["name"], name: "index_benchmarks_on_name", unique: true
+  end
 
   create_table "daily_prices", force: :cascade do |t|
     t.decimal "close", precision: 16, scale: 6, null: false
@@ -68,6 +77,17 @@ ActiveRecord::Schema[8.1].define(version: 2026_07_11_120103) do
     t.index ["symbol", "exchange"], name: "index_listed_instruments_on_symbol_and_exchange", unique: true, nulls_not_distinct: true
   end
 
+  create_table "portfolios", force: :cascade do |t|
+    t.bigint "benchmark_id"
+    t.datetime "created_at", null: false
+    t.string "name", null: false
+    t.integer "series_version", default: 1, null: false
+    t.datetime "updated_at", null: false
+    t.bigint "user_id", null: false
+    t.index ["benchmark_id"], name: "index_portfolios_on_benchmark_id"
+    t.index ["user_id", "name"], name: "index_portfolios_on_user_id_and_name", unique: true
+  end
+
   create_table "sessions", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.string "ip_address"
@@ -95,8 +115,11 @@ ActiveRecord::Schema[8.1].define(version: 2026_07_11_120103) do
     t.index ["email_address"], name: "index_users_on_email_address", unique: true
   end
 
+  add_foreign_key "benchmarks", "instruments", on_delete: :restrict
   add_foreign_key "daily_prices", "instruments", on_delete: :cascade
   add_foreign_key "dividend_events", "instruments", on_delete: :cascade
+  add_foreign_key "portfolios", "benchmarks", on_delete: :restrict
+  add_foreign_key "portfolios", "users", on_delete: :cascade
   add_foreign_key "sessions", "users"
   add_foreign_key "split_events", "instruments", on_delete: :cascade
 end

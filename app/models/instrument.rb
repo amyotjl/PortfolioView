@@ -5,6 +5,9 @@ class Instrument < ApplicationRecord
   has_many :split_events
   has_many :dividend_events
 
+  # Mirrors benchmarks.instrument_id ON DELETE RESTRICT (unique per instrument).
+  has_one :benchmark, dependent: :restrict_with_error
+
   # Symbols are stored uppercase so the upper(symbol) unique index and all
   # symbol lookups agree on one canonical form.
   normalizes :symbol, with: ->(s) { s.strip.upcase }
