@@ -40,6 +40,7 @@ services:
       # Adapters read these from ENV and never log them (see .env.example).
       TIINGO_API_KEY: ${TIINGO_API_KEY:-}
       TWELVE_DATA_API_KEY: ${TWELVE_DATA_API_KEY:-}
+      FMP_API_KEY: ${FMP_API_KEY:-}
     ports:
       - "3000:3000"
     depends_on:

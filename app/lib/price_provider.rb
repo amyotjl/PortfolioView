@@ -69,4 +69,17 @@ module PriceProvider
   DailySeries = Data.define(:symbol, :bars, :splits, :dividends, :warnings) do
     def empty? = bars.empty?
   end
+
+  # Company metadata from FMP's /stable/profile (sector/industry lookup). A
+  # not-found lookup is an explicit result, never an exception: metadata is
+  # best-effort and a missing profile must not break instrument creation.
+  # `instrument_type` is "etf" or "stock"; ETFs have no free-tier sector and
+  # are bucketed as "ETF / Fund" downstream, so `sector` is nil for them.
+  Profile = Data.define(:symbol, :name, :sector, :industry, :instrument_type, :found) do
+    def self.not_found(symbol)
+      new(symbol:, name: nil, sector: nil, industry: nil, instrument_type: nil, found: false)
+    end
+
+    def found? = found
+  end
 end
