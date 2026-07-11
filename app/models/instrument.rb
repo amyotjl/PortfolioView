@@ -8,6 +8,11 @@ class Instrument < ApplicationRecord
   # Mirrors benchmarks.instrument_id ON DELETE RESTRICT (unique per instrument).
   has_one :benchmark, dependent: :restrict_with_error
 
+  # Mirrors ON DELETE RESTRICT: an instrument referenced by trades or
+  # recurring rules cannot be destroyed.
+  has_many :transactions, dependent: :restrict_with_error
+  has_many :recurring_transactions, dependent: :restrict_with_error
+
   # Symbols are stored uppercase so the upper(symbol) unique index and all
   # symbol lookups agree on one canonical form.
   normalizes :symbol, with: ->(s) { s.strip.upcase }
