@@ -50,12 +50,14 @@ class Prices::BackfillInstrumentJobTest < ActiveSupport::TestCase
                                 shares: 1, price: 100, executed_on: Date.new(2024, 1, 2))
     bystander = user.portfolios.create!(name: "Bystander")
 
-    assert_equal 1, holder.series_version
+    # The transaction create above bumps series_version itself (backlog #019);
+    # this test isolates the BACKFILL JOB's completion bump on top of that.
+    holder_base = holder.reload.series_version
     assert_equal 1, bystander.series_version
 
     run_with_provider(StubProvider.new(series: @series))
 
-    assert_equal 2, holder.reload.series_version
+    assert_equal holder_base + 1, holder.reload.series_version
     assert_equal 1, bystander.reload.series_version
   end
 

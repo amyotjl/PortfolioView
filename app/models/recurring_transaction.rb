@@ -24,7 +24,52 @@ class RecurringTransaction < ApplicationRecord
   validates :share_amount, numericality: { greater_than: 0 }, if: -> { amount_type == "shares" }
   validate :exactly_one_amount_for_mode
 
+  # No surprise historical materialization (docs/PLAN.md § Database schema):
+  # a rule created with a next_run_on in the past would make the nightly
+  # catch-up loop backfill months of transactions the user never scheduled.
+  # Clamp it forward to the first anchor-sequence slot on or after today
+  # (America/New_York).
+  before_validation :clamp_next_run_on_forward, on: :create
+
+  # --- schedule math (docs/PLAN.md § Recurring materializer) ---
+  # Slots are ALWAYS computed from the anchor, never from the previous slot,
+  # so end-of-month clamping cannot drift: a Jan-31 monthly anchor yields
+  # Feb-28 (clamped) then Mar-31 (back on the 31st), not Feb-28 -> Mar-28.
+  # Date#>> does the calendar-correct month stepping (incl. leap years).
+
+  def next_slot_after(date)
+    case frequency
+    when "weekly"    then next_slot_by_days(date, 7)
+    when "biweekly"  then next_slot_by_days(date, 14)
+    when "monthly"   then next_slot_by_months(date, 1)
+    when "quarterly" then next_slot_by_months(date, 3)
+    end
+  end
+
+  def first_slot_on_or_after(date) = next_slot_after(date - 1)
+
   private
+
+  def clamp_next_run_on_forward
+    return if next_run_on.blank? || anchor_on.blank? || frequency.blank?
+
+    today = Trading::Calendar.today
+    self.next_run_on = first_slot_on_or_after(today) if next_run_on < today
+  end
+
+  def next_slot_by_days(date, step)
+    return anchor_on if date < anchor_on
+    steps = ((date - anchor_on).to_i / step) + 1
+    anchor_on + steps * step
+  end
+
+  def next_slot_by_months(date, step)
+    return anchor_on if date < anchor_on
+    months = (date.year - anchor_on.year) * 12 + (date.month - anchor_on.month)
+    steps = [ months / step * step, 0 ].max
+    steps += step while (anchor_on >> steps) <= date
+    anchor_on >> steps
+  end
 
   def exactly_one_amount_for_mode
     case amount_type

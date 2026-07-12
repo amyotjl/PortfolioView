@@ -45,4 +45,17 @@ class RecurringScheduleTest < ActiveSupport::TestCase
     assert Fugit.parse_cron(schedule), "schedule must be a valid cron"
     assert_equal "0", schedule.split[4], "day-of-week must select a single day (weekly)"
   end
+
+  test "recurring materializer runs nightly x7 pinned to America/New_York (backlog #023)" do
+    task = CONFIG.fetch("recurring_materializer")
+    assert_equal "Recurring::MaterializeDueJob", task["class"]
+
+    schedule = task["schedule"]
+    assert_includes schedule, "America/New_York", "the schedule must pin the timezone"
+    assert Fugit.parse_cron(schedule), "schedule must be a valid cron"
+
+    fields = schedule.split
+    assert_equal "*", fields[4], "day-of-week must be unrestricted (daily x7, not a weekday mask)"
+    assert_equal "*", fields[2], "day-of-month must be unrestricted (every day)"
+  end
 end
