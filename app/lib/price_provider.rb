@@ -35,6 +35,13 @@ module PriceProvider
     end
   end
 
+  # A local budget/pacing counter tripped before an HTTP call was made: the
+  # per-provider daily request budget, the Tiingo hourly pacing window, or the
+  # Tiingo monthly unique-symbol quota (see PriceProvider::Budget). It is a
+  # RateLimited so jobs that already back off on `retry_after` handle it
+  # uniformly, but a distinct subclass so it can be told apart in metrics/logs.
+  class BudgetExceeded < RateLimited; end
+
   # Transient provider failure (5xx, network error). Retryable with backoff.
   class ServerError < Error; end
 
