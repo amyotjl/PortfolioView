@@ -10,6 +10,12 @@ module Prices
   # shared SeriesWriter, and a late-discovered historical split bumps the
   # holders' series_version so stale charts don't stay cached.
   #
+  # FAILOVER (docs/PLAN.md § Price pipeline failover rule): if the Tiingo delta
+  # fetch fails or its budget is exhausted, the delta window ONLY is refetched
+  # from TwelveData with adjust=none. That path records source="twelve_data" and
+  # NEVER writes split/dividend events — a fallback that mixed split-adjusted
+  # and raw bases would corrupt valuations. An unknown symbol never fails over.
+  #
   # Per-instrument fetches serialize via limits_concurrency so a backfill and a
   # nightly fetch (or two fetches) can't race on the same instrument's rows.
   class FetchInstrumentJob < ApplicationJob
@@ -22,7 +28,8 @@ module Prices
     # basis change, not a real move (no US equity gaps 20% between the same
     # date's two fetches under a stable basis).
     DRIFT_THRESHOLD = BigDecimal("0.20")
-    PROVIDER_NAME = "tiingo".freeze
+    TIINGO = "tiingo".freeze
+    TWELVE_DATA = "twelve_data".freeze
 
     def perform(instrument_id)
       instrument = Instrument.find(instrument_id)
@@ -33,31 +40,52 @@ module Prices
         return
       end
 
-      series = fetch_delta(instrument)
+      series, source = fetch_delta_with_failover(instrument)
 
       if basis_drift?(instrument, series)
         report_basis_drift(instrument, series)
         return
       end
 
-      result = Prices::SeriesWriter.call(instrument:, series:, source: PROVIDER_NAME, write_events: true)
+      # write_events only on the primary path — the failover must never ingest
+      # split/dividend events (§ failover rule).
+      result = Prices::SeriesWriter.call(instrument:, series:, source:, write_events: source == TIINGO)
       # A late-discovered historical split invalidates cached charts (§ Caching).
       bump_series_version(instrument) if result.splits_written.positive?
     rescue PriceProvider::RateLimited => e
-      # BudgetExceeded is a RateLimited: both reschedule honoring retry_after.
+      # Both providers exhausted/limited (BudgetExceeded is a RateLimited):
+      # reschedule honoring retry_after.
       reschedule_on_rate_limit(e)
     end
 
     private
 
-    def fetch_delta(instrument)
-      budget = PriceProvider::Budget.new(PROVIDER_NAME)
+    # Returns [series, source]. Tries Tiingo (raw + events); on a transient/
+    # budget failure fails over to TwelveData for the delta window only. An
+    # UnknownSymbol/ConfigurationError never fails over (it is terminal
+    # everywhere) — it propagates to discard_on.
+    def fetch_delta_with_failover(instrument)
+      from = instrument.latest_price_on
+      budget = PriceProvider::Budget.new(TIINGO)
       budget.charge!
       # INCLUSIVE of latest_price_on — the returned overlap row is the drift probe.
-      provider.fetch_daily(instrument.symbol, from: instrument.latest_price_on)
+      [ tiingo.fetch_daily(instrument.symbol, from: from), TIINGO ]
+    rescue PriceProvider::UnknownSymbol, PriceProvider::ConfigurationError
+      raise
+    rescue PriceProvider::RateLimited, PriceProvider::ServerError => e
+      Rails.logger.warn("[#{self.class.name}] Tiingo delta failed for #{instrument.symbol} " \
+        "(#{e.class.name.demodulize}); failing over to TwelveData (forward delta only)")
+      failover_via_twelve_data(instrument, since: from)
     end
 
-    def provider = PriceProvider::Tiingo.new
+    def failover_via_twelve_data(instrument, since:)
+      PriceProvider::Budget.new(TWELVE_DATA).charge!
+      # adjust=none, no events — the TwelveData adapter enforces both.
+      [ twelve_data.fetch_delta(instrument.symbol, since: since), TWELVE_DATA ]
+    end
+
+    def tiingo = PriceProvider::Tiingo.new
+    def twelve_data = PriceProvider::TwelveData.new
 
     def basis_drift?(instrument, series)
       stored = stored_overlap(instrument)

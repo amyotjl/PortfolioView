@@ -98,12 +98,11 @@ class Prices::FetchInstrumentJobTest < ActiveSupport::TestCase
     assert_enqueued_with(job: Prices::BackfillInstrumentJob, args: [ @instrument.id ])
   end
 
-  test "reschedules on a rate-limited/budget-exhausted fetch" do
+  test "reschedules only when BOTH the primary and failover providers are exhausted" do
     travel_to ET.local(2026, 7, 11, 20) do
-      PriceProvider::Budget.new("tiingo").charge!(50) # fill the hourly window
-      stub_new(PriceProvider::Tiingo, StubProvider.new(series: overlap_and_new(overlap_close: 100))) do
-        Prices::FetchInstrumentJob.perform_now(@instrument.id)
-      end
+      PriceProvider::Budget.new("tiingo").charge!(50)        # fill Tiingo's hourly window
+      PriceProvider::Budget.new("twelve_data").charge!(800)  # fill TwelveData's daily budget
+      Prices::FetchInstrumentJob.perform_now(@instrument.id)
     end
 
     assert_enqueued_with(job: Prices::FetchInstrumentJob, args: [ @instrument.id ])
