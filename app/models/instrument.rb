@@ -13,6 +13,15 @@ class Instrument < ApplicationRecord
   has_many :transactions, dependent: :restrict_with_error
   has_many :recurring_transactions, dependent: :restrict_with_error
 
+  # "Active" instruments the nightly sync fans out over: anything referenced by
+  # a transaction, a recurring rule, or a benchmark (docs/PLAN.md § Price
+  # pipeline). Unreferenced instruments burn no API quota.
+  scope :referenced, -> {
+    where(id: Transaction.select(:instrument_id))
+      .or(where(id: RecurringTransaction.select(:instrument_id)))
+      .or(where(id: Benchmark.select(:instrument_id)))
+  }
+
   # Symbols are stored uppercase so the upper(symbol) unique index and all
   # symbol lookups agree on one canonical form.
   normalizes :symbol, with: ->(s) { s.strip.upcase }
