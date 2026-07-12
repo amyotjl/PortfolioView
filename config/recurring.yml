@@ -30,3 +30,12 @@ production:
     queue: default
     # Tiingo's supported_tickers bulk file changes slowly; import Sundays at 03:00 ET.
     schedule: "0 3 * * 0 America/New_York"
+
+  recurring_materializer:
+    class: Recurring::MaterializeDueJob
+    queue: default
+    # 22:30 ET nightly, every day — after the 22:00 price sync starts landing
+    # closes. A slot whose close hasn't landed yet is retried the next night
+    # (the catch-up loop), so ordering is a latency optimization, not a
+    # correctness requirement.
+    schedule: "30 22 * * * America/New_York"

@@ -24,6 +24,13 @@ class RecurringTransaction < ApplicationRecord
   validates :share_amount, numericality: { greater_than: 0 }, if: -> { amount_type == "shares" }
   validate :exactly_one_amount_for_mode
 
+  # No surprise historical materialization (docs/PLAN.md § Database schema):
+  # a rule created with a next_run_on in the past would make the nightly
+  # catch-up loop backfill months of transactions the user never scheduled.
+  # Clamp it forward to the first anchor-sequence slot on or after today
+  # (America/New_York).
+  before_validation :clamp_next_run_on_forward, on: :create
+
   # --- schedule math (docs/PLAN.md § Recurring materializer) ---
   # Slots are ALWAYS computed from the anchor, never from the previous slot,
   # so end-of-month clamping cannot drift: a Jan-31 monthly anchor yields
@@ -42,6 +49,13 @@ class RecurringTransaction < ApplicationRecord
   def first_slot_on_or_after(date) = next_slot_after(date - 1)
 
   private
+
+  def clamp_next_run_on_forward
+    return if next_run_on.blank? || anchor_on.blank? || frequency.blank?
+
+    today = Trading::Calendar.today
+    self.next_run_on = first_slot_on_or_after(today) if next_run_on < today
+  end
 
   def next_slot_by_days(date, step)
     return anchor_on if date < anchor_on
