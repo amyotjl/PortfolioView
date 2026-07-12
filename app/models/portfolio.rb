@@ -19,4 +19,14 @@ class Portfolio < ApplicationRecord
   validates :name, uniqueness: { scope: :user_id }
   validates :series_version, presence: true,
             numericality: { only_integer: true, greater_than_or_equal_to: 1 }
+  # A submitted benchmark_id must reference a curated benchmarks row (backlog
+  # #027) — otherwise the insert would surface as an FK-violation 500. Error
+  # keyed on :benchmark_id so the 422 details map onto the form field.
+  validate :benchmark_must_be_curated, if: -> { benchmark_id.present? }
+
+  private
+
+  def benchmark_must_be_curated
+    errors.add(:benchmark_id, "must reference a curated benchmark") if benchmark.nil?
+  end
 end

@@ -8,6 +8,9 @@ Rails.application.routes.draw do
         get :search, on: :collection
         get :price, on: :member
       end
+
+      resources :benchmarks, only: %i[ index ]
+      resources :portfolios, only: %i[ index show create update destroy ]
     end
   end
   # Define your application routes per the DSL in https://guides.rubyonrails.org/routing.html
