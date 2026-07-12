@@ -17,6 +17,11 @@ gem "solid_cache"
 gem "solid_queue"
 gem "solid_cable"
 
+# Provider HTTP for the hand-rolled market-data adapters in app/lib/price_provider
+# (docs/PLAN.md § Stack: no maintained Tiingo gem exists; plain Faraday is safer).
+gem "faraday", "~> 2.9"
+gem "faraday-retry", "~> 2.2"
+
 # Reduces boot times through caching; required in config/boot.rb
 gem "bootsnap", require: false
 
