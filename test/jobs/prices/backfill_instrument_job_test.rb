@@ -97,6 +97,7 @@ class Prices::BackfillInstrumentJobTest < ActiveSupport::TestCase
       # Fill the real hourly pacing window (50/hr) so the job's own charge! trips
       # BudgetExceeded — exercising the real breaker, not a stub.
       PriceProvider::Budget.new("tiingo").charge!(50)
+      clear_enqueued_jobs # drop the create-time backfill so we assert the reschedule
 
       stub_new(PriceProvider::Tiingo, StubProvider.new(series: @series)) do
         Prices::BackfillInstrumentJob.perform_now(@instrument.id)

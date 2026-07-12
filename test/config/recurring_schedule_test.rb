@@ -25,4 +25,14 @@ class RecurringScheduleTest < ActiveSupport::TestCase
     assert_equal "*", fields[4], "day-of-week must be unrestricted (daily x7, not a weekday mask)"
     assert_equal "*", fields[2], "day-of-month must be unrestricted (every day)"
   end
+
+  test "instrument metadata refresh runs monthly pinned to America/New_York" do
+    task = CONFIG.fetch("instrument_metadata_refresh")
+    assert_match(/Instruments::MetadataJob\.refresh_all/, task["command"])
+
+    schedule = task["schedule"]
+    assert_includes schedule, "America/New_York"
+    assert Fugit.parse_cron(schedule), "schedule must be a valid cron"
+    assert_equal "1", schedule.split[2], "day-of-month must be the 1st (monthly)"
+  end
 end

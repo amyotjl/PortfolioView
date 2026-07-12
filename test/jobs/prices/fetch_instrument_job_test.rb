@@ -91,6 +91,7 @@ class Prices::FetchInstrumentJobTest < ActiveSupport::TestCase
   test "hands off to the backfill job when the instrument is not yet backfilled" do
     @instrument.update_columns(prices_backfilled_at: nil, latest_price_on: nil)
     provider = StubProvider.new(series: overlap_and_new(overlap_close: 100))
+    clear_enqueued_jobs # drop the create-time backfill so we assert the hand-off
 
     run_with(provider)
 
@@ -102,6 +103,7 @@ class Prices::FetchInstrumentJobTest < ActiveSupport::TestCase
     travel_to ET.local(2026, 7, 11, 20) do
       PriceProvider::Budget.new("tiingo").charge!(50)        # fill Tiingo's hourly window
       PriceProvider::Budget.new("twelve_data").charge!(800)  # fill TwelveData's daily budget
+      clear_enqueued_jobs # drop create-time enqueues so we assert the reschedule
       Prices::FetchInstrumentJob.perform_now(@instrument.id)
     end
 

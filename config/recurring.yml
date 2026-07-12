@@ -18,3 +18,9 @@ production:
     queue: default
     # 22:00 ET nightly, every day — after the US EOD data lands; weekends/holidays no-op.
     schedule: "0 22 * * * America/New_York"
+
+  instrument_metadata_refresh:
+    command: "Instruments::MetadataJob.refresh_all"
+    queue: default
+    # Sector/industry are cached forever; refresh on the 1st of each month at 04:00 ET.
+    schedule: "0 4 1 * * America/New_York"
