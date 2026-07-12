@@ -74,6 +74,9 @@ class Prices::FetchInstrumentJobTest < ActiveSupport::TestCase
     portfolio = user.portfolios.create!(name: "Holder")
     portfolio.transactions.create!(instrument: @instrument, side: "buy", kind: "normal",
                                    shares: 1, price: 100, executed_on: Date.new(2024, 1, 2))
+    # The transaction create above bumps series_version itself (backlog #019);
+    # this test isolates the FETCH JOB's split-driven bump on top of that.
+    base_version = portfolio.reload.series_version
 
     with_split = overlap_and_new(overlap_close: 100)
     with_split = build_series(symbol: "AAPL",
@@ -81,11 +84,11 @@ class Prices::FetchInstrumentJobTest < ActiveSupport::TestCase
       splits: [ { ex_date: Date.new(2024, 1, 8), ratio: 2 } ])
 
     run_with(StubProvider.new(series: with_split))
-    assert_equal 2, portfolio.reload.series_version, "a new split must bump series_version"
+    assert_equal base_version + 1, portfolio.reload.series_version, "a new split must bump series_version"
 
     # A subsequent plain fetch with no new split does not bump again.
     run_with(StubProvider.new(series: overlap_and_new(overlap_close: 100)))
-    assert_equal 2, portfolio.reload.series_version
+    assert_equal base_version + 1, portfolio.reload.series_version
   end
 
   test "hands off to the backfill job when the instrument is not yet backfilled" do
