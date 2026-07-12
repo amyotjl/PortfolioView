@@ -6,6 +6,13 @@ module Api
       # must read it; the session cookie remains HttpOnly.
       after_action :set_csrf_cookie
 
+      # A record scoped to Current.user (e.g. `Current.user.portfolios.find`)
+      # raises RecordNotFound both when the id is unknown and when it belongs to
+      # another user — either way, a uniform 404 envelope (never HTML, never 403).
+      rescue_from ActiveRecord::RecordNotFound do
+        render_not_found
+      end
+
       private
 
       def set_csrf_cookie

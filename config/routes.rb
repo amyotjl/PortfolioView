@@ -11,6 +11,11 @@ Rails.application.routes.draw do
   # Can be used by load balancers and uptime monitors to verify that the app is live.
   get "up" => "rails/health#show", as: :rails_health_check
 
+  # Unmatched /api/* paths answer with the JSON error envelope, never an HTML
+  # 404 (docs/PLAN.md § API contract). MUST remain the last /api route so every
+  # real endpoint above is matched first.
+  match "/api/*unmatched", to: "errors#not_found", via: :all, format: false
+
   # Render dynamic PWA files from app/views/pwa/* (remember to link manifest in application.html.erb)
   # get "manifest" => "rails/pwa#manifest", as: :pwa_manifest
   # get "service-worker" => "rails/pwa#service_worker", as: :pwa_service_worker
