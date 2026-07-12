@@ -22,4 +22,15 @@ class Instrument < ApplicationRecord
   validates :symbol, uniqueness: { case_sensitive: false }
   validates :instrument_type, inclusion: { in: %w[stock etf] }
   validates :currency, presence: true
+
+  # First reference to a symbol kicks off its full-history price backfill
+  # (docs/PLAN.md § Price pipeline). after_create_commit (not after_create) so
+  # the job never runs against a row that a rolled-back transaction never wrote.
+  after_create_commit :enqueue_price_backfill
+
+  private
+
+  def enqueue_price_backfill
+    Prices::BackfillInstrumentJob.perform_later(id)
+  end
 end
