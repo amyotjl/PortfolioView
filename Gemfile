@@ -22,6 +22,14 @@ gem "solid_cable"
 gem "faraday", "~> 2.9"
 gem "faraday-retry", "~> 2.2"
 
+# Weekly Tiingo symbol-directory import (Directory::ImportJob): the free
+# supported_tickers bulk file is a ZIP of a CSV. Ruby 3.4 unbundled `csv`, and
+# there is no stdlib ZIP reader; rubyzip is the de-facto standard (already
+# resolved in the lock via selenium, but only in the test group — promoted here
+# so it ships in production too).
+gem "csv"
+gem "rubyzip", "~> 3.0", require: "zip"
+
 # Reduces boot times through caching; required in config/boot.rb
 gem "bootsnap", require: false
 

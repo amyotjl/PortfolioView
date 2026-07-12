@@ -35,4 +35,14 @@ class RecurringScheduleTest < ActiveSupport::TestCase
     assert Fugit.parse_cron(schedule), "schedule must be a valid cron"
     assert_equal "1", schedule.split[2], "day-of-month must be the 1st (monthly)"
   end
+
+  test "directory import runs weekly pinned to America/New_York" do
+    task = CONFIG.fetch("directory_import")
+    assert_equal "Directory::ImportJob", task["class"]
+
+    schedule = task["schedule"]
+    assert_includes schedule, "America/New_York"
+    assert Fugit.parse_cron(schedule), "schedule must be a valid cron"
+    assert_equal "0", schedule.split[4], "day-of-week must select a single day (weekly)"
+  end
 end
