@@ -18,6 +18,9 @@ Rails.application.routes.draw do
       # work that adds its own member routes (candles/summary/allocations).
       resources :portfolios, only: [] do
         resources :transactions, only: %i[ index create update destroy ]
+        resources :recurring_transactions, only: %i[ index show create update destroy ] do
+          post :preview, on: :collection
+        end
       end
     end
   end
