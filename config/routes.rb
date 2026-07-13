@@ -18,6 +18,7 @@ Rails.application.routes.draw do
       # merge with minimal conflict. Rails merges the two portfolios route sets.
       resources :portfolios, only: [] do
         member do
+          get :candles,     to: "candles#show"
           get :summary,     to: "summaries#show"
           get :allocations, to: "allocations#show"
         end

@@ -26,7 +26,7 @@ module Candles
     VERSION = "v1".freeze
     NONE = "none".freeze
 
-    def self.fetch(...) = new(...).fetch
+    def self.fetch(**kwargs, &block) = new(**kwargs).fetch(&block)
 
     def initialize(portfolio:, from:, to:, benchmark_id:)
       @portfolio = portfolio
