@@ -11,6 +11,17 @@ Rails.application.routes.draw do
 
       resources :benchmarks, only: %i[ index ]
       resources :portfolios, only: %i[ index show create update destroy ]
+
+      # Analytics endpoints (backlog #031-#033). A SEPARATE additive block —
+      # not folded into the CRUD `resources :portfolios` line above — so the
+      # concurrently-added transactions/recurring/holdings nested resources
+      # merge with minimal conflict. Rails merges the two portfolios route sets.
+      resources :portfolios, only: [] do
+        member do
+          get :summary,     to: "summaries#show"
+          get :allocations, to: "allocations#show"
+        end
+      end
     end
   end
   # Define your application routes per the DSL in https://guides.rubyonrails.org/routing.html
