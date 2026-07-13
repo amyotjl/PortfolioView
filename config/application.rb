@@ -23,5 +23,12 @@ module App
     #
     # config.time_zone = "Central Time (US & Canada)"
     # config.eager_load_paths << Rails.root.join("extras")
+
+    # Route uncaught exceptions (500s, and anything the middleware turns into a
+    # status) through ErrorsController so /api answers with the JSON error
+    # envelope instead of a static HTML page (docs/PLAN.md § API contract).
+    # A lambda (not a direct reference) so the constant is resolved lazily at
+    # request time rather than during boot autoloading.
+    config.exceptions_app = ->(env) { ErrorsController.action(:show).call(env) }
   end
 end
