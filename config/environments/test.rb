@@ -55,3 +55,10 @@ Rails.application.configure do
   # Raise error when a before_action's only/except options reference missing actions.
   config.action_controller.raise_on_missing_callback_actions = true
 end
+
+# Hermetic test suite: never inherit real market-data provider keys from the
+# developer's .env / shell (docker-compose passes them into the container). The
+# unit suite must be deterministic and must never touch a real provider API;
+# adapter tests inject explicit keys, and the "no key configured" paths rely on
+# these being blank. Real-key smoke tests (backlog #017/#021) run outside `rails test`.
+%w[TIINGO_API_KEY TWELVE_DATA_API_KEY FMP_API_KEY].each { |k| ENV[k] = nil }
