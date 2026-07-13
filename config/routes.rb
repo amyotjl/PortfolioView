@@ -11,6 +11,14 @@ Rails.application.routes.draw do
 
       resources :benchmarks, only: %i[ index ]
       resources :portfolios, only: %i[ index show create update destroy ]
+
+      # backlog #028/#029/#030 — portfolio-scoped resources. Declared as a
+      # separate additive `resources :portfolios` block (only: []) rather than
+      # nested into the CRUD line above, so it merges cleanly with concurrent
+      # work that adds its own member routes (candles/summary/allocations).
+      resources :portfolios, only: [] do
+        resources :transactions, only: %i[ index create update destroy ]
+      end
     end
   end
   # Define your application routes per the DSL in https://guides.rubyonrails.org/routing.html
