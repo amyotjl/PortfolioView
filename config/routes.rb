@@ -21,6 +21,7 @@ Rails.application.routes.draw do
         resources :recurring_transactions, only: %i[ index show create update destroy ] do
           post :preview, on: :collection
         end
+        resource :holdings, only: %i[ show ]
       end
     end
   end
