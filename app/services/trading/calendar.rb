@@ -30,6 +30,14 @@ module Trading
         calendar_scope.where(date: date..).order(:date).pick(:date)
       end
 
+      # Last trading day on or before `date` — the effective "market close"
+      # reference for an as-of query (nil when the cache has no day that early).
+      # Backs the holdings pre-flight endpoint (backlog #030): a weekend/holiday
+      # as_of resolves to the prior close.
+      def last_day_on_or_before(date)
+        calendar_scope.where(date: ..date).order(date: :desc).pick(:date)
+      end
+
       # Most recent trading day known to the cache.
       def last_day
         calendar_scope.maximum(:date)
