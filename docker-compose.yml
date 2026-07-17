@@ -10,7 +10,9 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      # Host port 5433: 5432 is commonly taken by other local Postgres
+      # instances. In-network services still connect to db:5432.
+      - "5433:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U portfolio"]
       interval: 5s
