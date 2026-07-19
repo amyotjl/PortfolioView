@@ -319,6 +319,12 @@ module Api
       teardown do
         Transaction.where(portfolio_id: @portfolio.id).delete_all
         Instrument.where(symbol: "NVDA").delete_all
+        # This class runs OUTSIDE the transactional wrapper, so every row the
+        # setup commits must be removed by hand — the ListedInstrument was
+        # missing here and leaked permanently into the worker's test database,
+        # intermittently failing Directory::ImportJobTest's whole-table
+        # assertions (found by the #034 contract-suite runs).
+        ListedInstrument.where(symbol: "NVDA").delete_all
         @portfolio.destroy
         Session.where(user_id: @user.id).delete_all
         clear_enqueued_jobs
