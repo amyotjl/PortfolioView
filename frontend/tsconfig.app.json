@@ -5,6 +5,15 @@
     "types": ["vite/client"],
     "allowArbitraryExtensions": true,
 
+    /* Strict type-checking (explicit; @vue/tsconfig already enables strict) */
+    "strict": true,
+
+    /* Path alias: @/* -> src/* (resolved relative to this config; no baseUrl,
+       which TypeScript 6 deprecates) */
+    "paths": {
+      "@/*": ["./src/*"]
+    },
+
     /* Linting */
     "noUnusedLocals": true,
     "noUnusedParameters": true,
