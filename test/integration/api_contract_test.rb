@@ -89,6 +89,7 @@ module ApiContract
     # THE single-envelope assertion: the response is JSON whose top level is
     # exactly {"error" => {"code", "message", "details"}} — nothing more,
     # nothing less. Applied verbatim to every error status in the suite.
+    # Returns the details map for field-level assertions.
     def assert_envelope(code = nil)
       assert_equal "application/json", response.media_type,
         "every error must be the JSON envelope, never HTML (#{response.status})"
@@ -101,7 +102,7 @@ module ApiContract
       assert_kind_of String, error["message"]
       assert_kind_of Hash, error["details"], "details is a field map (or {})"
       assert_equal code, error["code"] if code
-      error
+      error.fetch("details")
     end
 
     def assert_exact_keys(expected, hash, label)
@@ -336,7 +337,7 @@ module ApiContract
             -> { assert Transaction.exists?(@tx.id) } ],
           [ -> { post "/api/v1/portfolios/#{@portfolio.id}/recurring_transactions/preview",
                  params: { frequency: "monthly", anchor_on: "2030-01-31" }, as: :json },
-            -> {} ],
+            -> { } ],
           [ -> { delete "/api/v1/session" },
             -> { assert_equal 1, Session.count, "the session must survive a forged logout" } ]
         ]
