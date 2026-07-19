@@ -1,0 +1,112 @@
+@import 'tailwindcss';
+@plugin 'tailwindcss-primeui';
+
+/*
+ * One design system, two themes, one flip.
+ *
+ * The `--pv-*` custom properties below are the single source of truth for color,
+ * shared by Tailwind utilities, PrimeVue (unstyled), and — later — the ECharts
+ * theme. A single `data-theme` attribute on <html> swaps the whole palette.
+ *
+ * `@theme inline` maps semantic Tailwind color names onto those runtime vars, so
+ * utilities like `bg-panel` / `text-ink` / `border-line` resolve live when the
+ * theme flips (that is what `inline` buys us). Names are deliberately chosen to
+ * NOT collide with the `primary` / `surface` scales the tailwindcss-primeui
+ * preset contributes for PrimeVue components.
+ *
+ * Palette intent: cool-neutral slate surfaces with a single "trading blue"
+ * accent. Gain-green (`up`) and loss-red (`down`) are reserved strictly for data
+ * — never chrome — so a colored number always means a real gain or loss.
+ */
+
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+:root,
+[data-theme='light'] {
+  --pv-canvas: #f4f6f9;
+  --pv-panel: #ffffff;
+  --pv-panel-hi: #eceff4;
+  --pv-line: #e1e5ec;
+  --pv-line-strong: #c9d0da;
+  --pv-ink: #10131a;
+  --pv-ink-muted: #586173;
+  --pv-ink-subtle: #858d9c;
+  --pv-accent: #2f62f5;
+  --pv-accent-hi: #1f4fe0;
+  --pv-accent-soft: color-mix(in srgb, #2f62f5 12%, transparent);
+  --pv-on-accent: #ffffff;
+  --pv-up: #12885a;
+  --pv-down: #cf3a3a;
+  --pv-warn: #b5790a;
+  color-scheme: light;
+}
+
+[data-theme='dark'] {
+  --pv-canvas: #0a0c11;
+  --pv-panel: #12161f;
+  --pv-panel-hi: #1a2030;
+  --pv-line: #232a37;
+  --pv-line-strong: #344054;
+  --pv-ink: #e9edf4;
+  --pv-ink-muted: #99a2b3;
+  --pv-ink-subtle: #697386;
+  --pv-accent: #5385ff;
+  --pv-accent-hi: #6f99ff;
+  --pv-accent-soft: color-mix(in srgb, #5385ff 18%, transparent);
+  --pv-on-accent: #060c18;
+  --pv-up: #34c98a;
+  --pv-down: #ff5c5c;
+  --pv-warn: #e0a92e;
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-canvas: var(--pv-canvas);
+  --color-panel: var(--pv-panel);
+  --color-panel-hi: var(--pv-panel-hi);
+  --color-line: var(--pv-line);
+  --color-line-strong: var(--pv-line-strong);
+  --color-ink: var(--pv-ink);
+  --color-ink-muted: var(--pv-ink-muted);
+  --color-ink-subtle: var(--pv-ink-subtle);
+  --color-accent: var(--pv-accent);
+  --color-accent-hi: var(--pv-accent-hi);
+  --color-accent-soft: var(--pv-accent-soft);
+  --color-on-accent: var(--pv-on-accent);
+  --color-up: var(--pv-up);
+  --color-down: var(--pv-down);
+  --color-warn: var(--pv-warn);
+
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-mono:
+    ui-monospace, 'SFMono-Regular', 'Cascadia Code', 'JetBrains Mono', Menlo, Consolas, monospace;
+}
+
+@layer base {
+  html,
+  body,
+  #app {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--pv-canvas);
+    color: var(--pv-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Numeric contexts read as a ledger: monospace + tabular figures. */
+  .numeric {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--pv-accent);
+    outline-offset: 2px;
+  }
+}
