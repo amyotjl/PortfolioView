@@ -18,7 +18,7 @@ source of truth for the frontend zod schemas (`frontend/src/types/`). Convention
 - `POST /api/v1/registration` (requires `invite_code`) → 201 same shape + session cookie.
 
 ## Reference data
-- `GET /api/v1/instruments/search?q=` → `{"instruments": [{symbol, name, exchange, asset_type, currency}]}` — no id (transactions POST by symbol); max 20; ordered exact > prefix > name.
+- `GET /api/v1/instruments/search?q=` → `{"instruments": [{symbol, name: str|null, exchange: str|null, asset_type: str|null, currency: str|null}]}` — only `symbol` is non-null (the only NOT NULL column on `listed_instruments`; the serializer emits columns raw). The bulk Tiingo supported_tickers import has no name column, so `name` is null on every row; `exchange`/`asset_type`/`currency` may also be null. No id (transactions POST by symbol); max 20; ordered exact > prefix > name.
 - `GET /api/v1/instruments/:id/price?date=` → `{"price": {"instrument_id": number, "date": ISO, "close": string}}` — `date` is the trading day actually used (≤ requested); before-history → 404 `price_unavailable`.
 - `GET /api/v1/benchmarks` → `{"benchmarks": [{id: number, name, symbol}]}` (seed order).
 

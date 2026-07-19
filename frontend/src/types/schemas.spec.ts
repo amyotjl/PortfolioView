@@ -3,6 +3,8 @@ import {
   allocationsResponseSchema,
   candlesResponseSchema,
   errorEnvelopeSchema,
+  instrumentSearchResultSchema,
+  instrumentSearchSchema,
   parseResponse,
   SchemaValidationError,
   summaryResponseSchema,
@@ -76,6 +78,35 @@ describe('API contract schemas (docs/API_SHAPES.md)', () => {
       'GET /transactions',
     )
     expect(parsed.meta.per_page).toBe(50)
+  })
+
+  it('accepts instrument search rows with null name/exchange (only symbol is required)', () => {
+    // Live directory rows always have name: null (Tiingo bulk import has no name
+    // column); exchange/asset_type/currency may also be null. db/schema.rb makes
+    // only `symbol` NOT NULL on listed_instruments.
+    const parsed = parseResponse(
+      instrumentSearchSchema,
+      {
+        instruments: [
+          { symbol: 'AAPL', name: null, exchange: 'NASDAQ', asset_type: 'stock', currency: 'USD' },
+          { symbol: 'ZZZ', name: null, exchange: null, asset_type: null, currency: null },
+        ],
+      },
+      'GET /instruments/search',
+    )
+    expect(parsed.instruments[0].name).toBeNull()
+    expect(parsed.instruments[1].exchange).toBeNull()
+  })
+
+  it('rejects an instrument search row with a null symbol', () => {
+    const result = instrumentSearchResultSchema.safeParse({
+      symbol: null,
+      name: null,
+      exchange: null,
+      asset_type: null,
+      currency: null,
+    })
+    expect(result.success).toBe(false)
   })
 
   it('parses the error envelope with a 422 field->messages map', () => {
