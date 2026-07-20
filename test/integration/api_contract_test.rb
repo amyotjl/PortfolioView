@@ -576,9 +576,6 @@ module ApiContract
     end
 
     test "holdings pre-flight is {holding: {instrument_id, as_of, shares}} with shares as a string" do
-      # NOTE(#60): as_of stays within the seeded calendar. An as_of BEFORE the
-      # earliest trading day currently returns the CURRENT position instead of
-      # zero — tracked in #60; do not assert that case here until it is fixed.
       get "/api/v1/portfolios/#{@portfolio.id}/holdings",
         params: { instrument_id: @aapl.id, as_of: FRI.iso8601 }
       assert_response :ok
@@ -586,6 +583,14 @@ module ApiContract
       holding = json.fetch("holding")
       assert_exact_keys HOLDING_KEYS, holding, "holding"
       assert_money_string "10", holding["shares"], "shares held"
+
+      # #60: an as_of before the earliest trading day is a genuine zero position,
+      # not the current holding.
+      get "/api/v1/portfolios/#{@portfolio.id}/holdings",
+        params: { instrument_id: @aapl.id, as_of: "2000-01-01" }
+      assert_response :ok
+      assert_equal "2000-01-01", json.dig("holding", "as_of"), "echoes the requested as_of"
+      assert_money_string "0", json.dig("holding", "shares"), "far-past as_of is a zero position"
     end
 
     test "candles is exactly {candles, benchmark, flows, drawdown, meta}; bare requests carry benchmark: null" do

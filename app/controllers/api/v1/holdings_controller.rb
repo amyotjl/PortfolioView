@@ -41,7 +41,11 @@ module Api
       end
 
       def shares_as_of(instrument_id, as_of)
-        effective = Trading::Calendar.last_day_on_or_before(as_of) || Trading::Calendar.last_day
+        # No trading day on/before as_of — as_of predates the calendar's earliest
+        # day (or the cache is empty) — is a genuine zero position. Do NOT fall
+        # back to the latest trading day: that returned the CURRENT position for
+        # a far-past as_of (#60).
+        effective = Trading::Calendar.last_day_on_or_before(as_of)
         return BigDecimal(0) if effective.nil?
 
         result = Holdings::Calculator.call(portfolio: @portfolio, from: effective, to: effective)
