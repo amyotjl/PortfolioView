@@ -12,6 +12,7 @@ import ChartCard from '@/components/dashboard/ChartCard.vue'
 import DashboardChart from '@/components/dashboard/DashboardChart.vue'
 import DashboardChartTable from '@/components/dashboard/DashboardChartTable.vue'
 import DashboardEmptyState from '@/components/dashboard/DashboardEmptyState.vue'
+import AllocationSection from '@/components/dashboard/AllocationSection.vue'
 
 /**
  * The dashboard route — a thin composition surface. Server state comes from
@@ -116,6 +117,8 @@ function retry(): void {
           <DashboardChartTable :payload="payload" :show-benchmark="showBenchmark" />
         </template>
       </ChartCard>
+
+      <AllocationSection :portfolio-id="portfolioId" />
     </template>
   </section>
 </template>
