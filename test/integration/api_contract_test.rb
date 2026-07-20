@@ -241,13 +241,28 @@ module ApiContract
         -> { get "/api/v1/portfolios/999999999" },              # unknown id
         -> { get "/api/v1/instruments/999999999/price?date=2024-01-05" },
         -> { get "/api/v1/does/not/exist" },                    # unmatched /api path
-        # NOTE(#59): this POST runs with forgery protection at its test default
-        # (off). Do NOT wrap it in with_forgery_protection — a token-less
-        # non-GET to an unmatched /api path currently answers 422 (HTML in
-        # dev) instead of the 404 envelope; that defect is tracked in #59.
-        -> { post "/api/v1/nope", as: :json }
+        -> { post "/api/v1/nope", as: :json }                   # unmatched /api path, non-GET
       ].each do |request|
         request.call
+        assert_response :not_found
+        assert_envelope "not_found"
+      end
+    end
+
+    # #59: the /api/* catch-all renders a read-only 404 envelope and mutates
+    # nothing, so it skips forgery protection. A token-less non-GET to an
+    # unmatched /api path must therefore be the 404 envelope — never the 403
+    # (CSRF) that a REAL mutating endpoint answers (locked in CsrfPairContractTest),
+    # and never the 422 HTML it produced before the skip.
+    test "a token-less non-GET to an unmatched /api path is 404, not a CSRF 403, even with forgery protection ON" do
+      with_forgery_protection do
+        %i[post patch delete].each do |verb|
+          send(verb, "/api/v1/does-not-exist", as: :json)
+          assert_response :not_found, "#{verb.upcase} to an unmatched /api path must be 404, not a CSRF failure"
+          assert_envelope "not_found"
+        end
+
+        get "/api/v1/does-not-exist" # GET is unchanged
         assert_response :not_found
         assert_envelope "not_found"
       end
