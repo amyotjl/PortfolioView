@@ -2,6 +2,9 @@ import type { ButtonPassThroughOptions } from 'primevue/button'
 import type { InputTextPassThroughOptions } from 'primevue/inputtext'
 import type { SelectPassThroughOptions } from 'primevue/select'
 import type { DialogPassThroughOptions } from 'primevue/dialog'
+import type { SelectButtonPassThroughOptions } from 'primevue/selectbutton'
+import type { ToggleButtonPassThroughOptions } from 'primevue/togglebutton'
+import type { ToggleSwitchPassThroughOptions } from 'primevue/toggleswitch'
 
 /**
  * PrimeVue is registered in UNSTYLED mode (main.ts), so every rendered component
@@ -73,4 +76,49 @@ export const dialogPt: DialogPassThroughOptions = {
   pcCloseButton: {
     root: 'grid h-8 w-8 place-items-center rounded-md text-ink-subtle transition-colors hover:bg-panel-hi hover:text-ink',
   },
+}
+
+/**
+ * Segmented control for the dashboard's date-range presets. SelectButton renders
+ * one ToggleButton per option; `pcToggleButton` styles them, using the
+ * ToggleButton `active` context so the selected preset carries the accent (its
+ * label text also flips, so selection never reads by color alone).
+ */
+const rangeToggleButtonPt: ToggleButtonPassThroughOptions = {
+  root: ({ context }) => ({
+    class: [
+      'cursor-pointer rounded px-3 py-1.5 text-sm font-medium tabular-nums transition-colors outline-none focus-visible:ring-2 focus-visible:ring-accent-soft',
+      context.active
+        ? 'bg-accent text-on-accent'
+        : 'text-ink-muted hover:bg-panel-hi hover:text-ink',
+    ],
+  }),
+  content: 'flex items-center justify-center',
+  label: 'whitespace-nowrap',
+}
+
+export const selectButtonPt: SelectButtonPassThroughOptions = {
+  root: 'inline-flex gap-0.5 rounded-md border border-line bg-panel p-0.5',
+  pcToggleButton: rangeToggleButtonPt,
+}
+
+/**
+ * Benchmark on/off switch. `slider` carries the track color (accent when on),
+ * `handle` the knob; a visible label sits beside it so state is never color-only.
+ */
+export const toggleSwitchPt: ToggleSwitchPassThroughOptions = {
+  root: 'relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full outline-none focus-within:ring-2 focus-within:ring-accent-soft',
+  input: 'absolute inset-0 z-10 m-0 h-full w-full cursor-pointer rounded-full opacity-0',
+  slider: ({ context }) => ({
+    class: [
+      'absolute inset-0 rounded-full transition-colors',
+      context.checked ? 'bg-accent' : 'bg-line-strong',
+    ],
+  }),
+  handle: ({ context }) => ({
+    class: [
+      'absolute left-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform',
+      context.checked ? 'translate-x-4' : 'translate-x-0',
+    ],
+  }),
 }
