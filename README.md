@@ -11,6 +11,10 @@ The full design — schema, split-handling model, frozen API contract, milestone
 [docs/PLAN.md](docs/PLAN.md). Read it before contributing; the split math and API contract
 are load-bearing decisions.
 
+**AI agents working in this repo**: start with [CLAUDE.md](CLAUDE.md) (environment gotchas,
+commit/merge conventions) and [docs/STATUS.md](docs/STATUS.md) (live milestone/issue
+tracker), then PLAN.md and [docs/API_SHAPES.md](docs/API_SHAPES.md) (as-built API contract).
+
 ## Running locally
 
 ```sh
