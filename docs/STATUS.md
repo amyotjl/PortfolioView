@@ -1,7 +1,8 @@
 # Status (living document)
 
-Last verified: 2026-07-21. M5 fully merged and its milestone closed. M6 dashboard batch and
-the M4 follow-up fixes (#59/#60) are both in flight in isolated worktrees.
+Last verified: 2026-07-24. M6 fully merged and its milestone closed (dashboard chart, stat
+tiles, allocation donuts — the core candlestick feature). The M4 follow-up fixes (#59/#60)
+are still in flight in an isolated worktree.
 
 **Keep this current.** Whoever closes an issue or a milestone updates the tables below in
 the same session — this file exists so a future agent doesn't have to re-run `gh issue list`
@@ -18,10 +19,18 @@ acceptance-criteria text.
 | M3 | Domain services | Holdings calculator, position validator, valuation, benchmark simulation, recurring materializer | ✅ closed (#22–28) |
 | M4 | API | Full REST API, error envelope, CSRF, caching, contract test suite | ✅ closed except 2 tracked defects — #29–39 closed; **#59, #60 open**, fix committed on branch `fixes/059-060`, tester verifying |
 | M5 | Frontend shell + auth + portfolios | Router/Pinia/PrimeVue shell, zod schemas, auth pages, portfolios CRUD, Vitest harness | ✅ closed (#40–44) |
-| M6 | Dashboard | Candlestick + cash-flow + drawdown linked chart, stat tiles, allocation donuts | 🚧 in progress — **#45–48 open**, branch `m6/041-044` in flight |
+| M6 | Dashboard | Candlestick + cash-flow + drawdown linked chart, stat tiles, allocation donuts | ✅ closed (#45–48) |
 | M7 | Transaction/recurring UIs | Transaction form drawer, recurring-transactions page, Playwright e2e smoke | ⬜ not started (#49–51) — **#63** (name enrichment) folded in |
 | M8 | Extra visualizations | Contribution-vs-growth stacked area, sector treemap | ⬜ not started (#52–53) — **#64** (portfolio export/import, user-filed) added |
 | M9 | Local deploy | Production Dockerfile/compose profile, boot catch-up sync, Sync-now button, persistence check | ⬜ not started (#54–58) |
+
+## Frontend building blocks already in `frontend/src/` (M5+M6 — extend, don't rebuild)
+- **Charts** (`charts/`): `echarts.ts` registers ECharts modularly (`use([...])`) — add new chart types (e.g. M8's treemap) to that one call; import `VChart` from here, never from `vue-echarts` directly. `candles.ts`/`donuts.ts` are pure option builders; `theme.ts` maps `--pv-*` tokens into chart colors; `colors.ts` has the validated ordinal-ramp helpers.
+- **Composables** (`composables/`): `usePortfolios`, `useBenchmarks`, `usePortfolioCandles` (key `['candles', pid, from, to, benchmark]`), `useSummary` (`['summary', pid]`), `useAllocations` (`['allocations', pid]`). **Any transaction/recurring mutation must invalidate all four data keys plus `portfolios`** — the server bumps `series_version` on mutation.
+- **Dashboard components** (`components/dashboard/`): `ChartCard` (chart/table toggle), `StatTile(Row)`, `DashboardEmptyState`, table-twin components — reusable for M8's extra visualizations.
+- **Shared UI/lib**: `FormField`/`FormAlert`/`ConfirmDialog`, `mapApiError`, `formatCurrency`/`formatPercent`/`formatDate` (decimal-string-safe), `safeRedirectTarget`, `buildSparkline`, `presetToRange`/`useDashboardParams` (URL-mirrored filter state — copy this pattern for new filters).
+- **PrimeVue PT presets** (`primevue/pt.ts`): button/inputText/select/dialog/selectButton/toggleSwitch — add new ones here as new components are used.
+- Tooltip/label strings built as innerHTML **must** go through `escapeHtml` (tickers/sector names are untrusted) — verified in place for the dashboard; keep doing it for any new chart.
 
 ## Open tracked defects & enhancements (outside the milestone they surfaced in)
 
