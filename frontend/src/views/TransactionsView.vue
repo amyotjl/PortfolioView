@@ -118,21 +118,28 @@ async function onSubmit(values: TransactionFormValues): Promise<void> {
     return
   }
 
-  // Optimistic create (#49 AC): show the row immediately, close the drawer, and
-  // roll back if the server rejects.
+  // Optimistic create (#49 AC): the provisional row appears in the table at once,
+  // and is rolled back if the server rejects.
+  //
+  // THE DRAWER CLOSES ONLY ON SUCCESS, and that ordering is load-bearing. Closing
+  // it up-front and reopening on failure looked equivalent but silently destroyed
+  // the failure path: reopening re-runs the drawer's `watch(visible)` seed, which
+  // calls resetForm() and clears formError — and because watchers flush on the next
+  // tick, it ran AFTER applyServerError() and wiped both the message and everything
+  // the user had typed. Keeping the drawer mounted means the 422 lands on a form
+  // that still holds its input. Caught by acceptance-criteria verification.
   optimisticRow.value = toOptimisticRow(values)
-  drawerVisible.value = false
 
   try {
     const created = await createMutation.mutateAsync(values)
     optimisticRow.value = null
+    drawerVisible.value = false
     offerUndo(created.transaction)
   } catch (error) {
-    // Roll back the provisional row, reopen the drawer with its values intact,
-    // and map the envelope onto the fields (a no-short-position violation
-    // arrives under `base` and names the first offending date).
+    // Roll back the provisional row and map the envelope onto the fields (a
+    // no-short-position violation arrives under `base` and names the first
+    // offending date).
     optimisticRow.value = null
-    drawerVisible.value = true
     drawer.value?.applyServerError(error)
   }
 }
