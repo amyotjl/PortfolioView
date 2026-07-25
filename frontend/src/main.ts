@@ -2,6 +2,7 @@ import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import { PiniaColada } from '@pinia/colada'
 import PrimeVue from 'primevue/config'
+import ToastService from 'primevue/toastservice'
 import App from './App.vue'
 import router from './router'
 import { setUnauthorizedHandler } from './api/client'
@@ -21,6 +22,10 @@ app.use(router)
 // from Tailwind + the tailwindcss-primeui preset (pass-through presets land with
 // the form components in #038).
 app.use(PrimeVue, { unstyled: true })
+
+// ToastService backs `useToast()`. Required for the transaction drawer's
+// optimistic-insert undo toast (#49); the single <Toast /> outlet lives in App.vue.
+app.use(ToastService)
 
 // When any API call 401s, drop the local session and route to /login (SPA-aware,
 // preserving the intended destination) instead of a hard page reload.
