@@ -193,7 +193,6 @@ function onSymbolSelect(event: { value: InstrumentSearchResult }): void {
             :suggestions="symbolResults"
             option-label="symbol"
             force-selection
-            complete-on-focus
             :delay="250"
             placeholder="e.g. VTI"
             :invalid="invalid"
@@ -270,6 +269,7 @@ function onSymbolSelect(event: { value: InstrumentSearchResult }): void {
 
       <FormField label="Frequency" :error="errors.frequency" required>
         <template #default="{ id, invalid, describedby }">
+          <!-- Same Select accessible-name gap as the Kind field (#65); see the note there. -->
           <Select
             :input-id="id"
             v-model="frequency"

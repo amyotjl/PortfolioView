@@ -10,10 +10,22 @@ const route = useRoute()
 
 // Route meta selects the chrome; the RouterView content renders into its slot.
 const layout = computed(() => (route.meta.layout === 'auth' ? AuthLayout : AppShell))
+
+/**
+ * The router guard is async (it awaits the /session bootstrap on first load), and
+ * until it resolves `route.meta` is empty — so `layout` would fall back to
+ * AppShell even for an auth route. Mounting AppShell speculatively is not free:
+ * its top bar fetches authenticated-only data, which on a signed-out visit 401s
+ * and bounces the visitor to /login. Wait for a resolved route (a named match)
+ * before committing to any chrome. See also the `enabled` guard in
+ * usePortfoliosQuery — belt and braces, since either alone fixes the symptom but
+ * both are correct in their own right.
+ */
+const isRouteResolved = computed(() => Boolean(route.name))
 </script>
 
 <template>
-  <component :is="layout">
+  <component :is="layout" v-if="isRouteResolved">
     <RouterView />
   </component>
 

@@ -313,7 +313,6 @@ function onSymbolSelect(event: { value: InstrumentSearchResult }): void {
             :suggestions="symbolResults"
             option-label="symbol"
             force-selection
-            complete-on-focus
             :delay="250"
             placeholder="e.g. AAPL"
             :invalid="invalid"
@@ -431,6 +430,16 @@ function onSymbolSelect(event: { value: InstrumentSearchResult }): void {
 
         <FormField label="Kind" :error="errors.kind">
           <template #default="{ id, invalid, describedby }">
+            <!--
+              KNOWN A11Y GAP (#65, pre-existing, affects every Select in the app):
+              PrimeVue's unstyled Select renders its combobox as a <span> whose
+              aria-label it sets to the SELECTED VALUE, so this field's accessible
+              name is "Normal" rather than "Kind" and the visible <label> is not
+              announced. Passing aria-label here does not help — the component
+              overwrites it. Needs a selectPt-level fix (aria-labelledby wired to
+              FormField's label id), tracked separately rather than patched per
+              call site.
+            -->
             <Select
               :input-id="id"
               v-model="kind"

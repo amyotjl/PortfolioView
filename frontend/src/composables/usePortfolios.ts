@@ -2,6 +2,7 @@ import { computed } from 'vue'
 import { useMutation, useQuery, useQueryCache } from '@pinia/colada'
 import { apiDelete, apiGet, apiPatch, apiPost } from '@/api/client'
 import { portfolioResponseSchema, portfoliosResponseSchema, type Portfolio } from '@/types'
+import { useAuthStore } from '@/stores/auth'
 
 /**
  * Portfolios are SERVER state and live only in the Pinia Colada cache (never a
@@ -18,9 +19,23 @@ export interface PortfolioInput {
 }
 
 export function usePortfoliosQuery() {
+  const auth = useAuthStore()
+
   const query = useQuery({
     key: () => [...PORTFOLIOS_KEY],
     query: () => apiGet('/portfolios', { schema: portfoliosResponseSchema }),
+    /**
+     * /portfolios is authenticated-only, so never probe it while anonymous.
+     *
+     * This guard is load-bearing, not defensive dressing. PortfolioSwitcher (in
+     * the AppShell top bar) calls this composable, and App.vue falls back to
+     * AppShell until the async router guard resolves `route.meta`. Without the
+     * guard, loading /register or /login directly fired this query while signed
+     * out and the resulting 401 hit the client's unauthorized handler, which
+     * pushed the visitor to /login?redirect=/ — making the register page
+     * unreachable by URL. Found by the e2e smoke suite (#51).
+     */
+    enabled: () => auth.isAuthenticated,
   })
 
   const portfolios = computed<Portfolio[]>(() => query.data.value?.portfolios ?? [])
