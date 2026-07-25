@@ -77,11 +77,16 @@ module Api
         assert_equal "2800.0", allocations["total_value"]
 
         by_instrument = allocations["by_instrument"]
-        assert_equal %w[instrument_id symbol value weight].sort, by_instrument.first.keys.sort
+        assert_equal %w[instrument_id symbol sector value weight].sort, by_instrument.first.keys.sort
         # ordered largest value first
         assert_equal %w[AAPL MSFT VOO], by_instrument.map { |s| s["symbol"] }
         assert_equal "1500.0", by_instrument.first["value"]
         assert_equal aapl.id, by_instrument.first["instrument_id"]
+
+        # Each instrument carries the sector label it contributes to, including
+        # the "ETF / Fund" fallback — this is the treemap's only join key.
+        assert_equal %w[Technology Technology], by_instrument.first(2).map { |s| s["sector"] }
+        assert_equal "ETF / Fund", by_instrument.last["sector"]
 
         by_sector = allocations["by_sector"]
         assert_equal %w[sector value weight].sort, by_sector.first.keys.sort

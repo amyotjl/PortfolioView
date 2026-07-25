@@ -52,6 +52,36 @@ export function mixHex(from: string, to: string, t: number): string {
   })
 }
 
+/** WCAG 2.x relative luminance of a `#rrggbb` color. */
+export function relativeLuminance(hex: string): number {
+  const { r, g, b } = hexToRgb(hex)
+  const channel = (value: number): number => {
+    const srgb = value / 255
+    return srgb <= 0.03928 ? srgb / 12.92 : Math.pow((srgb + 0.055) / 1.055, 2.4)
+  }
+  return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+}
+
+/** WCAG contrast ratio between two `#rrggbb` colors (1–21, order-independent). */
+export function contrastRatio(a: string, b: string): number {
+  const la = relativeLuminance(a)
+  const lb = relativeLuminance(b)
+  const [hi, lo] = la >= lb ? [la, lb] : [lb, la]
+  return (hi + 0.05) / (lo + 0.05)
+}
+
+/**
+ * Pick whichever of two inks contrasts better against `background`.
+ *
+ * Needed for labels drawn *inside* a colored fill — treemap tiles, where the fill
+ * spans a full lightness ramp, so a single fixed ink is unreadable at one end of
+ * it. dataviz `marks-and-anatomy.md` calls this out as the one place a label does
+ * not simply wear a text token. Ties go to the first ink so the result is stable.
+ */
+export function readableInk(background: string, inkA: string, inkB: string): string {
+  return contrastRatio(background, inkA) >= contrastRatio(background, inkB) ? inkA : inkB
+}
+
 /**
  * Sample `count` colors evenly across an ordinal ramp of stops. Index 0 maps to
  * the first stop (darkest = largest slice), index `count-1` to the last stop

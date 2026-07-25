@@ -81,7 +81,7 @@ module ApiContract
   SUMMARY_KEYS     = %w[current_value net_deposits total_return total_return_pct
                         benchmark_return_pct vs_benchmark_edge_pct max_drawdown_pct as_of].sort.freeze
   ALLOCATIONS_KEYS = %w[as_of total_value by_instrument by_sector].sort.freeze
-  BY_INSTRUMENT_KEYS = %w[instrument_id symbol value weight].sort.freeze
+  BY_INSTRUMENT_KEYS = %w[instrument_id symbol sector value weight].sort.freeze
   BY_SECTOR_KEYS   = %w[sector value weight].sort.freeze
   PREVIEW_SLOT_KEYS = %w[scheduled_for execution_on].sort.freeze
 
@@ -656,6 +656,10 @@ module ApiContract
       sector = allocations.fetch("by_sector").sole
       assert_exact_keys BY_SECTOR_KEYS, sector, "by_sector slice"
       assert_money_string "1300", sector["value"], "sector value"
+
+      # The instrument slice's `sector` is the join key into by_sector — the
+      # treemap's hierarchy depends on the two labels being byte-identical.
+      assert_equal sector["sector"], slice["sector"], "by_instrument sector joins by_sector"
     end
   end
 

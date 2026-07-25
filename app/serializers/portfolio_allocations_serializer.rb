@@ -2,6 +2,10 @@
 # (docs/PLAN.md § API contract). Values are rounded to cents, weights to 6 dp —
 # all serialized as STRINGS, never JSON floats. by_instrument and by_sector are
 # ordered largest-value first; weights sum to 1 within rounding.
+#
+# An instrument slice's `sector` is the join key into by_sector (same label, so
+# grouping by_instrument on it reproduces by_sector exactly) — the sector treemap
+# needs the hierarchy and cannot rebuild it from anywhere else.
 class PortfolioAllocationsSerializer
   def initialize(allocations)
     @allocations = allocations
@@ -15,6 +19,7 @@ class PortfolioAllocationsSerializer
         {
           instrument_id: slice.instrument_id,
           symbol: slice.symbol,
+          sector: slice.sector,
           value: money(slice.value),
           weight: weight(slice.weight)
         }

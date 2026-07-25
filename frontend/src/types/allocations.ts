@@ -5,10 +5,16 @@ import { DecimalString, IsoDate } from './common'
  * GET .../allocations -> { allocations: {...} }  (WRAPPED — unlike bare /candles).
  * Largest-first; weights sum to 1; sectorless instruments bucket under "ETF / Fund".
  * `symbol` on a by_instrument row is nullable; values/weights are decimal strings.
+ *
+ * `sector` on a by_instrument row is NOT nullable — the server always emits a
+ * label, falling back to "ETF / Fund" — and is byte-identical to the matching
+ * by_sector row's label. That makes it the join key the sector treemap groups on
+ * (docs/API_SHAPES.md); the two breakdowns have no other key in common.
  */
 export const allocationByInstrumentSchema = z.object({
   instrument_id: z.number(),
   symbol: z.string().nullable(),
+  sector: z.string(),
   value: DecimalString,
   weight: DecimalString,
 })

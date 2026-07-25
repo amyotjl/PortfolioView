@@ -10,7 +10,7 @@
  */
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
-import { CandlestickChart, LineChart, BarChart, PieChart } from 'echarts/charts'
+import { CandlestickChart, LineChart, BarChart, PieChart, TreemapChart } from 'echarts/charts'
 import {
   GridComponent,
   TooltipComponent,
@@ -28,6 +28,7 @@ use([
   LineChart,
   BarChart,
   PieChart,
+  TreemapChart,
   GridComponent,
   TooltipComponent,
   LegendComponent,

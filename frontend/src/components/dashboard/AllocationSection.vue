@@ -3,6 +3,8 @@ import { computed } from 'vue'
 import ChartCard from './ChartCard.vue'
 import AllocationDonut from './AllocationDonut.vue'
 import AllocationTable from './AllocationTable.vue'
+import SectorTreemap from './SectorTreemap.vue'
+import SectorTreemapTable from './SectorTreemapTable.vue'
 import { useAllocationsQuery } from '@/composables/useAllocations'
 import { instrumentDonutRows, sectorDonutRows } from '@/charts/donuts'
 import { formatDate } from '@/lib/format'
@@ -76,6 +78,28 @@ const asOfLabel = computed(() =>
           <AllocationTable :rows="sectorRows" />
         </template>
       </ChartCard>
+
+      <!--
+        The treemap spans both columns: it needs the width to keep tiles square
+        enough to hold their labels, and it is the only view showing which
+        holdings sit inside which sector.
+      -->
+      <div class="md:col-span-2">
+        <ChartCard title="Sector breakdown">
+          <template #caption>
+            <p>
+              Tile area is market value; a sector's holdings are lighter shades of its
+              color, matching the donut above.
+            </p>
+          </template>
+          <template #chart>
+            <SectorTreemap v-if="allocations" :allocations="allocations" />
+          </template>
+          <template #table>
+            <SectorTreemapTable v-if="allocations" :allocations="allocations" />
+          </template>
+        </ChartCard>
+      </div>
     </div>
   </section>
 </template>

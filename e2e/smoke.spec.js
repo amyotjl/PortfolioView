@@ -10,7 +10,8 @@ import {
 /**
  * The end-to-end smoke path (issue #51):
  *   register with invite code -> create a portfolio -> add a transaction via the
- *   symbol autocomplete -> candlestick renders -> toggle benchmark -> donuts render
+ *   symbol autocomplete -> candlestick renders -> toggle benchmark -> contribution
+ *   area renders -> donuts + sector treemap render
  *
  * Thin by design. It proves the layers are wired together, not that the money math
  * is right — that lives in the Rails Minitest suite (see the testing-conventions
@@ -42,6 +43,30 @@ async function expectChartPainted(locator, name) {
   expect(box, `${name} should have a layout box`).not.toBeNull()
   expect(box.width, `${name} should have width`).toBeGreaterThan(50)
   expect(box.height, `${name} should have height`).toBeGreaterThan(50)
+}
+
+/**
+ * A ChartCard's own <section> root, addressed by its heading. `.last()` because a
+ * shared ancestor also matches `section`; taking the innermost keeps the card's
+ * Chart/Table buttons unambiguous.
+ */
+function chartCard(scope, page, heading) {
+  return scope
+    .locator('section')
+    .filter({ has: page.getByRole('heading', { name: heading }) })
+    .last()
+}
+
+/**
+ * Assert a named card's canvas is painted, scoped to the card rather than to a
+ * global nth() index — adding a chart to the dashboard must not silently shift
+ * which chart another assertion was checking.
+ */
+async function expectCardChartPainted(scope, page, heading) {
+  const card = chartCard(scope, page, heading)
+  await expect(card.getByRole('heading', { name: heading })).toBeVisible()
+  await expectChartPainted(card.locator('[_echarts_instance_] canvas').first(), heading)
+  return card
 }
 
 test.describe('smoke: register -> portfolio -> transaction -> dashboard', () => {
@@ -168,14 +193,11 @@ test.describe('smoke: register -> portfolio -> transaction -> dashboard', () => 
     // Scope to the ChartCard's own <section> root. Filtering on `div` instead would
     // also match a shared ancestor holding several cards, making the nested
     // Chart/Table buttons ambiguous.
-    const chartCard = page
-      .locator('section')
-      .filter({ has: page.getByRole('heading', { name: 'Value, cash flow & drawdown' }) })
-      .last()
-    await chartCard.getByRole('button', { name: 'Table' }).click()
+    const mainCard = chartCard(page, page, 'Value, cash flow & drawdown')
+    await mainCard.getByRole('button', { name: 'Table' }).click()
     await expect(page.getByRole('table').first()).toBeVisible()
     await expect(page.getByRole('row').nth(1)).toBeVisible()
-    await chartCard.getByRole('button', { name: 'Chart' }).click()
+    await mainCard.getByRole('button', { name: 'Chart' }).click()
 
     // --- 5. Benchmark toggle shows the benchmark line ----------------------
     const benchmarkSwitch = page.getByRole('switch', { name: 'Compare to benchmark' })
@@ -200,28 +222,57 @@ test.describe('smoke: register -> portfolio -> transaction -> dashboard', () => 
     expect(candles.benchmark.values.length, 'benchmark should have points').toBeGreaterThan(0)
     await expectChartPainted(mainChart, 'main chart after benchmark toggle')
 
-    // --- 6. Allocation donuts render ---------------------------------------
+    // --- 6. Contribution-vs-growth area renders (#52) -----------------------
+    // Painted height is the whole point of asserting this here: the zero-height
+    // trap (vue-echarts' unlayered `height:100%` beating a Tailwind utility) is
+    // invisible to Vitest and to the Rails suite, and it is exactly how every
+    // chart shipped broken from M6 until #51 caught it.
+    const contributionCard = await expectCardChartPainted(
+      page,
+      page,
+      'Contributed capital vs growth',
+    )
+
+    // The table twin proves the DERIVATION ran, not just that a canvas exists.
+    await contributionCard.getByRole('button', { name: 'Table' }).click()
+    await expect(
+      contributionCard.getByRole('columnheader', { name: 'Contributed capital' }),
+    ).toBeVisible()
+    await expect(contributionCard.getByRole('columnheader', { name: 'Growth' })).toBeVisible()
+    await expect(contributionCard.getByRole('row').nth(1)).toBeVisible()
+    await contributionCard.getByRole('button', { name: 'Chart' }).click()
+
+    // --- 7. Allocation donuts + sector treemap render ----------------------
     const allocation = page.getByRole('region', { name: 'Allocation' })
     await expect(allocation).toBeVisible()
-    await expect(allocation.getByRole('heading', { name: 'By instrument' })).toBeVisible()
-    await expect(allocation.getByRole('heading', { name: 'By sector' })).toBeVisible()
 
-    // Three ECharts instances on the dashboard: the linked chart + both donuts.
-    await expect(page.locator('[_echarts_instance_]')).toHaveCount(3)
-    const donuts = page.locator('[_echarts_instance_] canvas')
-    await expectChartPainted(donuts.nth(1), 'by-instrument donut')
-    await expectChartPainted(donuts.nth(2), 'by-sector donut')
+    // Scoped per card, so a future chart can be added without renumbering these.
+    const instrumentCard = await expectCardChartPainted(allocation, page, 'By instrument')
+    await expectCardChartPainted(allocation, page, 'By sector')
+    const treemapCard = await expectCardChartPainted(allocation, page, 'Sector breakdown')
+
+    // Five ECharts instances: linked chart + contribution area + 2 donuts + treemap.
+    await expect(page.locator('[_echarts_instance_]')).toHaveCount(5)
 
     // Both tickers should appear in the by-instrument breakdown's table twin.
-    const instrumentCard = allocation
-      .locator('section')
-      .filter({ has: page.getByRole('heading', { name: 'By instrument' }) })
-      .last()
+    // Scoped to the CARD, not to the Allocation region: ChartCard keeps both slots
+    // mounted (v-show), so the treemap's twin also holds an "AAPL" cell and a
+    // region-wide getByText is a strict-mode violation.
     await instrumentCard.getByRole('button', { name: 'Table' }).click()
-    await expect(allocation.getByText('AAPL')).toBeVisible()
-    await expect(allocation.getByText('MSFT')).toBeVisible()
+    await expect(instrumentCard.getByRole('cell', { name: 'AAPL' })).toBeVisible()
+    await expect(instrumentCard.getByRole('cell', { name: 'MSFT' })).toBeVisible()
 
-    // --- 7. No unexpected API failures or uncaught errors ------------------
+    // The treemap's twin carries the HIERARCHY: a sector row plus its holdings.
+    // "ETF / Fund" is the label a sector-less instrument buckets under, and the
+    // seeded holdings are plain equities, so assert on a real sector row instead.
+    await treemapCard.getByRole('button', { name: 'Table' }).click()
+    await expect(
+      treemapCard.getByRole('columnheader', { name: 'Sector / holding' }),
+    ).toBeVisible()
+    await expect(treemapCard.getByRole('rowheader')).not.toHaveCount(0)
+    await expect(treemapCard.getByRole('cell', { name: 'AAPL' })).toBeVisible()
+
+    // --- 8. No unexpected API failures or uncaught errors ------------------
     expect(failures, `unexpected failures during the journey:\n${failures.join('\n')}`).toEqual([])
   })
 })
