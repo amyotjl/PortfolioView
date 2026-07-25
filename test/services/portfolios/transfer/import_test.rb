@@ -412,7 +412,7 @@ module Portfolios
         rule = @user.portfolios.sole.recurring_transactions.sole
         assert_operator rule.next_run_on, :>=, Trading::Calendar.today,
                         "an import must not schedule months of back-materialization"
-        assert result.portfolios.first.warnings.any? { |w| w.include?("next run moved from 2020-02-15") },
+        assert result.portfolios.first.warnings.any? { |w| w.include?("next run is moved from 2020-02-15") },
                "silently moving the schedule would misrepresent the file"
       end
 
@@ -451,6 +451,30 @@ module Portfolios
 
         assert_no_enqueued_jobs only: [ Prices::BackfillInstrumentJob, Instruments::MetadataJob ] do
           import(doc, dry_run: true)
+        end
+      end
+
+      test "no warning claims a completed write, because previews reuse these strings" do
+        # Caught on screen, not by an assertion: the preview showed "so this one
+        # WAS IMPORTED as ..." for a rename, telling users their data had already
+        # been written when nothing had. The same strings serve both modes, so the
+        # wording must stay tense-neutral.
+        create_portfolio(name: "Retirement", user: @user)
+        ListedInstrument.create!(symbol: "AAPL", exchange: "NASDAQ", currency: "USD", asset_type: "Stock")
+
+        doc = document(instruments: [ instrument_spec("AAPL") ], portfolios: [
+          portfolio_spec("Retirement", benchmark: "Nikkei 225 (EWJ)",
+                         transactions: [ transaction_spec("AAPL", recurring_key: "gone") ],
+                         recurring: [ recurring_spec("AAPL", anchor_on: Date.new(2020, 1, 15),
+                                                     next_run_on: Date.new(2020, 2, 15)) ])
+        ])
+
+        warnings = import(doc, dry_run: true).portfolios.flat_map(&:warnings)
+
+        assert_not_empty warnings, "this fixture must actually produce warnings or the test is vacuous"
+        warnings.each do |warning|
+          assert_no_match(/\b(was|were)\s+imported\b/i, warning,
+                          "a preview must not claim the write already happened: #{warning.inspect}")
         end
       end
 

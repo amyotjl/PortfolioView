@@ -291,6 +291,11 @@ export const paginatorPt: PaginatorPassThroughOptions = {
  *
  * `warn` is not under that restriction and is used for a genuinely
  * needs-attention state (a paused recurring rule).
+ *
+ * `danger` (added for #64's import report) is the same carve-out toastPt already
+ * takes: it marks an OPERATION THAT FAILED, not a value that went down, so it
+ * doesn't create the false "red number = loss" association the rule protects.
+ * Every pill still carries its own text, so none of this rests on color alone.
  */
 export const tagPt: TagPassThroughOptions = {
   root: ({ props }) => {
@@ -298,6 +303,7 @@ export const tagPt: TagPassThroughOptions = {
       'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold uppercase tracking-wide'
     if (props.severity === 'info') return `${base} bg-accent-soft text-accent`
     if (props.severity === 'warn') return `${base} bg-warn-soft text-warn`
+    if (props.severity === 'danger') return `${base} bg-down/10 text-down`
     return `${base} border border-line-strong bg-panel-hi text-ink-muted`
   },
   label: 'leading-none',

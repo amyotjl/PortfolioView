@@ -3,8 +3,14 @@ import {
   allocationsResponseSchema,
   candlesResponseSchema,
   errorEnvelopeSchema,
+  formatLabel,
+  HOLDINGS_CSV_FORMAT,
+  importReportSchema,
+  importResponseSchema,
   instrumentSearchResultSchema,
   instrumentSearchSchema,
+  MAX_IMPORT_BYTES,
+  NATIVE_FORMAT,
   parseResponse,
   SchemaValidationError,
   summaryResponseSchema,
@@ -132,5 +138,93 @@ describe('API contract schemas (docs/API_SHAPES.md)', () => {
     expect(() =>
       parseResponse(summaryResponseSchema, { summary: { current_value: '1.00' } }, 'GET /summary'),
     ).toThrow(SchemaValidationError)
+  })
+
+  // --- Export / import (#64) ---
+
+  it('parses the WRAPPED import report with its per-portfolio rows', () => {
+    const payload = {
+      import: {
+        format: 'wealthsimple.holdings',
+        dry_run: false,
+        totals: {
+          portfolios_created: 2,
+          portfolios_skipped: 0,
+          portfolios_failed: 1,
+          transactions_created: 11,
+          recurring_created: 0,
+        },
+        warnings: ['A holdings report has no trade history…'],
+        portfolios: [
+          {
+            name: 'TFSA',
+            imported_as: 'TFSA (imported)',
+            status: 'renamed',
+            transactions_created: 8,
+            recurring_created: 0,
+            errors: [],
+            warnings: ['A portfolio named “TFSA” already exists…'],
+          },
+          {
+            name: 'Bad',
+            imported_as: null,
+            status: 'failed',
+            transactions_created: 0,
+            recurring_created: 0,
+            errors: ['Transaction 2 (sell AAPL on 2024-02-05) could not be imported: …'],
+            warnings: [],
+          },
+        ],
+      },
+    }
+
+    const parsed = parseResponse(importResponseSchema, payload, 'POST /portfolios/import')
+
+    expect(parsed.import.totals.portfolios_failed).toBe(1)
+    expect(parsed.import.portfolios[0].imported_as).toBe('TFSA (imported)')
+    expect(parsed.import.portfolios[1].imported_as).toBeNull()
+    expect(parsed.import.portfolios[1].errors).toHaveLength(1)
+  })
+
+  it('accepts a status this build does not know rather than blanking the dialog', () => {
+    // `status` is deliberately z.string(), not z.enum: in dev a schema failure
+    // THROWS, so enumerating statuses would turn a newer backend into a broken
+    // import dialog instead of a slightly-generic label.
+    const parsed = importReportSchema.parse({
+      format: 'portfolioview.portfolios',
+      dry_run: true,
+      totals: {
+        portfolios_created: 0,
+        portfolios_skipped: 0,
+        portfolios_failed: 0,
+        transactions_created: 0,
+        recurring_created: 0,
+      },
+      warnings: [],
+      portfolios: [
+        {
+          name: 'X',
+          imported_as: null,
+          status: 'quarantined',
+          transactions_created: 0,
+          recurring_created: 0,
+          errors: [],
+          warnings: [],
+        },
+      ],
+    })
+
+    expect(parsed.portfolios[0].status).toBe('quarantined')
+  })
+
+  it('labels both import formats and passes an unknown one through', () => {
+    expect(formatLabel(NATIVE_FORMAT)).toBe('PortfolioView export')
+    expect(formatLabel(HOLDINGS_CSV_FORMAT)).toBe('Broker holdings report')
+    expect(formatLabel('something.new')).toBe('something.new')
+  })
+
+  it('keeps the client-side upload cap in step with the server', () => {
+    // Portfolios::Transfer::MAX_FILE_BYTES
+    expect(MAX_IMPORT_BYTES).toBe(8 * 1024 * 1024)
   })
 })

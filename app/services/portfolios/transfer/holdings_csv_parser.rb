@@ -102,8 +102,11 @@ module Portfolios
 
       # The single most important thing a user must know about this import, so it
       # is stated first and unhedged rather than left to the class comment.
+      #
+      # Wording here is TENSE-NEUTRAL: the same strings are shown for a dry run,
+      # where nothing has been written yet.
       def synthesized_history_warning(as_of)
-        "A holdings report has no trade history, so each position was imported as one opening buy " \
+        "A holdings report has no trade history, so each position becomes one opening buy " \
         "dated #{as_of.iso8601} priced at its book value per share. Total cost basis is preserved, " \
         "but purchase dates and individual lots are not — charts before #{as_of.iso8601} will be empty."
       end
@@ -113,8 +116,9 @@ module Portfolios
       # that are actually actionable.
       def requalified_warning(requalified)
         pairs = requalified.sort.map { |raw, qualified| "#{raw} → #{qualified}" }.join(", ")
-        "#{requalified.size} non-US #{'listing'.pluralize(requalified.size)} were venue-suffixed so they " \
-        "cannot be confused with the US ticker of the same name (#{pairs}). " \
+        one = requalified.size == 1
+        "#{requalified.size} non-US #{one ? 'listing is' : 'listings are'} " \
+        "venue-suffixed so #{one ? 'it cannot' : 'they cannot'} be confused with the US ticker of the same name (#{pairs}). " \
         "Price history is unavailable for these symbols — the provider directory covers US listings only — " \
         "so their market value will read as zero until a non-US price source is configured."
       end

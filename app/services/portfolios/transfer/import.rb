@@ -103,21 +103,25 @@ module Portfolios
       end
 
       # nil means "skip this portfolio".
+      #
+      # Warning wording is deliberately TENSE-NEUTRAL throughout this class. The
+      # same strings are shown for a dry run, where nothing happened — "was
+      # imported as" told preview users their data had already been written.
       def target_name(name, claimed, warnings)
         return name unless name_taken?(name, claimed)
 
         if @on_conflict == "skip"
-          warnings << "A portfolio named “#{name}” already exists; skipped."
+          warnings << "A portfolio named “#{name}” already exists, so this one is skipped."
           return nil
         end
 
         available = next_available_name(name, claimed)
         if available.nil?
-          warnings << "A portfolio named “#{name}” already exists and no free variant of that name was available; skipped."
+          warnings << "A portfolio named “#{name}” already exists and no free variant of that name is available, so this one is skipped."
           return nil
         end
 
-        warnings << "A portfolio named “#{name}” already exists, so this one was imported as “#{available}”."
+        warnings << "A portfolio named “#{name}” already exists, so the imported copy is named “#{available}”."
         available
       end
 
@@ -212,7 +216,7 @@ module Portfolios
 
         benchmark = ::Benchmark.find_by(name: benchmark_name)
         if benchmark.nil?
-          warnings << "Benchmark “#{benchmark_name}” doesn’t exist in this database, so the portfolio was imported without one."
+          warnings << "Benchmark “#{benchmark_name}” doesn’t exist in this database, so the imported portfolio has no benchmark."
         end
         benchmark
       end
@@ -243,7 +247,7 @@ module Portfolios
           # import can't trigger months of surprise back-materialization. Say so:
           # the file's value was not honored verbatim.
           if rule_spec.next_run_on && rule.next_run_on != rule_spec.next_run_on
-            warnings << "Recurring rule for #{rule_spec.symbol}: next run moved from " \
+            warnings << "Recurring rule for #{rule_spec.symbol}: next run is moved from " \
                         "#{rule_spec.next_run_on.iso8601} to #{rule.next_run_on.iso8601} " \
                         "(a rule may not materialize into the past)."
           end
@@ -269,8 +273,8 @@ module Portfolios
         rule = rules_by_key[tx_spec.recurring_key] if tx_spec.recurring_key
 
         if tx_spec.recurring_key && rule.nil?
-          warnings << "Transaction #{index + 1} (#{tx_spec.symbol}) referenced unknown recurring rule " \
-                      "“#{tx_spec.recurring_key}”; imported as a standalone transaction."
+          warnings << "Transaction #{index + 1} (#{tx_spec.symbol}) references unknown recurring rule " \
+                      "“#{tx_spec.recurring_key}”, so it is imported as a standalone transaction."
         end
 
         transaction = portfolio.transactions.new(

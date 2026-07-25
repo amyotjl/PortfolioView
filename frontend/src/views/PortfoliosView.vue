@@ -3,8 +3,11 @@ import { computed, shallowRef } from 'vue'
 import Button from 'primevue/button'
 import PortfolioCard from '@/components/portfolios/PortfolioCard.vue'
 import PortfolioFormDialog from '@/components/portfolios/PortfolioFormDialog.vue'
+import PortfolioImportDialog from '@/components/portfolios/PortfolioImportDialog.vue'
 import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
+import FormAlert from '@/components/ui/FormAlert.vue'
 import { usePortfoliosQuery, useDeletePortfolio } from '@/composables/usePortfolios'
+import { useExportPortfolios } from '@/composables/usePortfolioTransfer'
 import { useBenchmarksQuery, benchmarkLabel } from '@/composables/useBenchmarks'
 import { mapApiError } from '@/lib/formErrors'
 import { buttonPt } from '@/primevue/pt'
@@ -63,6 +66,24 @@ async function confirmDelete() {
     deleteError.value = mapApiError(err, []).formMessage ?? 'Could not delete the portfolio.'
   }
 }
+
+// --- Export / import (#64) ---
+const importVisible = shallowRef(false)
+const exportMutation = useExportPortfolios()
+const exportError = shallowRef<string | null>(null)
+const exportPending = computed(() => exportMutation.isLoading.value)
+
+async function exportAll() {
+  exportError.value = null
+  try {
+    // No argument: export every portfolio. The file downloads via the same
+    // authenticated fetch client as every other call, so a 401 still routes to
+    // /login instead of saving an error envelope to disk.
+    await exportMutation.mutateAsync(undefined)
+  } catch (err) {
+    exportError.value = mapApiError(err, []).formMessage ?? 'Could not export your portfolios.'
+  }
+}
 </script>
 
 <template>
@@ -72,8 +93,20 @@ async function confirmDelete() {
         <h1 class="text-xl font-semibold tracking-tight text-ink">Portfolios</h1>
         <p class="mt-1 text-sm text-ink-muted">Your portfolios, with value sparklines.</p>
       </div>
-      <Button label="New portfolio" :pt="buttonPt" @click="openCreate" />
+      <div class="flex shrink-0 items-center gap-2">
+        <Button
+          :label="exportPending ? 'Exporting…' : 'Export'"
+          severity="secondary"
+          :disabled="exportPending || portfolios.length === 0"
+          :pt="buttonPt"
+          @click="exportAll"
+        />
+        <Button label="Import" severity="secondary" :pt="buttonPt" @click="importVisible = true" />
+        <Button label="New portfolio" :pt="buttonPt" @click="openCreate" />
+      </div>
     </header>
+
+    <FormAlert v-if="exportError" :message="exportError" class="mb-4" />
 
     <!-- Loading -->
     <div v-if="status === 'pending'" class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -103,9 +136,15 @@ async function confirmDelete() {
     >
       <h2 class="text-base font-semibold text-ink">No portfolios yet</h2>
       <p class="mx-auto mt-1 max-w-sm text-sm text-ink-muted">
-        Create your first portfolio to start tracking holdings, transactions, and performance.
+        Create your first portfolio to start tracking holdings, transactions, and performance — or
+        import an existing export or broker holdings report.
       </p>
-      <Button label="New portfolio" class="mt-5" :pt="buttonPt" @click="openCreate" />
+      <div class="mt-5 flex flex-wrap items-center justify-center gap-2">
+        <Button label="New portfolio" :pt="buttonPt" @click="openCreate" />
+        <!-- An empty account is precisely the "rebuilding the database" case this
+             feature exists for, so import is offered here too, not only in the header. -->
+        <Button label="Import" severity="secondary" :pt="buttonPt" @click="importVisible = true" />
+      </div>
     </div>
 
     <!-- List -->
@@ -121,6 +160,8 @@ async function confirmDelete() {
     </div>
 
     <PortfolioFormDialog v-model:visible="dialogVisible" :portfolio="editingPortfolio" />
+
+    <PortfolioImportDialog v-model:visible="importVisible" />
 
     <ConfirmDialog
       v-model:visible="confirmVisible"
