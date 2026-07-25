@@ -1,8 +1,8 @@
 # Status (living document)
 
-Last verified: 2026-07-24. M6 fully merged and its milestone closed (dashboard chart, stat
-tiles, allocation donuts — the core candlestick feature). The M4 follow-up fixes (#59/#60)
-are still in flight in an isolated worktree.
+Last verified: 2026-07-24. M0–M6 all merged and closed. The M4 follow-up defects (#59/#60)
+are fixed and merged, so **M4 is now complete with no open defects**. Next up is M7
+(transaction/recurring UIs, #49–51, with #63 folded in).
 
 **Keep this current.** Whoever closes an issue or a milestone updates the tables below in
 the same session — this file exists so a future agent doesn't have to re-run `gh issue list`
@@ -17,7 +17,7 @@ acceptance-criteria text.
 | M1 | Auth + schema | Auth generator, invite-gated registration, full schema, benchmark seeds | ✅ closed (#5–10) |
 | M2 | Price pipeline | Tiingo/TwelveData/FMP adapters, backfill/sync jobs, directory import, budget breakers | ✅ closed (#11–21) — verified against real Tiingo/FMP keys, including the real AAPL 2020-08-31 4:1 split |
 | M3 | Domain services | Holdings calculator, position validator, valuation, benchmark simulation, recurring materializer | ✅ closed (#22–28) |
-| M4 | API | Full REST API, error envelope, CSRF, caching, contract test suite | ✅ closed except 2 tracked defects — #29–39 closed; **#59, #60 open**, fix committed on branch `fixes/059-060`, tester verifying |
+| M4 | API | Full REST API, error envelope, CSRF, caching, contract test suite | ✅ closed (#29–39, plus follow-up defects #59/#60 fixed and merged) |
 | M5 | Frontend shell + auth + portfolios | Router/Pinia/PrimeVue shell, zod schemas, auth pages, portfolios CRUD, Vitest harness | ✅ closed (#40–44) |
 | M6 | Dashboard | Candlestick + cash-flow + drawdown linked chart, stat tiles, allocation donuts | ✅ closed (#45–48) |
 | M7 | Transaction/recurring UIs | Transaction form drawer, recurring-transactions page, Playwright e2e smoke | ⬜ not started (#49–51) — **#63** (name enrichment) folded in |
@@ -36,10 +36,20 @@ acceptance-criteria text.
 
 | Issue | Milestone | What | Status |
 |---|---|---|---|
-| [#59](https://github.com/amyotjl/PortfolioView/issues/59) | M4 | Unmatched `/api/*` non-GET without a CSRF token returns 422 HTML in dev instead of the 404 JSON envelope (CSRF verification runs before `ErrorsController` renders) | Fix committed on `fixes/059-060` (`skip_forgery_protection` on `ErrorsController` only, real endpoints unaffected — `CsrfPairContractTest` still passes); tester gate running |
-| [#60](https://github.com/amyotjl/PortfolioView/issues/60) | M4 | Holdings pre-flight with `as_of` before the calendar's earliest trading day returns the *current* position instead of zero (`\|\| last_day` fallback bug in `HoldingsController#shares_as_of`) | Fix committed on `fixes/059-060` (fallback removed, nil → `"0.0"`); tester gate running |
 | [#63](https://github.com/amyotjl/PortfolioView/issues/63) | M7 | `listed_instruments.name` is `null` on 100% of rows — Tiingo's bulk ticker file has no name column (by design in `Directory::ImportJob`); search/autocomplete can only ever match on symbol until enriched | Open, not started. Candidate fix: backfill from `instruments.name` (already fetched via FMP for any symbol the user has touched) without a real-time enrichment call |
 | [#64](https://github.com/amyotjl/PortfolioView/issues/64) | M8 | Export/import portfolios: 2 backend endpoints (download a portfolio file; upload + ingest it), 2 frontend buttons (Export / Import with file dialog), tests | Open, not started. User-filed 2026-07-21, outside the original backlog — decompose into backend/frontend/tester slices when picked up |
+
+### Resolved (kept for traceability — don't reintroduce these)
+- **#59** (M4) — unmatched `/api/*` non-GET returned 422 HTML instead of the 404 JSON
+  envelope. Fixed 2026-07-24 by `skip_forgery_protection` on `ErrorsController` **only**:
+  it inherits `ActionController::Base` directly, so it picked up the framework-default
+  forgery protection that `ApplicationController` configures separately. That skip is
+  load-bearing — removing it reintroduces the 422. Real endpoints are unaffected
+  (`CsrfPairContractTest` locks this).
+- **#60** (M4) — holdings pre-flight with an `as_of` before the calendar's earliest trading
+  day returned the *current* position. Fixed 2026-07-24 by removing the `|| last_day`
+  fallback in `HoldingsController#shares_as_of`; `nil` is a genuine zero position and the
+  existing guard already renders `"0.0"`. Don't "restore" the fallback — it's the bug.
 
 ## GitHub issue numbering
 Backlog file number + 4 = issue number (e.g. backlog `034` → `#38`). Issues #1–4 predate
