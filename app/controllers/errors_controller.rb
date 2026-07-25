@@ -14,6 +14,13 @@
 class ErrorsController < ActionController::Base
   include ErrorRendering
 
+  # This renderer is read-only and mutates nothing, so CSRF adds no protection
+  # here. The skip is also load-bearing: inheriting ActionController::Base brings
+  # the framework-default forgery protection along, so without it a token-less
+  # non-GET to the /api/* catch-all (#not_found) raises InvalidAuthenticityToken
+  # and surfaces as 422 (HTML in dev) instead of the intended 404 envelope (#59).
+  skip_forgery_protection
+
   # Stable, UTF-8 envelope codes per status. Built by hand rather than derived
   # from Rack::Utils::HTTP_STATUS_CODES via #parameterize: those reason strings
   # are ASCII-8BIT and transliteration raises on binary-encoded input.

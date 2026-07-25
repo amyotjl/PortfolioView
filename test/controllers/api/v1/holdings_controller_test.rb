@@ -123,6 +123,22 @@ module Api
         assert_equal "0.0", JSON.parse(response.body).dig("holding", "shares")
       end
 
+      # #60: an as_of before the calendar's earliest trading day has no day
+      # on/before it, so the position is genuinely zero — it must NOT fall back
+      # to the latest trading day and report the current position.
+      test "an as_of before the earliest trading day reads zero shares, not the current position" do
+        create_trading_days(Date.new(2024, 1, 1), Date.new(2024, 1, 31))
+        buy!(@portfolio, @aapl, on: Date.new(2024, 1, 5), shares: 8, price: 100)
+
+        get api_v1_portfolio_holdings_path(@portfolio),
+          params: { instrument_id: @aapl.id, as_of: "2020-01-01" }
+
+        assert_response :ok
+        holding = JSON.parse(response.body).fetch("holding")
+        assert_equal "2020-01-01", holding["as_of"], "echoes the requested as_of"
+        assert_equal "0.0", holding["shares"], "no trading day on/before as_of -> zero position"
+      end
+
       # --- Param validation ---
 
       test "a missing instrument_id answers 422 mapped onto the field" do
