@@ -75,8 +75,34 @@ describe('deriveContributions', () => {
     // not present its partial flow history as if it were lifetime contributions.
     const { points } = deriveContributions(payload())
     expect(points[0].contributedCents).toBe(100_000)
-    // Day one's growth is exactly day one's gain (close - open).
+    // Day one's growth is exactly day one's mark-to-market move (close - open).
     expect(points[0].growthCents).toBe(105_000 - 100_000)
+  })
+
+  it('does NOT re-add a flow the opening value already contains', () => {
+    // REGRESSION (found by looking at the rendered chart, not by a fixture): a
+    // candle's `o` is that date's END-OF-DAY shares at the day's opening price
+    // (Portfolios::Valuation), so it already reflects trades dated on or before
+    // the first candle. Adding day one's flow on top double-counts the purchase
+    // and paints a shortfall band that is not in the data.
+    const { baseCents, points } = deriveContributions(
+      payload({ flows: [flow('2026-01-05', '900.00'), flow('2026-01-07', '500.00')] }),
+    )
+
+    expect(baseCents).toBe(100_000)
+    expect(points[0].contributedCents).toBe(100_000) // NOT 190_000
+    expect(points[0].growthCents).toBe(5_000) // a gain, not a phantom shortfall
+    // The later flow still lands normally.
+    expect(points[2].contributedCents).toBe(150_000)
+  })
+
+  it('discards a flow dated BEFORE the window as well — also already in the open', () => {
+    const { points } = deriveContributions(
+      payload({ flows: [flow('2025-12-30', '5000.00')] }),
+    )
+    expect(points.map((p) => p.contributedCents)).toEqual([
+      100_000, 100_000, 100_000, 100_000, 100_000,
+    ])
   })
 
   it('accrues a flow dated between two candles at the NEXT candle', () => {
@@ -158,6 +184,7 @@ interface OptionShape {
     data: number[]
     lineStyle?: { color?: string; width?: number }
     areaStyle?: { color?: string }
+    itemStyle?: { color?: string }
   }>
   tooltip: { formatter: (p: unknown) => string }
 }
@@ -186,6 +213,18 @@ describe('buildContributionGrowthOption', () => {
     expect(byName.get(CAPITAL_SERIES)?.areaStyle?.color).toBe(theme.capital)
     expect(byName.get(GAIN_SERIES)?.areaStyle?.color).toBe(theme.up)
     expect(byName.get(SHORTFALL_SERIES)?.areaStyle?.color).toBe(theme.down)
+  })
+
+  it('gives every band an itemStyle so the LEGEND marker matches its fill', () => {
+    // REGRESSION: ECharts draws legend markers from itemStyle, not areaStyle. With
+    // itemStyle unset it substituted its own default palette and the swatches came
+    // out blue/green/yellow — mislabelling the very bands they identify.
+    const byName = new Map(build().series.map((s) => [s.name, s]))
+    for (const name of [CAPITAL_SERIES, GAIN_SERIES, SHORTFALL_SERIES]) {
+      const series = byName.get(name)
+      expect(series?.itemStyle?.color, name).toBe(series?.areaStyle?.color)
+    }
+    expect(byName.get(VALUE_SERIES)?.itemStyle?.color).toBe(theme.ink)
   })
 
   it('draws each band edge in the SURFACE color — the 2px gap between fills', () => {

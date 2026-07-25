@@ -15,13 +15,27 @@
  * contributions the payload doesn't contain, and their cost basis is unknowable
  * from this endpoint.
  *
- * So the contribution baseline is the **window-opening value** (the first candle's
- * open — the value before that day's own trades) and the chart reads as "growth
- * *within the selected range*": on the first day growth is exactly that day's
- * gain, and thereafter growth is every change in value that cash flows do not
- * explain. That is self-consistent at any range, needs no second request, and
- * never presents a partial flow history as if it were a full one. The caller
- * surfaces this in the card caption; `baseCents` is returned so it can.
+ * So the contribution baseline is the **window-opening value**: the first candle's
+ * open. The chart then reads as "growth *within the selected range*" — on the first
+ * day growth is exactly that day's mark-to-market move, and thereafter growth is
+ * every change in value that cash flows do not explain. That is self-consistent at
+ * any range, needs no second request, and never presents a partial flow history as
+ * if it were a full one. The caller surfaces this in the card caption; `baseCents`
+ * is returned so it can.
+ *
+ * WHICH FLOWS THE BASELINE ALREADY CONTAINS (subtle, and it caused a real bug)
+ * ---------------------------------------------------------------------------
+ * A candle's `o` is NOT "the value before that day's trades". Portfolios::Valuation
+ * values each day's END-OF-DAY share count at that day's OPENING price
+ * (app/services/portfolios/valuation.rb — `open += shares * po`, where `shares` is
+ * holdings[date], i.e. after the date's transactions). So the first candle's open
+ * already reflects every trade dated on or before it.
+ *
+ * Therefore only flows dated strictly AFTER the first candle may be added to the
+ * baseline. Adding the first day's flow on top of `o` double-counts that purchase
+ * and invents a shortfall band on day one that is not in the data — which is
+ * exactly what happened, and what a fixture written against the wrong assumption
+ * about `o` could not catch. It took looking at the rendered chart.
  *
  * NEGATIVE GROWTH (the documented rendering choice #52 asks for)
  * -------------------------------------------------------------
@@ -91,6 +105,9 @@ export interface Contributions {
  * itself in the candle list is still counted exactly once, and never dropped.
  * Unparseable money is treated as a zero delta rather than poisoning the running
  * sum with NaN for every later date.
+ *
+ * Flows dated on or before the first candle are DISCARDED, not accumulated: the
+ * baseline already contains them (see the note above).
  */
 export function deriveContributions(payload: CandlesResponse): Contributions {
   const first = payload.candles[0]
@@ -99,6 +116,7 @@ export function deriveContributions(payload: CandlesResponse): Contributions {
   const baseCents = toCents(first.o) ?? 0
 
   const flows = payload.flows
+    .filter((f) => f.t > first.t)
     .map((f) => ({ t: f.t, netCents: toCents(f.net) ?? 0 }))
     .sort((a, b) => (a.t < b.t ? -1 : a.t > b.t ? 1 : 0))
 
@@ -224,6 +242,11 @@ export function buildContributionGrowthOption(
     // Surface-colored 2px edge = the gap between fills (see the note above).
     lineStyle: { width: 2, color: theme.panel },
     areaStyle: { color, opacity: 0.55 },
+    // itemStyle is what the LEGEND marker is drawn from — areaStyle is not. Without
+    // it ECharts falls back to its own default palette, so the swatches came out
+    // blue/green/YELLOW and told the reader nothing about the bands they label.
+    // The legend is load-bearing secondary encoding here; it has to be right.
+    itemStyle: { color },
     emphasis: { disabled: true },
   })
 
