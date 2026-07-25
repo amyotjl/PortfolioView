@@ -1,7 +1,9 @@
 # Status (living document)
 
 Last verified: 2026-07-25. **M0–M7 all merged and closed** (M4's follow-up defects #59/#60
-fixed along the way). Next up is M8 (extra visualizations, #52–53, plus user-filed #64).
+fixed along the way). **M8's two visualizations (#52, #53) are implemented and committed on
+`m8/052-visualizations`, awaiting the tester gate** — not yet merged, so the issues are
+still open. M8's remaining work is #63, #64, #65.
 
 M7 also has an **e2e suite now** (`e2e/`, Playwright) — one command,
 `docker compose --profile e2e run --rm e2e`, against the running dev stack. It has
@@ -27,7 +29,7 @@ acceptance-criteria text.
 | M5 | Frontend shell + auth + portfolios | Router/Pinia/PrimeVue shell, zod schemas, auth pages, portfolios CRUD, Vitest harness | ✅ closed (#40–44) |
 | M6 | Dashboard | Candlestick + cash-flow + drawdown linked chart, stat tiles, allocation donuts | ✅ closed (#45–48) |
 | M7 | Transaction/recurring UIs | Transaction form drawer, recurring-transactions page, Playwright e2e smoke | ✅ closed (#49–51) — **#63** deferred (still open, see below) |
-| M8 | Extra visualizations | Contribution-vs-growth stacked area, sector treemap | ⬜ not started (#52–53) — **#64** (portfolio export/import, user-filed) added |
+| M8 | Extra visualizations | Contribution-vs-growth stacked area, sector treemap | 🟡 in progress — #52/#53 built on `m8/052-visualizations` (all four gates green), **awaiting tester sign-off before merge**; #63, #64, #65 still open |
 | M9 | Local deploy | Production Dockerfile/compose profile, boot catch-up sync, Sync-now button, persistence check | ⬜ not started (#54–58) |
 
 ## Frontend building blocks already in `frontend/src/` (M5+M6 — extend, don't rebuild)
@@ -63,7 +65,24 @@ acceptance-criteria text.
 - **PT presets** added to `primevue/pt.ts`: dataTable, paginator, autoComplete, datePicker,
   drawer, toast, textarea, tag.
 
-## Two traps that have already cost a debugging cycle each — read before touching charts or the shell
+## Frontend building blocks added in M8 (extend, don't rebuild)
+- **`lib/money.ts`** — exact integer-cent arithmetic (`toCents`,
+  `centsToDecimalString`, `centsToDollars`). Use it whenever a money figure is
+  *derived* rather than passed through: `lib/decimal.ts` deliberately only
+  *compares*. Money is 2dp by contract, so cents are lossless.
+- **`charts/contributions.ts`** — the contribution/growth derivation and its
+  stacked-area option. **`charts/treemap.ts`** — the sector hierarchy builder and
+  treemap option. Both pure, both spec'd.
+- **`charts/colors.ts`** gained `relativeLuminance` / `contrastRatio` /
+  `readableInk` — use `readableInk` for any label drawn *inside* a colored fill.
+- **`charts/theme.ts`** gained the `capital` identity token. `up`/`down` remain
+  reserved for data polarity.
+- **`lib/format.ts`** gained `formatCompactCurrency` (moved out of `candles.ts`) —
+  the shared value-axis formatter.
+- Components: `dashboard/ContributionGrowthChart` + `ContributionGrowthTable`,
+  `dashboard/SectorTreemap` + `SectorTreemapTable`.
+
+## Three traps that have already cost a debugging cycle each — read before touching charts or the shell
 - **ECharts height must go on a WRAPPER, never on `<VChart>`.** vue-echarts injects an
   *unlayered* `x-vue-echarts { height: 100% }` rule into `<head>`, and unlayered CSS
   outranks Tailwind's `@layer utilities` — so `class="h-[560px]"` on the component is
@@ -73,6 +92,21 @@ acceptance-criteria text.
   `App.vue` waits for a named route, and `usePortfoliosQuery` is `enabled` only when
   authenticated. Without both, a signed-out load of `/register` fires `/portfolios`, and
   the 401 handler redirects to `/login` — making the register page unreachable by URL.
+- **A candle's `o` is NOT "the value before that day's trades."** `Portfolios::Valuation`
+  values each day's **end-of-day** share count at that day's *opening* price
+  (`open += shares * po`, `shares = holdings[date]`, i.e. after the date's transactions).
+  So the first candle's open already contains every trade dated on or before it, and
+  anything that adds day-one flows to it double-counts them. This shipped a phantom
+  "below contributions" band in #52 and a unit fixture *confirmed* the bug, because the
+  fixture encoded the wrong reading of `o`. If a derivation combines `o` with `flows`,
+  re-read this.
+
+**A related process note, earned twice in M8:** both #52 and #53 passed their unit specs,
+type-check and e2e while still visibly wrong on screen (a double-counted band; ECharts'
+default palette in the legend; an invisible sector header; the series name drawn as a
+header band). **Render a new chart and look at it before calling it done** — a throwaway
+Playwright spec that screenshots the card in both themes takes minutes and caught four
+defects no assertion did.
 
 ## Open tracked defects & enhancements (outside the milestone they surfaced in)
 
@@ -107,6 +141,24 @@ acceptance-criteria text.
 Backlog file number + 4 = issue number (e.g. backlog `034` → `#38`). Issues #1–4 predate
 backlog-driven work and aren't separately tracked.
 
+## M8 design decisions worth not re-litigating
+- **The contribution baseline is the window's opening value**, so the chart reads as growth
+  *within the selected range*. `/candles` returns flows only for the requested range, so a
+  cumulative sum of them is not lifetime contributed capital for any range starting after
+  inception, and the pre-range cost basis is unknowable from that endpoint.
+- **Negative growth renders as a third stacked band**, not a negative value: ECharts stacks
+  negatives downward from zero, which would hang a loss below the axis instead of below the
+  contributions line. Bands are `min(contributed, value)` + `max(0, growth)` +
+  `max(0, -growth)`, with the total-value line plotted separately as the boundary.
+- **The treemap reuses the by_sector donut's ordinal ramp on purpose** — same sector, same
+  color in both allocation views. The usual "no value-ramp on nominal categories" rule is
+  waived because a treemap's layout is itself magnitude-ordered (the same argument
+  `theme.ts` already documents for the donut), and it survives 10+ sectors where the 8-hue
+  categorical ceiling does not.
+- **`/allocations`' `by_instrument[].sector` is a load-bearing join key**, not redundant
+  data — it is the only way the hierarchy is derivable client-side. The contract test
+  asserts it is byte-identical to the matching `by_sector` label.
+
 ## As-built deviations from docs/PLAN.md
 All tester-approved; full detail lives in [docs/API_SHAPES.md](API_SHAPES.md).
 - Benchmark fill = close of the first trading day **on or after** the transaction date (PLAN
@@ -117,6 +169,9 @@ All tester-approved; full detail lives in [docs/API_SHAPES.md](API_SHAPES.md).
 - Pagination meta shape: `{page, per_page, total_count, total_pages}`.
 - `/candles` is a bare top-level object; `/summary` and `/allocations` are wrapped —
   deliberate, see API_SHAPES.md's "Known envelope inconsistency" section.
+- `/allocations`' `by_instrument` slices carry a `sector` label (added in M8 for #53) —
+  PLAN.md only says "by_instrument + by_sector pies", so this is an additive extension,
+  not a deviation.
 - `US_EXCHANGES` recognized for transaction validation: NYSE, NASDAQ, AMEX, NYSE ARCA, NYSE
   MKT, BATS, IEX, CBOE.
 
