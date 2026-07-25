@@ -71,12 +71,21 @@ export function useInstrumentSearch() {
  * which the API answers as 404 `price_unavailable`. Both mean "we have nothing
  * to prefill" — the user types the real fill price, which is what they should
  * enter anyway.
+ *
+ * Returns the WHOLE price row, not just the close. `price.date` is the trading
+ * day the server actually used (<= requested), which is the only signal the
+ * client gets about how far the trading calendar reaches — and the sell
+ * pre-flight needs it to know whether its own answer is current. See
+ * `effectiveDate` handling in TransactionFormDrawer.
  */
 export function useInstrumentPrice() {
   const isLoading = shallowRef(false)
   let controller: AbortController | null = null
 
-  async function fetchClose(instrumentId: number | null, date: string): Promise<string | null> {
+  async function fetchPrice(
+    instrumentId: number | null,
+    date: string,
+  ): Promise<{ close: string; date: string } | null> {
     controller?.abort()
     if (!instrumentId || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return null
 
@@ -90,7 +99,7 @@ export function useInstrumentPrice() {
         signal: current.signal,
       })
       if (controller !== current) return null
-      return data.price.close
+      return { close: data.price.close, date: data.price.date }
     } catch (error) {
       if (error instanceof ApiError && error.code === 'price_unavailable') return null
       return null
@@ -99,7 +108,7 @@ export function useInstrumentPrice() {
     }
   }
 
-  return { isLoading, fetchClose }
+  return { isLoading, fetchPrice }
 }
 
 /**
@@ -111,6 +120,16 @@ export function useInstrumentPrice() {
  * split-adjusted replay across the whole timeline, which also catches backdated
  * edits this single-date check cannot see. A null here must never be read as
  * "the sell is fine".
+ *
+ * IT IS ALSO CALENDAR-QUANTIZED, which the caller has to account for. The
+ * endpoint computes the position at the last trading day <= as_of, but the
+ * server's validator replays by transaction date. So a transaction dated after
+ * the newest cached price — i.e. any trade made before today's close, or on a
+ * weekend — is invisible here: buy 10 shares today, ask for today's position,
+ * and this still answers "0.0". Verified live against the dev stack. Treating
+ * that as a shortfall would fire a false warning in the common case, so the
+ * drawer only asserts a shortfall when the position's effective date matches the
+ * date being sold.
  */
 export function useHoldingPreflight() {
   const isLoading = shallowRef(false)

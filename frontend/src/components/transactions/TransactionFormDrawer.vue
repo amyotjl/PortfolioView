@@ -25,7 +25,7 @@ import {
   type TransactionFormValues,
 } from '@/forms/transaction'
 import { resolveInstrumentId, type InstrumentIdMap } from '@/lib/instrumentIds'
-import { decimalGreaterThan, isDecimalZero } from '@/lib/decimal'
+import { sellPreflightMessage } from '@/lib/decimal'
 import {
   marketClosedNotice,
   todayIso,
@@ -81,12 +81,20 @@ const KIND_OPTIONS = [
 ] as const
 
 const { results: symbolResults, search } = useInstrumentSearch()
-const { fetchClose, isLoading: isPriceLoading } = useInstrumentPrice()
+const { fetchPrice, isLoading: isPriceLoading } = useInstrumentPrice()
 const { fetchShares, isLoading: isPreflightLoading } = useHoldingPreflight()
 
 const formError = shallowRef<string | null>(null)
 /** Shares held at the chosen date, or null when unknown/not applicable. */
 const heldShares = shallowRef<string | null>(null)
+/**
+ * The trading day the server actually priced against (<= the chosen date), taken
+ * from the price lookup. It is the only signal we get for how far the trading
+ * calendar reaches, and the sell pre-flight is quantized to the same day — so
+ * when this lags the chosen date, the position figure cannot see transactions in
+ * between and must not be reported as a shortfall.
+ */
+const effectiveDate = shallowRef<string | null>(null)
 
 /**
  * The explicit generic matters: `transactionFormSchema` carries zod transforms
@@ -125,22 +133,23 @@ const resolvedInstrumentId = computed(() =>
 )
 
 /**
- * Advisory sell warning. Fires only when we actually know the position and the
- * requested shares exceed it — compared as decimal STRINGS, never floats
- * (lib/decimal.ts). The server's replay stays authoritative; a silent null here
- * must not read as approval, which is why the copy below says "may".
+ * Advisory sell warning — the copy (and its stale-position branch) lives in
+ * lib/decimal.ts so it can be unit-tested. Compared as decimal STRINGS, never
+ * floats. The server's replay stays authoritative; a null here must not be read
+ * as approval.
  */
 const sellWarning = computed<string | null>(() => {
   if (values.side !== 'sell') return null
   const held = heldShares.value
-  const wanted = values.shares
-  if (!held || !wanted) return null
-  if (!decimalGreaterThan(wanted, held)) return null
+  if (!held) return null
 
-  const position = isDecimalZero(held)
-    ? 'no shares'
-    : `${held} share${held === '1' ? '' : 's'}`
-  return `This portfolio holds ${position} of ${values.symbol} on ${values.executed_on}. Selling ${wanted} may be rejected — short positions are not allowed.`
+  return sellPreflightMessage({
+    symbol: values.symbol,
+    requestedShares: values.shares,
+    heldShares: held,
+    on: values.executed_on,
+    effectiveOn: effectiveDate.value,
+  })
 })
 
 const estimatedTotal = computed<string | null>(() => {
@@ -161,6 +170,7 @@ watch(visible, (open) => {
   if (!open) return
   formError.value = null
   heldShares.value = null
+  effectiveDate.value = null
   symbolResults.value = []
 
   resetForm({
@@ -182,23 +192,35 @@ watch(visible, (open) => {
 // --- Reactive lookups --------------------------------------------------------
 
 /**
- * Prefill the cached close when symbol+date are both set — but never clobber a
- * price the user has already typed, and never on the edit form's initial seed
- * (an existing transaction's recorded price is the truth, not today's close).
+ * Look up the cached close when symbol+date are both set.
+ *
+ * The lookup runs even when we will NOT overwrite the price field, because its
+ * response also carries the effective trading day the sell pre-flight needs. Only
+ * the assignment to `price` is conditional: never clobber a price the user typed,
+ * and never overwrite an existing transaction's recorded price (which is the
+ * truth, not today's close).
  */
 watch(
   () => [values.symbol, values.executed_on] as const,
   async ([nextSymbol, nextDate], previous) => {
-    if (!visible.value || !nextSymbol || !nextDate) return
-    // Skip the seed pass, where `previous` is undefined.
+    if (!visible.value || !nextSymbol || !nextDate) {
+      effectiveDate.value = null
+      return
+    }
+
+    const result = await fetchPrice(resolvedInstrumentId.value, nextDate)
+    effectiveDate.value = result?.date ?? null
+    if (!result) return
+
+    // `previous` is undefined on the seed pass — don't prefill over seeded values.
     if (!previous) return
-    const userTypedPrice = Boolean(values.price) && values.price !== ''
+    const userTypedPrice = Boolean(values.price)
     const symbolChanged = previous[0] !== nextSymbol
     if (userTypedPrice && !symbolChanged) return
 
-    const close = await fetchClose(resolvedInstrumentId.value, nextDate)
-    if (close) price.value = close
+    price.value = result.close
   },
+  { immediate: true },
 )
 
 /** Refresh the sell pre-flight whenever the side, symbol or date changes. */

@@ -67,3 +67,41 @@ export function isDecimalZero(value: string): boolean {
   if (!split) return false
   return !/[1-9]/.test(split[0] + split[1])
 }
+
+/**
+ * Copy for the transaction drawer's advisory sell pre-flight, extracted as a pure
+ * function so its two branches are unit-testable.
+ *
+ * `/holdings` reports the position at the last trading day <= the requested date,
+ * but the server validates by transaction date. `effectiveOn` is that trading day
+ * (learned from the price lookup, which echoes the day it used):
+ *
+ *  - `effectiveOn === on` — the figure is current for the date being sold, so
+ *    state the shortfall and that the sell may be rejected.
+ *  - `effectiveOn` lags (or is unknown) — trades made since that close are
+ *    invisible to the check, so attribute the number to its real date and claim
+ *    nothing about rejection. Verified live: buying 10 shares dated after the
+ *    newest cached close and immediately querying that date still reports "0.0",
+ *    so asserting a shortfall there would be a false alarm.
+ *
+ * Returns null when there is nothing to warn about — including whenever either
+ * decimal is unparseable, since `decimalGreaterThan` is false in that case.
+ */
+export function sellPreflightMessage(options: {
+  symbol: string
+  requestedShares: string
+  heldShares: string
+  on: string
+  effectiveOn: string | null
+}): string | null {
+  const { symbol, requestedShares, heldShares, on, effectiveOn } = options
+  if (!symbol || !requestedShares || !heldShares || !on) return null
+  if (!decimalGreaterThan(requestedShares, heldShares)) return null
+
+  const position = isDecimalZero(heldShares) ? 'no shares' : `${heldShares} shares`
+
+  if (effectiveOn && effectiveOn !== on) {
+    return `As of ${effectiveOn} (the latest close on file) this portfolio held ${position} of ${symbol}. Any trades since then aren’t reflected here — the server checks the full history when you save.`
+  }
+  return `This portfolio holds ${position} of ${symbol} on ${on}. Selling ${requestedShares} may be rejected — short positions are not allowed.`
+}

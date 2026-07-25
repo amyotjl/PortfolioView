@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { compareDecimal, decimalGreaterThan, isDecimalZero } from './decimal'
+import {
+  compareDecimal,
+  decimalGreaterThan,
+  isDecimalZero,
+  sellPreflightMessage,
+} from './decimal'
 
 describe('compareDecimal', () => {
   it('orders by integer magnitude regardless of digit count', () => {
@@ -73,5 +78,72 @@ describe('isDecimalZero', () => {
   it('is false for unparseable input rather than defaulting to zero', () => {
     expect(isDecimalZero('abc')).toBe(false)
     expect(isDecimalZero('')).toBe(false)
+  })
+})
+
+describe('sellPreflightMessage', () => {
+  const base = {
+    symbol: 'AAPL',
+    requestedShares: '10',
+    heldShares: '4',
+    on: '2026-07-20',
+    effectiveOn: '2026-07-20',
+  }
+
+  it('is null when the position covers the sell', () => {
+    expect(sellPreflightMessage({ ...base, requestedShares: '4' })).toBeNull()
+    expect(sellPreflightMessage({ ...base, requestedShares: '3' })).toBeNull()
+    expect(sellPreflightMessage({ ...base, requestedShares: '4.0', heldShares: '4' })).toBeNull()
+  })
+
+  it('warns about rejection when the position is current for that date', () => {
+    const message = sellPreflightMessage(base) ?? ''
+    expect(message).toContain('holds 4 shares of AAPL on 2026-07-20')
+    expect(message).toContain('may be rejected')
+  })
+
+  it('says "no shares" rather than "0 shares" for a flat position', () => {
+    const message = sellPreflightMessage({ ...base, heldShares: '0.0' }) ?? ''
+    expect(message).toContain('no shares')
+    expect(message).not.toContain('0.0 shares')
+  })
+
+  it('does NOT claim rejection when the position figure lags the sell date', () => {
+    // The live case: /holdings is quantized to the last trading day <= as_of, so
+    // shares bought after the newest cached close are invisible to it. Claiming a
+    // shortfall here would be a false alarm.
+    const message = sellPreflightMessage({ ...base, effectiveOn: '2026-07-16' }) ?? ''
+    expect(message).toContain('As of 2026-07-16')
+    expect(message).toContain('4 shares')
+    expect(message).not.toContain('may be rejected')
+    expect(message).toContain('server checks the full history')
+  })
+
+  it('treats an unknown effective date as current rather than inventing one', () => {
+    const message = sellPreflightMessage({ ...base, effectiveOn: null }) ?? ''
+    expect(message).toContain('may be rejected')
+    expect(message).not.toContain('As of')
+  })
+
+  it('is null when either decimal is unparseable (never a bogus warning)', () => {
+    expect(sellPreflightMessage({ ...base, requestedShares: 'abc' })).toBeNull()
+    expect(sellPreflightMessage({ ...base, heldShares: 'abc' })).toBeNull()
+    expect(sellPreflightMessage({ ...base, requestedShares: '' })).toBeNull()
+  })
+
+  it('is null when the form is not filled in enough to say anything', () => {
+    expect(sellPreflightMessage({ ...base, symbol: '' })).toBeNull()
+    expect(sellPreflightMessage({ ...base, on: '' })).toBeNull()
+  })
+
+  it('uses exact decimal comparison, not float, to decide whether to warn', () => {
+    // A float compare would call these equal and stay silent.
+    expect(
+      sellPreflightMessage({
+        ...base,
+        requestedShares: '12345678901.00000002',
+        heldShares: '12345678901.00000001',
+      }),
+    ).not.toBeNull()
   })
 })
