@@ -23,5 +23,8 @@ const option = computed(() =>
 </script>
 
 <template>
-  <VChart class="h-[320px] w-full" :option="option" autoresize />
+  <!-- Height on the wrapper, not on <VChart> — see the note in DashboardChart.vue. -->
+  <div class="h-[320px] w-full">
+    <VChart :option="option" autoresize />
+  </div>
 </template>

@@ -28,5 +28,19 @@ const option = computed(() =>
 </script>
 
 <template>
-  <VChart class="h-[560px] w-full" :option="option" autoresize />
+  <!--
+    THE HEIGHT MUST LIVE ON THIS WRAPPER, not on <VChart>.
+    vue-echarts renders a custom element and injects an UNLAYERED rule into
+    <head>: `x-vue-echarts { display:block; width:100%; height:100%; min-width:0 }`.
+    Unlayered CSS outranks anything in `@layer utilities`, which is where Tailwind
+    puts its utilities — so `class="h-[560px]"` on the component is silently
+    overridden by `height: 100%`, resolves against an auto-height parent, and the
+    chart collapses to 0px with no error anywhere. Sizing the parent instead gives
+    that 100% a definite height to resolve against.
+    Found by the e2e smoke suite (#51), which asserts a painted height precisely so
+    this cannot regress — a unit test cannot see it, since it is real layout.
+  -->
+  <div class="h-[560px] w-full">
+    <VChart :option="option" autoresize />
+  </div>
 </template>

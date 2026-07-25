@@ -1,0 +1,7 @@
+# Installed inside a Linux container (see the node:22-only rule in the root
+# CLAUDE.md); never commit and never reuse on the host.
+node_modules
+
+# Playwright run artifacts: traces/screenshots on failure, and the HTML report.
+test-results
+playwright-report

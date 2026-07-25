@@ -38,6 +38,7 @@
   --pv-up: #12885a;
   --pv-down: #cf3a3a;
   --pv-warn: #b5790a;
+  --pv-warn-soft: color-mix(in srgb, #b5790a 12%, transparent);
   color-scheme: light;
 }
 
@@ -57,6 +58,7 @@
   --pv-up: #34c98a;
   --pv-down: #ff5c5c;
   --pv-warn: #e0a92e;
+  --pv-warn-soft: color-mix(in srgb, #e0a92e 18%, transparent);
   color-scheme: dark;
 }
 
@@ -76,6 +78,7 @@
   --color-up: var(--pv-up);
   --color-down: var(--pv-down);
   --color-warn: var(--pv-warn);
+  --color-warn-soft: var(--pv-warn-soft);
 
   --font-sans:
     ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;

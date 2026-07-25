@@ -63,7 +63,32 @@ services:
     depends_on:
       - web
 
+  # End-to-end smoke suite (backlog #047 / issue #51). Behind a profile so it
+  # never starts with a plain `docker compose up`; run it with:
+  #
+  #   docker compose --profile e2e run --rm e2e
+  #
+  # Joins the compose network and talks to `vite:5173` / `web:3000` directly, so
+  # it publishes no host ports and cannot collide with the dev stack. The image
+  # tag MUST track the @playwright/test version in e2e/package.json — Playwright
+  # refuses to run against mismatched bundled browsers.
+  e2e:
+    image: mcr.microsoft.com/playwright:v1.61.0-noble
+    profiles: ["e2e"]
+    working_dir: /app/e2e
+    command: bash -c "npm install --no-audit --no-fund && npm test"
+    volumes:
+      - .:/app
+      - e2e_node_modules:/app/e2e/node_modules
+    environment:
+      E2E_BASE_URL: http://vite:5173
+      # Must match the web service's invite code or registration is refused.
+      INVITE_CODE: ${INVITE_CODE:-dev-invite-code}
+    depends_on:
+      - vite
+
 volumes:
   pgdata:
   bundle_cache:
   frontend_node_modules:
+  e2e_node_modules:
