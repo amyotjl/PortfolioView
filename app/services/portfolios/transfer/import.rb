@@ -18,9 +18,12 @@ module Portfolios
     #      Pure reads, so a name conflict costs nothing.
     #   2. RESOLVE — find-or-create the Instrument rows the planned portfolios
     #      need, in the OUTER transaction. Instruments must not live inside a
-    #      portfolio's savepoint: a rollback there would undo the row while the
-    #      resolver still cached the object, and the next portfolio referencing
-    #      that symbol would write a dangling foreign key.
+    #      portfolio's savepoint: a rollback there undoes the row while the
+    #      resolver still caches the object, so the row is lost outright if that
+    #      portfolio was its only referrer, and otherwise gets insert-rolled-back-
+    #      reinserted by the next referrer's autosave. (Rails nils the id of a
+    #      record created in a rolled-back savepoint, so this degrades rather than
+    #      writing a dangling FK — but one INSERT is still the correct shape.)
     #   3. WRITE  — one savepoint per portfolio.
     #
     # NOTHING IS EVER OVERWRITTEN. A name collision is resolved by renaming the

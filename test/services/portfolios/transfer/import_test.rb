@@ -284,10 +284,11 @@ module Portfolios
       end
 
       test "an instrument created for a failing portfolio survives for a later one" do
-        # Regression guard: instruments are resolved in the OUTER transaction. If
-        # they lived inside a portfolio's savepoint, this rollback would delete the
-        # row while the resolver still cached it, and "Good" would write a dangling
-        # foreign key.
+        # A later portfolio referencing the same symbol still resolves it. NOTE:
+        # this passes even WITHOUT phase 2 — Rails nils the id of a record created
+        # in a rolled-back savepoint, so the cached Instrument goes back to
+        # new_record? and belongs_to autosave re-INSERTs it. The test below is the
+        # one that actually discriminates.
         doc = document(instruments: [ instrument_spec("NEWCO") ], portfolios: [
           portfolio_spec("Bad", transactions: [ transaction_spec("NEWCO", side: "sell", shares: "1") ]),
           portfolio_spec("Good", transactions: [ transaction_spec("NEWCO", side: "buy", shares: "1") ])
@@ -299,6 +300,22 @@ module Portfolios
         transaction = @user.portfolios.find_by!(name: "Good").transactions.sole
         assert_equal "NEWCO", transaction.instrument.symbol
         assert Instrument.exists?(transaction.instrument_id)
+      end
+
+      test "an instrument is resolved in the OUTER transaction, so it survives its only portfolio failing" do
+        # THE phase-2 regression guard. Nothing re-creates the instrument here,
+        # because the ONLY portfolio referencing NEWCO fails — so the row exists
+        # afterwards if and only if it was created outside that savepoint.
+        doc = document(instruments: [ instrument_spec("NEWCO") ], portfolios: [
+          portfolio_spec("Bad", transactions: [ transaction_spec("NEWCO", side: "sell", shares: "1") ])
+        ])
+
+        result = import(doc)
+
+        assert_equal [ "failed" ], result.portfolios.map(&:status)
+        assert Instrument.exists?([ "upper(symbol) = ?", "NEWCO" ]),
+               "instruments must be resolved in the OUTER transaction, so a portfolio's " \
+               "savepoint rollback cannot orphan the resolver cache"
       end
 
       # --- Name conflicts: never destructive ----------------------------------
