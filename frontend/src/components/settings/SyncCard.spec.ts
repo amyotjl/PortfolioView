@@ -84,6 +84,18 @@ describe('SyncCard', () => {
     expect(screen.getByText('A sync was already requested at Jul 26, 1:42 PM EDT.')).toBeTruthy()
   })
 
+  it('shows the per-symbol lag line only when the backend reports one (#59)', async () => {
+    const { unmount } = await mount()
+    expect(screen.queryByText(/behind the rest of the cache/)).toBeNull()
+    unmount()
+
+    snapshot.value = status({ stale: false, instruments_behind: 2 })
+    await mount()
+    expect(screen.getByText('2 symbols are behind the rest of the cache — a sync will try again.')).toBeTruthy()
+    // Still "up to date" overall: the two statements coexist by design.
+    expect(screen.getByText('Prices are current through Jul 24, 2026.')).toBeTruthy()
+  })
+
   it('toasts a success on enqueued', async () => {
     await mount()
     await fireEvent.click(screen.getByRole('button', { name: 'Sync now' }))

@@ -347,6 +347,30 @@ describe('API contract schemas (docs/API_SHAPES.md)', () => {
     expect(parsed.sync.requested_at).toBe('2026-07-26T18:03:11Z')
   })
 
+  it('parses the SIX-key snapshot #59 added (instruments_behind, integer, never null)', () => {
+    // Mirrors SyncStatusSerializer as merged on m9/integration. NOT captured
+    // live: #59 landed on the integration branch after this branch was cut, so
+    // the live probes below recorded the five-key shape.
+    const parsed = parseResponse(
+      syncStatusResponseSchema,
+      {
+        sync: {
+          latest_price_on: '2026-07-24',
+          last_trading_day: '2026-07-24',
+          stale: false,
+          instruments_behind: 1,
+          pending: false,
+          requested_at: null,
+        },
+      },
+      'GET /sync',
+    )
+
+    // "The cache as a whole is current, one symbol is not" — a real state.
+    expect(parsed.sync.stale).toBe(false)
+    expect(parsed.sync.instruments_behind).toBe(1)
+  })
+
   it('lets an unknown sixth key through instead of failing the parse', () => {
     // NOT .strict(): the backend is concurrently adding `instruments_behind`, and
     // an unknown key must never blank the Settings card.

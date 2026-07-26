@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   alreadyRequestedMessage,
+  behindNotice,
   freshnessHint,
   freshnessSeverity,
   triggerFailureToast,
@@ -78,6 +79,37 @@ describe('freshnessHint', () => {
     expect(freshnessHint(snapshot({ latest_price_on: '2026-01-01' })).text).toBe(
       'Prices are current through Jan 1, 2026.',
     )
+  })
+})
+
+describe('behindNotice', () => {
+  it('says nothing when the field is absent (a backend predating #59)', () => {
+    expect(behindNotice(snapshot())).toBeNull()
+  })
+
+  it('says nothing when nothing is behind', () => {
+    expect(behindNotice(snapshot({ instruments_behind: 0 }))).toBeNull()
+  })
+
+  it('reports the state `stale` structurally cannot: current overall, one symbol behind', () => {
+    const sync = snapshot({ stale: false, instruments_behind: 1 })
+
+    expect(freshnessHint(sync).label).toBe('Up to date')
+    expect(behindNotice(sync)).toBe('1 symbol is behind the rest of the cache — a sync will try again.')
+  })
+
+  it('pluralizes', () => {
+    expect(behindNotice(snapshot({ instruments_behind: 4 }))).toBe(
+      '4 symbols are behind the rest of the cache — a sync will try again.',
+    )
+  })
+
+  it('stays silent on a value it cannot use', () => {
+    // The schema's `.catch` turns an unexpected type into undefined; a null or a
+    // negative must be equally harmless.
+    expect(behindNotice(snapshot({ instruments_behind: null }))).toBeNull()
+    expect(behindNotice(snapshot({ instruments_behind: undefined }))).toBeNull()
+    expect(behindNotice(snapshot({ instruments_behind: -1 }))).toBeNull()
   })
 })
 

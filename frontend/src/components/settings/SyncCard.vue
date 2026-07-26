@@ -7,6 +7,7 @@ import FormAlert from '@/components/ui/FormAlert.vue'
 import { useSyncStatusQuery, useTriggerSync } from '@/composables/useSync'
 import {
   alreadyRequestedMessage,
+  behindNotice,
   freshnessHint,
   freshnessSeverity,
   triggerFailureToast,
@@ -31,6 +32,9 @@ const toast = useToast()
 const failure = shallowRef<string | null>(null)
 
 const hint = computed(() => (sync.value ? freshnessHint(sync.value) : null))
+
+/** Per-instrument lag, which `stale` alone cannot express (#59). Null when absent. */
+const behind = computed(() => (sync.value ? behindNotice(sync.value) : null))
 
 /**
  * The pending notice is driven by the SNAPSHOT, so a sync claimed by cron, the
@@ -88,6 +92,10 @@ async function syncNow(): Promise<void> {
         <span class="text-sm tabular-nums text-ink">{{ hint.text }}</span>
       </div>
     </div>
+
+    <p v-if="behind" class="mt-2 text-sm tabular-nums text-warn">
+      {{ behind }}
+    </p>
 
     <p v-if="pendingNotice" class="mt-2 text-sm tabular-nums text-ink-muted">
       {{ pendingNotice }}

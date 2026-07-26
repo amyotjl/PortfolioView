@@ -68,6 +68,23 @@ export function freshnessSeverity(tone: FreshnessTone): 'warn' | 'secondary' {
 }
 
 /**
+ * The signal `stale` structurally cannot give (issue #59). `stale` compares the
+ * MAX over referenced instruments and SPY is always in that set, so one ticker
+ * whose fetch failed can never move it — `stale: false, instruments_behind: 1`
+ * is a real state meaning "the cache as a whole is current, one symbol is not".
+ *
+ * Returns null when the field is absent (a backend predating #59), zero, or any
+ * value that is not a usable count — the card simply says nothing extra.
+ */
+export function behindNotice(sync: SyncStatusSnapshot): string | null {
+  const count = sync.instruments_behind
+  if (typeof count !== 'number' || !Number.isFinite(count) || count <= 0) return null
+
+  const subject = count === 1 ? '1 symbol is' : `${count} symbols are`
+  return `${subject} behind the rest of the cache — a sync will try again.`
+}
+
+/**
  * The one sentence used for BOTH pending paths — the `already_pending` POST
  * result and a `pending: true` snapshot on page load — because they are the same
  * fact: the 10-minute dedupe lease is held, and `requested_at` is when it was
