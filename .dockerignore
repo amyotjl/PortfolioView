@@ -36,6 +36,22 @@
 !/app/assets/builds/.keep
 /public/assets
 
+# Ignore host/container build artifacts under frontend/ and e2e/. These are
+# installed *inside* Linux containers onto the bind mount and are both huge and
+# useless to the image build, which runs its own `npm ci` (Dockerfile stage 1).
+# Leaving them in the context also risks a stale dist/ shadowing a fresh build.
+/frontend/node_modules/
+/frontend/dist/
+/frontend/coverage/
+/e2e/node_modules/
+/e2e/test-results/
+/e2e/playwright-report/
+
+# Ignore docs and agent harness files: not needed at runtime, and any edit to
+# them would otherwise bust the COPY layer cache.
+/docs
+/.claude
+
 # Ignore CI service files.
 /.github
 

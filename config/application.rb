@@ -30,5 +30,11 @@ module App
     # A lambda (not a direct reference) so the constant is resolved lazily at
     # request time rather than during boot autoloading.
     config.exceptions_app = ->(env) { ErrorsController.action(:show).call(env) }
+
+    # Where SpaController looks for the Vite-built index.html. The production
+    # image writes it here (Dockerfile stage 4) instead of public/ so the static
+    # file server can't serve it for "/" with the far-future asset cache headers.
+    # Absent in a dev checkout, which is why SpaController tolerates a miss.
+    config.x.spa_index_path = Rails.root.join("spa", "index.html")
   end
 end

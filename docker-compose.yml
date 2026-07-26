@@ -87,8 +87,93 @@ services:
     depends_on:
       - vite
 
+  # ---------------------------------------------------------------------------
+  # Production profile (docs/PLAN.md § Deployment, backlog #054)
+  # ---------------------------------------------------------------------------
+  # Two services behind `profiles: ["production"]`, so they never start with a
+  # plain `docker compose up`. Bring them up by name — naming the services is
+  # what keeps the profile-less dev services (which would fight over :3000)
+  # out of it:
+  #
+  #   docker compose --profile production up --build -d db-prod web-prod
+  #
+  # Required env (see .env.example / README.md § Production). None of these
+  # carry a `:-default`: production must fail closed rather than boot with a
+  # dev-shaped secret. They are also NOT declared with compose's `:?` error
+  # syntax, because interpolation runs at file-parse time for every service —
+  # including profiled ones — which would break `docker compose up` for the dev
+  # stack whenever they are unset.
+  #   SECRET_KEY_BASE        Rails message verifier / signed cookies
+  #   APP_DATABASE_PASSWORD  role "app" (config/database.yml production block)
+  #   INVITE_CODE            registration is closed while this is blank
+  db-prod:
+    profiles: ["production"]
+    image: postgres:16
+    environment:
+      # Must match config/database.yml's production username, and the database
+      # name its primary entry expects. db:prepare creates the sibling
+      # app_production_cache / _queue / _cable databases (multi-DB layout is
+      # required by Solid Queue/Solid Cache — don't collapse it).
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: ${APP_DATABASE_PASSWORD}
+      POSTGRES_DB: app_production
+    volumes:
+      # Named volume, separate from the dev `pgdata`: production data survives
+      # `docker compose down` and container replacement.
+      - pgdata_production:/var/lib/postgresql/data
+    # Deliberately publishes no host port: nothing outside the compose network
+    # needs to reach the production database.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d app_production"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  web-prod:
+    profiles: ["production"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: portfolioview-web:production
+    # Dockerfile CMD: `./bin/thrust ./bin/rails server`. bin/docker-entrypoint
+    # clears any stale tmp/pids/server.pid and runs `db:prepare` before exec'ing
+    # it, so migrations are applied on every boot including the first one.
+    environment:
+      RAILS_ENV: production
+      TZ: America/New_York
+      # libpq picks the host up from PGHOST; database.yml supplies user/password.
+      PGHOST: db-prod
+      APP_DATABASE_PASSWORD: ${APP_DATABASE_PASSWORD}
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE}
+      # Solid Queue supervisor runs inside Puma (config/puma.rb) — single-box
+      # deploy, no separate worker container, no Redis.
+      SOLID_QUEUE_IN_PUMA: "true"
+      # No `:-` default here, unlike the dev service: PLAN.md § Deployment
+      # requires production to fail closed on a blank invite code.
+      INVITE_CODE: ${INVITE_CODE}
+      TIINGO_API_KEY: ${TIINGO_API_KEY:-}
+      TWELVE_DATA_API_KEY: ${TWELVE_DATA_API_KEY:-}
+      FMP_API_KEY: ${FMP_API_KEY:-}
+      RAILS_MAX_THREADS: ${RAILS_MAX_THREADS:-5}
+    ports:
+      # Thruster listens on :80 inside the container and proxies to Puma;
+      # PLAN.md pins the app to http://localhost:3000 on the host.
+      - "3000:80"
+    depends_on:
+      db-prod:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost/up > /dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    restart: unless-stopped
+
 volumes:
   pgdata:
+  pgdata_production:
   bundle_cache:
   frontend_node_modules:
   e2e_node_modules:
