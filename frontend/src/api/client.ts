@@ -155,20 +155,23 @@ async function toApiError(response: Response): Promise<ApiError> {
 
 // --- Core request ------------------------------------------------------------
 
-async function request(path: string, config: InternalConfig): Promise<unknown> {
-  const { method, body, schema, query, signal, redirectOnUnauthorized = true } = config
-  const url = buildUrl(path, query)
+interface RawConfig {
+  method: HttpMethod
+  headers: Headers
+  body?: BodyInit
+  query?: QueryParams
+  signal?: AbortSignal
+  redirectOnUnauthorized?: boolean
+}
 
-  const headers = new Headers({ Accept: 'application/json' })
-  let serializedBody: string | undefined
-  if (body !== undefined) {
-    headers.set('Content-Type', 'application/json')
-    serializedBody = JSON.stringify(body)
-  }
-  if (method !== 'GET') {
-    const token = readXsrfToken()
-    if (token) headers.set(XSRF_HEADER, token)
-  }
+/**
+ * The shared network path: 429 backoff (GETs only), the 401 handler, and the
+ * error-envelope throw. Returns the raw `Response` so callers can take it as
+ * JSON (`request`) or as bytes (`apiDownload`).
+ */
+async function performFetch(path: string, config: RawConfig): Promise<Response> {
+  const { method, headers, body, query, signal, redirectOnUnauthorized = true } = config
+  const url = buildUrl(path, query)
 
   let retriedForRateLimit = false
   // Loop only to service a single GET Retry-After backoff; every other path returns.
@@ -176,7 +179,7 @@ async function request(path: string, config: InternalConfig): Promise<unknown> {
     const response = await fetch(url, {
       method,
       headers,
-      body: serializedBody,
+      body,
       credentials: 'same-origin',
       signal,
     })
@@ -198,13 +201,44 @@ async function request(path: string, config: InternalConfig): Promise<unknown> {
       throw await toApiError(response)
     }
 
-    if (response.status === 204) return undefined
-    const contentType = response.headers.get('Content-Type') ?? ''
-    if (!contentType.includes('application/json')) return undefined
-
-    const json = await response.json()
-    return schema ? parseResponse(schema, json, `${method} ${path}`) : json
+    return response
   }
+}
+
+/** Every non-GET echoes the readable XSRF cookie back as a header. */
+function withCsrf(headers: Headers, method: HttpMethod): Headers {
+  if (method !== 'GET') {
+    const token = readXsrfToken()
+    if (token) headers.set(XSRF_HEADER, token)
+  }
+  return headers
+}
+
+async function request(path: string, config: InternalConfig): Promise<unknown> {
+  const { method, body, schema, query, signal, redirectOnUnauthorized } = config
+
+  const headers = withCsrf(new Headers({ Accept: 'application/json' }), method)
+  let serializedBody: string | undefined
+  if (body !== undefined) {
+    headers.set('Content-Type', 'application/json')
+    serializedBody = JSON.stringify(body)
+  }
+
+  const response = await performFetch(path, {
+    method,
+    headers,
+    body: serializedBody,
+    query,
+    signal,
+    redirectOnUnauthorized,
+  })
+
+  if (response.status === 204) return undefined
+  const contentType = response.headers.get('Content-Type') ?? ''
+  if (!contentType.includes('application/json')) return undefined
+
+  const json = await response.json()
+  return schema ? parseResponse(schema, json, `${method} ${path}`) : json
 }
 
 // --- Public verbs (overloaded so a passed schema narrows the return type) ----
@@ -261,10 +295,108 @@ export function apiDelete(
   return request(path, { ...config, method: 'DELETE' })
 }
 
+// --- File transfer (portfolio export/import, issue #64) ----------------------
+
+export interface DownloadedFile {
+  blob: Blob
+  /** From Content-Disposition; the caller supplies a fallback. */
+  filename: string
+}
+
+/**
+ * Parse a filename out of Content-Disposition, preferring the RFC 5987
+ * `filename*` form when present. Exported for unit testing.
+ *
+ * The result is treated as UNTRUSTED and reduced to a bare basename: it reaches
+ * a download anchor, and a value like `../../evil.html` or a path separator must
+ * never influence where the browser writes.
+ */
+export function filenameFromContentDisposition(header: string | null): string | null {
+  if (!header) return null
+
+  const extended = header.match(/filename\*\s*=\s*[^']*'[^']*'([^;]+)/i)
+  const quoted = header.match(/filename\s*=\s*"([^"]*)"/i)
+  const bare = header.match(/filename\s*=\s*([^;]+)/i)
+
+  let raw: string | null = null
+  if (extended) {
+    try {
+      raw = decodeURIComponent(extended[1].trim())
+    } catch {
+      raw = extended[1].trim()
+    }
+  } else if (quoted) {
+    raw = quoted[1]
+  } else if (bare) {
+    raw = bare[1].trim()
+  }
+  if (raw === null) return null
+
+  const basename = raw.split(/[\\/]/).pop()?.trim() ?? ''
+  return basename && basename !== '.' && basename !== '..' ? basename : null
+}
+
+/**
+ * GET a response as a file. Shares the same auth/CSRF/401/error handling as every
+ * other call — which is exactly why this exists instead of pointing
+ * `window.location` at the URL: a plain navigation would render the 401/422 JSON
+ * envelope as a downloaded file instead of routing the user to /login.
+ */
+export async function apiDownload(
+  path: string,
+  fallbackFilename: string,
+  config: RequestConfig = {},
+): Promise<DownloadedFile> {
+  const response = await performFetch(path, {
+    method: 'GET',
+    headers: new Headers({ Accept: 'application/json' }),
+    query: config.query,
+    signal: config.signal,
+    redirectOnUnauthorized: config.redirectOnUnauthorized,
+  })
+
+  return {
+    blob: await response.blob(),
+    filename: filenameFromContentDisposition(response.headers.get('Content-Disposition')) ?? fallbackFilename,
+  }
+}
+
+export function apiUpload<S extends z.ZodType>(
+  path: string,
+  formData: FormData,
+  config: RequestConfig & { schema: S },
+): Promise<z.infer<S>>
+export function apiUpload(path: string, formData: FormData, config?: RequestConfig): Promise<unknown>
+/**
+ * POST multipart/form-data. Content-Type is deliberately NOT set: the browser
+ * must generate it so it can append the multipart boundary, and setting it by
+ * hand produces a body Rack cannot parse.
+ */
+export async function apiUpload(
+  path: string,
+  formData: FormData,
+  config: RequestConfig & { schema?: z.ZodType } = {},
+): Promise<unknown> {
+  const response = await performFetch(path, {
+    method: 'POST',
+    headers: withCsrf(new Headers({ Accept: 'application/json' }), 'POST'),
+    body: formData,
+    query: config.query,
+    signal: config.signal,
+    redirectOnUnauthorized: config.redirectOnUnauthorized,
+  })
+
+  if (response.status === 204) return undefined
+  const json = await response.json()
+  return config.schema ? parseResponse(config.schema, json, `POST ${path}`) : json
+}
+
 /** Convenience aggregate for `import { api } from '@/api/client'`. */
 export const api = {
   get: apiGet,
   post: apiPost,
   patch: apiPatch,
   delete: apiDelete,
+  download: apiDownload,
+  upload: apiUpload,
 }

@@ -1,0 +1,10 @@
+Account Name,Account Type,Account Classification,Account Number,Symbol,Exchange,MIC,Name,Security Type,Quantity,Position Direction,Market Price,Market Price Currency,Book Value (CAD),Book Value Currency (CAD),Book Value (Market),Book Value Currency (Market),Market Value,Market Value Currency,Market Unrealized Returns,Market Unrealized Returns Currency
+"TFSA","TFSA","Trade","AAAA1111CAD","ZEQT","TSX","XTSE","BMO All-Equity ETF","EXCHANGE_TRADED_FUND","100","LONG","22.94","CAD","2210.035","CAD","2210.035","CAD","2294","CAD","83.965","CAD"
+"TFSA","TFSA","Trade","AAAA1111CAD","META","TSX","XTSE","Meta CDR (CAD Hedged)","EQUITY","25","LONG","31.75","CAD","806.25","CAD","806.25","CAD","793.75","CAD","-12.5","CAD"
+"TFSA","TFSA","Trade","AAAA1111CAD","FINN","CBOE CANADA","NEOE","Fidelity Global Innovators ETF","EXCHANGE_TRADED_FUND","10","LONG","30.96","CAD","300","CAD","300","CAD","309.6","CAD","9.6","CAD"
+"TFSA","TFSA","Trade","AAAA1111CAD","XNDU.TO","TSX","XTSE","Xanadu Quantum Technologies Limited","EQUITY","213","LONG","14.45","CAD","5769.289834710743801652892562","CAD","5769.289834710743801652892562","CAD","3077.85","CAD","-2691.439834710743801652892562","CAD"
+"TFSA","TFSA","Trade","AAAA1111CAD","BADSHORT","TSX","XTSE","A Shorted Name","EQUITY","5","SHORT","10","CAD","50","CAD","50","CAD","50","CAD","0","CAD"
+"TFSA","TFSA","Trade","AAAA1111CAD","ZEROQTY","TSX","XTSE","A Closed Position","EQUITY","0","LONG","10","CAD","0","CAD","0","CAD","0","CAD","0","CAD"
+"RRSP","RRSP","Trade","BBBB2222USD","AAPL","NASDAQ","XNAS","Apple Inc","EQUITY","10","LONG","200","USD","1500","CAD","1500","USD","2000","USD","500","USD"
+
+"As of 2026-03-04 10:23 GMT-04:00"

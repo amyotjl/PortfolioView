@@ -5,3 +5,6 @@ node_modules
 # Playwright run artifacts: traces/screenshots on failure, and the HTML report.
 test-results
 playwright-report
+
+# Opt-in visual-check screenshots (E2E_SCREENSHOTS=1).
+screenshots

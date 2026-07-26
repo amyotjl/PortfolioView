@@ -10,7 +10,16 @@ Rails.application.routes.draw do
       end
 
       resources :benchmarks, only: %i[ index ]
-      resources :portfolios, only: %i[ index show create update destroy ]
+
+      # Portfolio export/import (backlog #064). Declared as COLLECTION routes on
+      # the portfolios resource so /portfolios/export is matched before the
+      # /portfolios/:id member route could swallow "export" as an id.
+      resources :portfolios, only: %i[ index show create update destroy ] do
+        collection do
+          get  :export, to: "portfolio_transfers#export"
+          post :import, to: "portfolio_transfers#import"
+        end
+      end
 
       # Portfolio-scoped endpoints (backlog #028-#033), nested under the
       # portfolios CRUD line above. Transactions/recurring/holdings CRUD plus

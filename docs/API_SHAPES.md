@@ -49,5 +49,51 @@ source of truth for the frontend zod schemas (`frontend/src/types/`). Convention
 - `GET .../summary` → `{"summary": {current_value: str, net_deposits: str, total_return: str, total_return_pct: str|null, benchmark_return_pct: str|null, vs_benchmark_edge_pct: str|null, max_drawdown_pct: str, as_of: ISO|null}}` (pcts are fractions, 6dp; null when net_deposits ≤ 0 / no benchmark).
 - `GET .../allocations` → `{"allocations": {as_of: ISO|null, total_value: str, by_instrument: [{instrument_id: number, symbol: str|null, sector: str, value: str, weight: str}], by_sector: [{sector: str, value: str, weight: str}]}}` — largest-first, weights sum to 1, sectorless instruments bucket under `"ETF / Fund"`. An instrument slice's `sector` is byte-identical to its `by_sector` label, so grouping `by_instrument` on it reproduces `by_sector` exactly — that join key is what makes the sector treemap's hierarchy derivable client-side (added in M8/#53; `by_sector` alone is a flat list and `instruments` isn't addressable from the frontend by id).
 
+## Export / import (issue #64)
+- `GET /api/v1/portfolios/export[?portfolio_ids[]=N]` → **not a JSON API response**: a
+  `Content-Disposition: attachment` download, `application/json`, pretty-printed, filename
+  `portfolioview-portfolios-<YYYYMMDD>-<HHMMSS>.json`. Scoped to the current user; unowned ids
+  are simply absent (no existence leak). Body:
+  ```jsonc
+  { "format": "portfolioview.portfolios", "version": 1, "exported_at": ISO-8601-Z,
+    "instruments": [{ symbol, name: str|null, instrument_type: "stock"|"etf", currency,
+                      sector: str|null, industry: str|null }],
+    "portfolios": [{ "name": str, "benchmark": str|null,       // benchmark by NAME, not id
+      "transactions": [{ symbol, side, kind, shares: str, price: str, fees: str,
+                         executed_on: ISO, notes: str|null,
+                         recurring_key: str|null, scheduled_for: ISO|null }],
+      "recurring_transactions": [{ key: str, symbol, side, amount_type, dollar_amount: str|null,
+                                   share_amount: str|null, frequency, anchor_on: ISO,
+                                   next_run_on: ISO, end_on: ISO|null, active: bool }] }] }
+  ```
+  **Symbolic on purpose** — no primary keys anywhere, because the feature exists to move data
+  between databases whose ids disagree. `recurring_key` is file-local (`"r1"`, `"r2"`) and links a
+  materialized transaction to its rule. Excluded deliberately: ids, `series_version`, timestamps,
+  `paused_reason`/`consecutive_skips` (materializer runtime state), and all prices/splits/dividends
+  (provider-owned and re-fetchable). Export → import → export is a byte-identical fixed point.
+- `POST /api/v1/portfolios/import` → **multipart/form-data**, not JSON. Fields: `file` (required),
+  `on_conflict` (`"rename"` default | `"skip"`), `dry_run` (`"true"`/`"false"`). Format is sniffed
+  from the file's CONTENT, never its name or MIME type: the native envelope above, or a broker
+  holdings-snapshot CSV (`"wealthsimple.holdings"`). Max 8 MiB.
+  ```jsonc
+  { "import": { "format": str, "dry_run": bool,
+      "totals": { portfolios_created, portfolios_skipped, portfolios_failed,
+                  transactions_created, recurring_created },   // all numbers
+      "warnings": [str],                                       // file-level, belong to no portfolio
+      "portfolios": [{ "name": str,                            // what the FILE asked for
+                       "imported_as": str|null,                // what it became; null if skipped/failed
+                       "status": "created"|"renamed"|"skipped"|"failed",
+                       transactions_created: num, recurring_created: num,
+                       "errors": [str], "warnings": [str] }] } }
+  ```
+  **A partly-failed import is a 200, not an error** — the per-portfolio detail is the payload, and an
+  error envelope cannot carry it. 422 on the `file` field is reserved for a file that cannot be READ
+  at all (missing/empty/oversized/unrecognized/bad JSON/foreign format string). Atomicity is per
+  portfolio: a failed one is rolled back whole, its siblings still commit. Nothing is overwritten.
+  Client note: `status` is modelled as `z.string()`, not an enum — schema failures throw in dev, so
+  enumerating it would turn a newer backend into a blank dialog.
+
 ## Known envelope inconsistency (deliberate, don't "fix" in zod)
 `/candles` is a bare object; `/summary` and `/allocations` are wrapped. Model exactly as-built.
+`/portfolios/export` is a **file download** (no envelope at all) and `/portfolios/import` is wrapped
+under `import` — both as-built and intentional.

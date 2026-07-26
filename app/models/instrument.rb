@@ -36,8 +36,17 @@ class Instrument < ApplicationRecord
   # one-time FMP metadata lookup (docs/PLAN.md § Price pipeline). after_create_commit
   # (not after_create) so the jobs never run against a row that a rolled-back
   # transaction never wrote.
-  after_create_commit :enqueue_price_backfill
-  after_create_commit :enqueue_metadata_fetch
+  #
+  # skip_provider_jobs opts a single row out. Set ONLY by the portfolio importer
+  # (Portfolios::Transfer::InstrumentResolver), for symbols the provider's own
+  # published directory doesn't list — asking Tiingo about a TSX ticker spends a
+  # slot of the scarce MONTHLY UNIQUE-SYMBOL budget to learn nothing. It is a
+  # plain attribute rather than a thread-local because these callbacks fire at
+  # COMMIT, long after any surrounding block would have exited.
+  attr_accessor :skip_provider_jobs
+
+  after_create_commit :enqueue_price_backfill, unless: :skip_provider_jobs
+  after_create_commit :enqueue_metadata_fetch, unless: :skip_provider_jobs
 
   # Free-tier ETFs/funds have no sector; a nil sector is bucketed here so the
   # allocation pie has one "ETF / Fund" slice instead of an "unknown" hole.
