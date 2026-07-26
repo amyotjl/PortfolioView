@@ -39,7 +39,7 @@ acceptance-criteria text.
 | M5 | Frontend shell + auth + portfolios | Router/Pinia/PrimeVue shell, zod schemas, auth pages, portfolios CRUD, Vitest harness | ✅ closed (#40–44) |
 | M6 | Dashboard | Candlestick + cash-flow + drawdown linked chart, stat tiles, allocation donuts | ✅ closed (#45–48) |
 | M7 | Transaction/recurring UIs | Transaction form drawer, recurring-transactions page, Playwright e2e smoke | ✅ closed (#49–51) — **#63** deferred (still open, see below) |
-| M8 | Extra visualizations + export/import | Contribution-vs-growth stacked area, sector treemap, portfolio export/import | ✅ merged 2026-07-26 (#52, #53, #64 — each tester-verified independently). **#63, #65, #66 remain open** and were never in scope for the merge |
+| M8 | Extra visualizations + export/import | Contribution-vs-growth stacked area, sector treemap, portfolio export/import | ✅ merged and milestone closed 2026-07-26 (#52, #53, #64 — each tester-verified independently). **The milestone was closed with #63 and #65 still open and still attached to it** (GitHub shows M8 as 3 closed / 2 open). They were deliberately *not* re-milestoned to make the number look clean — both are M7 spillover tracked in the table below, and neither was ever in M8's scope. #66 is unmilestoned |
 | M9 | Local deploy | Production Dockerfile/compose profile, boot catch-up sync, Sync-now button, persistence check | ⬜ not started (#54–58) |
 
 ## Frontend building blocks already in `frontend/src/` (M5+M6 — extend, don't rebuild)
