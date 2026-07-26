@@ -62,3 +62,9 @@ end
 # adapter tests inject explicit keys, and the "no key configured" paths rely on
 # these being blank. Real-key smoke tests (backlog #017/#021) run outside `rails test`.
 %w[TIINGO_API_KEY TWELVE_DATA_API_KEY FMP_API_KEY].each { |k| ENV[k] = nil }
+
+# Same reasoning for the internal job-trigger token (issue #56): the default
+# must be UNSET so the "a blank INTERNAL_API_TOKEN authenticates nobody" test
+# is real. A developer's .env value leaking in would make it vacuous. Tests
+# that need a token set one explicitly and restore it in teardown.
+ENV["INTERNAL_API_TOKEN"] = nil

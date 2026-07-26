@@ -37,6 +37,10 @@ services:
       # Invite-gated registration (backlog #006). Override on the host to
       # change it; registration is closed if this is ever blank.
       INVITE_CODE: ${INVITE_CODE:-dev-invite-code}
+      # Bearer token for POST /api/internal/jobs/daily_sync (issue #56). Blank
+      # by default and blank means CLOSED, so the `:-` default is safe here
+      # (unlike INVITE_CODE, whose blank-masking is called out in PLAN.md).
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-}
       # Market-data provider API keys (backlog M2). Read from the host env /
       # .env file; blank by default so the stack still boots without them.
       # Adapters read these from ENV and never log them (see .env.example).

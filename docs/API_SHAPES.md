@@ -112,6 +112,41 @@ Search costs **~13 ms** on the real directory (Seq Scan; an index cannot serve a
   reports a split as a share delta that the parser converts back to a ratio; an existing event for
   the same (instrument, ex_date) is never overwritten.
 
+## Sync triggers (issue #56) — two doors, one body
+
+Both endpoints enqueue the **same** `Prices::DailySyncJob` through the **same**
+`Prices::SyncTrigger`, and therefore share one dedupe lease. Identical response body on
+purpose, so the SPA never has to care which door it came through:
+
+```jsonc
+{ "sync": { "status": "enqueued" | "already_pending",
+            "requested_at": "2026-07-26T17:42:02Z" } }   // ISO-8601 UTC, always ...Z
+```
+
+- `POST /api/v1/sync` — **the SPA's supported path** (the Settings "Sync now" button, #57).
+  Session cookie **+ CSRF pair**, like every other non-GET. Takes no parameters and no body.
+  `202` on success; `401` `unauthenticated` signed out; `403` `invalid_csrf_token` without the
+  `X-XSRF-TOKEN` header. A bearer token does **not** authorize this route.
+- `POST /api/internal/jobs/daily_sync` — **machine callers only** (cron / `curl` from the host).
+  `Authorization: Bearer <INTERNAL_API_TOKEN>`; **no session, no CSRF, no browser-UA check**.
+  `202` on success; `401` `unauthenticated` (envelope + `WWW-Authenticate: Bearer realm=
+  "portfolioview-internal"`) for a missing, malformed or wrong token — **and always when
+  `INTERNAL_API_TOKEN` is unset or blank** (fails closed). Note it is under `/api/internal`,
+  **not** `/api/v1`, and is deliberately excluded from the contract suite's `/api/v1` auth sweep.
+
+**The browser must never hold the internal token.** Anything the JS bundle can read, every user
+and every devtools panel can read; `/api/v1/sync` exists precisely so the UI can trigger a sync
+with the credential the browser already has.
+
+**Dedupe: `202` in BOTH outcomes** — the request was accepted either way; `status` says what
+happened. The trigger claims a cache lease (`prices/daily_sync/claim`, TTL
+`Prices::SyncTrigger::LEASE` = 10 min) with an atomic `unless_exist` write; the winner enqueues,
+everyone else gets `already_pending` and enqueues nothing. On `already_pending`, `requested_at`
+is the **pending sync's** claim time, not this request's — so a UI can say "a sync requested at
+13:42 is already running". Nothing releases the lease early; it just expires, so a dead job can
+never wedge the trigger. The nightly `config/recurring.yml` schedule enqueues `DailySyncJob`
+directly and bypasses the lease by design.
+
 ## Known envelope inconsistency (deliberate, don't "fix" in zod)
 `/candles` is a bare object; `/summary` and `/allocations` are wrapped. Model exactly as-built.
 `/portfolios/export` is a **file download** (no envelope at all) and `/portfolios/import` is wrapped
