@@ -9,7 +9,13 @@ module Portfolios
   # so they sum to 1 within rounding. An empty (or wholly unpriced) portfolio
   # yields a well-formed zero payload, never an error.
   class Allocations
-    InstrumentSlice = Data.define(:instrument_id, :symbol, :value, :weight)
+    # `sector` on an instrument slice is the SAME label the instrument contributes
+    # to by_sector (Instrument#sector_label, "ETF / Fund" when unset). It is what
+    # makes the sector -> instrument hierarchy derivable client-side for the
+    # treemap (backlog #049 / #53): by_instrument and by_sector are otherwise two
+    # flat lists with no join key, and `instruments` is not reachable from the
+    # frontend by id (see frontend lib/instrumentIds.ts on why search has no id).
+    InstrumentSlice = Data.define(:instrument_id, :symbol, :sector, :value, :weight)
     SectorSlice     = Data.define(:sector, :value, :weight)
     Result          = Data.define(:as_of, :total_value, :by_instrument, :by_sector)
 
@@ -54,6 +60,7 @@ module Portfolios
         InstrumentSlice.new(
           instrument_id: iid,
           symbol: instruments[iid]&.symbol,
+          sector: instruments[iid]&.sector_label || Instrument::SECTOR_FALLBACK,
           value: value,
           weight: (value / total).round(8)
         )

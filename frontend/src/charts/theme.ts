@@ -36,6 +36,24 @@ export interface ChartTheme {
   down: string
   warn: string
   /**
+   * Identity color for "money the user put in" — the contributed-capital band of
+   * the contribution-vs-growth area (backlog #048 / #52). A step of the same blue
+   * ramp as `donutRamp`, kept as its own named token rather than a ramp index so
+   * the meaning is explicit and re-tuning the ramp can't silently repaint it.
+   *
+   * It is NOT `accent` (reserved for the benchmark line) and NOT `up`/`down` —
+   * contributed capital is an identity series, while that chart's growth band is
+   * polarity and correctly wears the reserved polarity tokens.
+   *
+   * Validated as a categorical trio with `up`/`down` on the light surface
+   * (dataviz `validate_palette.js`): lightness band, chroma floor, normal-vision
+   * separation (worst adjacent ΔE 20.3) and contrast all PASS. The green↔red pair
+   * carries a CVD WARN (ΔE 6.8 deutan) inherent to the app-wide polarity tokens,
+   * which is legal at that floor only with secondary encoding — see the
+   * secondary-encoding list in charts/contributions.ts.
+   */
+  capital: string
+  /**
    * Ordinal ramp for the allocation donuts: index 0 is the LARGEST slice and is
    * always the most prominent step against that mode's surface (darkest on
    * light, lightest on dark), running to the least prominent for the smallest
@@ -73,6 +91,7 @@ export const LIGHT_CHART_THEME: ChartTheme = {
   up: '#12885a',
   down: '#cf3a3a',
   warn: '#b5790a',
+  capital: '#256abf', // blue 500
   // Blue steps 700,600,500,400,300 — darkest (largest slice) to lightest.
   donutRamp: ['#0d366b', '#184f95', '#256abf', '#3987e5', '#6da7ec'],
 }
@@ -90,6 +109,7 @@ export const DARK_CHART_THEME: ChartTheme = {
   up: '#34c98a',
   down: '#ff5c5c',
   warn: '#e0a92e',
+  capital: '#3987e5', // blue 400 — selected for the dark surface, not flipped
   // Blue steps 200,300,400,500,600 — lightest (largest slice, most prominent on
   // dark) to darkest. Selected for the dark surface, not flipped from light.
   donutRamp: ['#9ec5f4', '#6da7ec', '#3987e5', '#256abf', '#184f95'],

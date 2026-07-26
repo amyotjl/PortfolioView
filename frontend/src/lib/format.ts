@@ -61,6 +61,21 @@ export function formatSignedPercent(fraction: IntlValue): string {
   return formatWith(signedPercentFormatter, fraction)
 }
 
+/**
+ * Compact USD for a chart's value axis: `1234` -> `'$1.2K'`, `-2500000` ->
+ * `'-$2.5M'`. Axis ticks need to be short, so this one takes a plotting number
+ * (not a decimal string) — it is the only formatter that does, and it is never
+ * used for a figure the reader is meant to read exactly.
+ */
+export function formatCompactCurrency(value: number): string {
+  const sign = value < 0 ? '-' : ''
+  const magnitude = new Intl.NumberFormat('en-US', {
+    notation: 'compact',
+    maximumFractionDigits: 1,
+  }).format(Math.abs(value))
+  return `${sign}$${magnitude}`
+}
+
 /** ISO date/datetime -> `'Jul 17, 2026'` in America/New_York. */
 export function formatDate(iso: string): string {
   const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(iso)

@@ -22,7 +22,7 @@ import type { EChartsOption } from 'echarts'
 import type { CandlesResponse, Candle, BenchmarkLine, Flow, DrawdownPoint } from '@/types'
 import type { ChartTheme } from './theme'
 import { escapeHtml } from './colors'
-import { formatCurrency, formatDate, formatPercent } from '@/lib/format'
+import { formatCompactCurrency, formatCurrency, formatDate, formatPercent } from '@/lib/format'
 
 export interface DashboardChartOptions {
   /** Include the benchmark close-value line in the price pane. */
@@ -220,11 +220,6 @@ const GRIDS = [
   { left: GRID_LEFT, right: GRID_RIGHT, top: '85%', height: '10%' },
 ] as const
 
-function compactMoney(n: number): string {
-  const sign = n < 0 ? '-' : ''
-  return `${sign}$${new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(Math.abs(n))}`
-}
-
 function percentAxis(n: number): string {
   return `${(n * 100).toFixed(0)}%`
 }
@@ -369,8 +364,8 @@ export function buildDashboardChartOption(
       },
     ],
     yAxis: [
-      { ...valueAxisBase, gridIndex: 0, scale: true, axisLabel: { color: theme.inkSubtle, formatter: compactMoney } },
-      { ...valueAxisBase, gridIndex: 1, scale: true, axisLabel: { color: theme.inkSubtle, formatter: compactMoney } },
+      { ...valueAxisBase, gridIndex: 0, scale: true, axisLabel: { color: theme.inkSubtle, formatter: formatCompactCurrency } },
+      { ...valueAxisBase, gridIndex: 1, scale: true, axisLabel: { color: theme.inkSubtle, formatter: formatCompactCurrency } },
       { ...valueAxisBase, gridIndex: 2, max: 0, axisLabel: { color: theme.inkSubtle, formatter: percentAxis } },
     ],
     dataZoom: [

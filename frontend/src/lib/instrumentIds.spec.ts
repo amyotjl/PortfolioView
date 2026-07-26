@@ -22,13 +22,18 @@ function transaction(overrides: Partial<Transaction> = {}): Transaction {
   }
 }
 
-function allocations(
-  byInstrument: Allocations['by_instrument'],
-): Allocations {
+/**
+ * `sector` is irrelevant to symbol -> id resolution, so rows may omit it and get
+ * a filler label; that keeps these cases about the nullable `symbol` they exist
+ * to pin.
+ */
+type PartialSlice = Omit<Allocations['by_instrument'][number], 'sector'> & { sector?: string }
+
+function allocations(byInstrument: PartialSlice[]): Allocations {
   return {
     as_of: '2026-07-24',
     total_value: '1000.0',
-    by_instrument: byInstrument,
+    by_instrument: byInstrument.map((row) => ({ sector: 'Technology', ...row })),
     by_sector: [],
   }
 }

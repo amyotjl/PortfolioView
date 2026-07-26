@@ -12,8 +12,8 @@ const alloc: Allocations = {
   as_of: '2026-01-06',
   total_value: '10000.00',
   by_instrument: [
-    { instrument_id: 1, symbol: 'AAPL', value: '6000.00', weight: '0.6' },
-    { instrument_id: 2, symbol: null, value: '4000.00', weight: '0.4' },
+    { instrument_id: 1, symbol: 'AAPL', sector: 'Technology', value: '6000.00', weight: '0.6' },
+    { instrument_id: 2, symbol: null, sector: 'ETF / Fund', value: '4000.00', weight: '0.4' },
   ],
   by_sector: [
     { sector: 'Technology', value: '6000.00', weight: '0.6' },

@@ -59,7 +59,15 @@ describe('API contract schemas (docs/API_SHAPES.md)', () => {
         allocations: {
           as_of: '2026-07-17',
           total_value: '12345.67',
-          by_instrument: [{ instrument_id: 1, symbol: 'AAPL', value: '6000.00', weight: '0.5' }],
+          by_instrument: [
+            {
+              instrument_id: 1,
+              symbol: 'AAPL',
+              sector: 'Technology',
+              value: '6000.00',
+              weight: '0.5',
+            },
+          ],
           by_sector: [{ sector: 'ETF / Fund', value: '6345.67', weight: '0.5' }],
         },
       },

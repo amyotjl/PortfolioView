@@ -12,6 +12,8 @@ import ChartCard from '@/components/dashboard/ChartCard.vue'
 import DashboardChart from '@/components/dashboard/DashboardChart.vue'
 import DashboardChartTable from '@/components/dashboard/DashboardChartTable.vue'
 import DashboardEmptyState from '@/components/dashboard/DashboardEmptyState.vue'
+import ContributionGrowthChart from '@/components/dashboard/ContributionGrowthChart.vue'
+import ContributionGrowthTable from '@/components/dashboard/ContributionGrowthTable.vue'
 import AllocationSection from '@/components/dashboard/AllocationSection.vue'
 
 /**
@@ -115,6 +117,26 @@ function retry(): void {
         </template>
         <template #table>
           <DashboardChartTable :payload="payload" :show-benchmark="showBenchmark" />
+        </template>
+      </ChartCard>
+
+      <ChartCard title="Contributed capital vs growth" :refetching="isRefetching">
+        <template #caption>
+          <p>
+            Contributed capital starts at this range’s opening value and adds every net cash
+            flow since, so growth is the change in value that cash flows don’t explain —
+            reinvested dividends count as growth, not as a contribution.
+          </p>
+          <p>
+            When the portfolio sits below its contributions, the shortfall is the band above
+            the value line.
+          </p>
+        </template>
+        <template #chart>
+          <ContributionGrowthChart :payload="payload" />
+        </template>
+        <template #table>
+          <ContributionGrowthTable :payload="payload" />
         </template>
       </ChartCard>
 
