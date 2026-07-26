@@ -14,17 +14,23 @@ module Trading
     CALENDAR_SYMBOL = "SPY".freeze
 
     class << self
-      # The wall clock, in America/New_York. The ONE place the host clock is
-      # read: everything that needs "what time is it in the market's timezone?"
-      # (Prices::Freshness's expected-session walk-back) comes through here
-      # rather than reaching for ActiveSupport::TimeZone itself.
-      def now
-        ActiveSupport::TimeZone[TIME_ZONE].now
-      end
-
       # "Today" for all domain date logic — never the host clock's date.
       def today
-        now.to_date
+        ActiveSupport::TimeZone[TIME_ZONE].today
+      end
+
+      # The wall clock in America/New_York, for the ONE caller that needs a
+      # time of day rather than a date: Prices::Freshness's 22:00-ET
+      # expected-session cutoff (issue #59). Purely additive — this class stays
+      # the owner of the timezone fact so that caller does not reach for
+      # ActiveSupport::TimeZone itself, and `today` is untouched.
+      #
+      # This is a WALL-CLOCK reading, not a calendar reading: it knows nothing
+      # about sessions, holidays or trading days, and no money calculation may
+      # use it. Everything domain-facing goes through `today` / `days_between` /
+      # `last_day_on_or_before` as before.
+      def now
+        ActiveSupport::TimeZone[TIME_ZONE].now
       end
 
       # Trading days in from..to, ascending.
