@@ -286,6 +286,10 @@ verdicts: **PASS, merge**. Between them: Rails 442 and 572 runs green, Vitest 21
 `vue-tsc` clean, e2e green, zod schemas validated against **live** captures (10/10 and 7/7,
 no nullability surprises), and 12 mutation probes that all failed for the predicted reason.
 
+Neither tester saw the *other* branch, so the merged result was re-verified on `main` after
+both merges: **Rails 573 runs / 2664 assertions / 0 failures**, **Vitest 241/241 across 21
+files**, `vue-tsc` clean. (573 = 572 + the phase-2 guard added in `a3801c3`.)
+
 Findings that did **not** block the merge but are worth knowing:
 - **`charts/treemap.ts:115-117` derives a displayed money string with float math**
   (`reduce(… Number(r.value)).toFixed(2)`) instead of `lib/money.ts`. Only reachable if a
