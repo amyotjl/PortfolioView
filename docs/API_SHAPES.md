@@ -119,35 +119,53 @@ authenticated like every other `/api/v1` GET; no CSRF on a GET. Always `200` for
 caller — an empty cache is a valid answer, not a 404. `401` `unauthenticated` signed out.
 
 ```jsonc
-{ "sync": { "latest_price_on":  "2026-07-24" | null,   // ISO date; MAX(latest_price_on) over referenced instruments
-            "last_trading_day": "2026-07-24" | null,   // ISO date; Trading::Calendar.last_day
-            "stale":            false,                 // bool, never null
-            "pending":          false,                 // bool, never null — a sync claim is held right now
-            "requested_at":     null } }               // ISO-8601 UTC | null; null iff pending is false
+{ "sync": { "latest_price_on":    "2026-07-24" | null, // ISO date; MAX(latest_price_on) over referenced instruments
+            "last_trading_day":   "2026-07-24" | null, // ISO date; Trading::Calendar.last_day
+            "stale":              false,               // bool, never null
+            "instruments_behind": 0,                   // integer, never null; 0 when all current
+            "pending":            false,               // bool, never null — a sync claim is held right now
+            "requested_at":       null } }             // ISO-8601 UTC | null; null iff pending is false
 ```
 
-Both date fields are `null` together on a **fresh database** (nothing cached yet), and `stale`
-is then `true` — #57 must render that case ("never synced"), it is not hypothetical.
+Both date fields are `null` together on a **fresh database** (nothing cached yet), `stale` is
+then `true` and `instruments_behind` is `0` — #57 must render that case ("never synced"), it is
+not hypothetical.
 
 **Why not `/summary`'s `as_of`:** that is portfolio-scoped and is `null` for a portfolio with no
 price coverage (an imported CAD portfolio does exactly this), which reads as "never synced" when
 the truth is "this portfolio has no prices". Settings is not portfolio-scoped.
 
-**`stale` is `last_trading_day` vs the most recent WEEKDAY strictly before today in ET** — not
-the literal `max(latest_price_on) < last_trading_day` that PLAN.md § Deployment words the boot
-catch-up as. That comparison is **degenerate and can never be true**: a trading day is *defined*
-as a date where SPY has a `daily_prices` row, SPY is a referenced instrument, so
-`Calendar.last_day` is derived FROM the cache and can never be ahead of it — a box asleep for a
+**`stale` is `max(latest_price_on)` over referenced instruments vs the *expected session*: the
+most recent WEEKDAY in ET, counting today once it is past 22:00 ET.** It is not the literal
+`max(latest_price_on) < last_trading_day` that PLAN.md § Deployment words the boot catch-up as.
+That comparison is **degenerate and can never be true**: a trading day is *defined* as a date
+where SPY has a `daily_prices` row, SPY is a seeded benchmark and therefore always referenced, so
+`Calendar.last_day` is derived FROM the same cache the max is taken over — a box asleep for a
 week has a week-old cache *and* a week-old calendar, and they agree. Only the wall clock knows.
-"Strictly before today" because the nightly sync runs 22:00 ET, so today's close does not exist
-for most of today. **Weekend-aware, deliberately not holiday-aware** (the app has no holiday
-table by design): on the ~9 US market holidays a year, and the day after each, `stale` reads
-`true` while the cache is in fact current. Chosen direction — a false "stale" costs one
-idempotent no-op sync; a false "fresh" costs the user trusting old numbers. Don't "fix" it
-without a holiday source.
+
+The **22:00 ET cutoff** is the slot `config/recurring.yml` schedules the nightly sync in and the
+hour by which US EOD data has landed, so today's close *is* expected once it passes. (Issue #59:
+this replaced an earlier cutoff-free "strictly before today" rule that called the cache fresh for
+a full evening every weekday, and disagreed with the boot catch-up's own rule — on a Monday at
+23:00 ET the app fetched while this endpoint said `stale: false`. There is now exactly one
+predicate, `Prices::Freshness`, and `Boot::CatchUp` consumes it.) **Weekend-aware, deliberately
+not holiday-aware** (the app has no holiday table by design): on the ~9 US market holidays a
+year, and the evening of each, `stale` reads `true` while the cache is in fact current. Chosen
+direction — a false "stale" costs one idempotent no-op sync; a false "fresh" costs the user
+trusting old numbers. Don't "fix" it without a holiday source.
+
+**`instruments_behind` is the signal `stale` structurally cannot give.** `stale` is a MAX, and
+SPY is always in the set, so **one** referenced instrument whose fetch failed while SPY's
+succeeded can never move it. This counts referenced instruments individually behind the expected
+session (a `NULL latest_price_on` — never priced — counts as behind). Therefore
+`stale: false, instruments_behind: 1` is a real, meaningful state: *the cache as a whole is
+current, one symbol is not*. `stale: true` implies `instruments_behind >= 1`; the converse does
+not hold. `latest_price_on` deliberately stays the MAX — it is the display value ("prices current
+through …"), not a health check.
 
 **`sync` wraps a DIFFERENT key set on GET than on POST** — GET is a state snapshot
-(`latest_price_on`/`last_trading_day`/`stale`/`pending`/`requested_at`), POST is an action result
+(`latest_price_on`/`last_trading_day`/`stale`/`instruments_behind`/`pending`/`requested_at`),
+POST is an action result
 (`status`/`requested_at`). Two zod schemas, not one. POST's shape was frozen and coded against
 before GET existed and was deliberately not reshaped. `requested_at` means the same thing in
 both: when the currently-pending sync was claimed.

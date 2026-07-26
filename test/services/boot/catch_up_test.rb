@@ -90,6 +90,43 @@ class Boot::CatchUpTest < ActiveSupport::TestCase
     assert_enqueued_jobs 1, only: Prices::DailySyncJob
   end
 
+  # issue #59: the gap #55 believed its cached-vs-calendar signal covered and
+  # did not. SPY is current and referenced, so it holds max(latest_price_on) at
+  # the reference day and `stale` is FALSE — yet AAPL's fetch failed. The boot
+  # must still retry it, which only the per-instrument count can decide.
+  test "one referenced instrument lagging behind a current SPY still enqueues a sync" do
+    spy = Instrument.find_by!(symbol: "SPY")
+    Benchmark.create!(instrument: spy, name: "S&P 500 test") # SPY is referenced in a real install
+    spy.update_columns(latest_price_on: LAST_TRADING_DAY)
+    priced_through(@aapl, LAST_TRADING_DAY - 3) # its fetch failed three sessions ago
+    clear_enqueued_jobs
+
+    result = Boot::CatchUp.call
+
+    assert_equal LAST_TRADING_DAY, result.latest_price_on, "the MAX is current — `stale` cannot see this"
+    assert_equal 1, result.instruments_behind
+    assert_equal [ "Prices::DailySyncJob" ], result.enqueued
+    assert_enqueued_jobs 1, only: Prices::DailySyncJob
+  end
+
+  # The boot path must never touch the cache store: the sync-claim lease lives
+  # in a SEPARATE database (Solid Cache) that can be unmigrated on a first boot.
+  test "the boot check never reads the sync-claim lease" do
+    priced_through(@aapl, LAST_TRADING_DAY - 1)
+    Prices::SyncTrigger.call(source: "test") # a live claim it must not consult
+    clear_enqueued_jobs
+
+    reads = []
+    counter = ->(_n, _s, _f, _i, payload) { reads << payload[:key] }
+    result = nil
+    ActiveSupport::Notifications.subscribed(counter, "cache_read.active_support") do
+      result = Boot::CatchUp.call
+    end
+
+    assert_empty reads, "a boot-time cache read is a boot-time dependency on the cache database"
+    assert_equal :ok, result.status
+  end
+
   # --- criterion 2: fresh data enqueues nothing, cheaply ---
 
   test "a boot with fresh data enqueues nothing" do

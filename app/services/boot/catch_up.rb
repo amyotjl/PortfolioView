@@ -5,9 +5,9 @@ module Boot
   # Solid Queue nightly schedule alone cannot be trusted. On every app start we
   # ask two cheap questions and enqueue at most one job each:
   #
-  #   1. Is max(latest_price_on) across ACTIVE instruments (Instrument.referenced
-  #      — anything a transaction, recurring rule or benchmark points at) behind
-  #      the last session? Then enqueue Prices::DailySyncJob. The sync only
+  #   1. Is any ACTIVE instrument (Instrument.referenced — anything a
+  #      transaction, recurring rule or benchmark points at) behind the last
+  #      expected session? Then enqueue Prices::DailySyncJob. The sync only
   #      ever fetches the delta since each instrument's last cached date, so a
   #      redundant run is a cheap no-op.
   #   2. Does any active recurring rule have next_run_on <= today (ET)? Then
@@ -25,12 +25,22 @@ module Boot
   # Whether this process should run at all is Boot::Eligibility's decision, not
   # this class's — .call is the pure, repeatable data check, so tests can drive
   # it directly in the test environment.
+  #
+  # WHAT "BEHIND" MEANS IS NOT DECIDED HERE (issue #59). This class used to
+  # compute its own reference day, which drifted from the one GET /api/v1/sync
+  # reported: on a Monday at 23:00 ET with the cache current through Friday it
+  # enqueued a sync while the API said `stale: false`. The single definition now
+  # lives in Prices::Freshness, which both this and the API consume; the only
+  # decision left here is what to DO about it.
   class CatchUp
     LOG_TAG = "[Boot::CatchUp]".freeze
 
     # Every table the two checks touch, including the three the
     # Instrument.referenced subqueries reach into. A missing one means the
     # schema is not loaded yet (first boot, or a boot racing db:prepare).
+    #
+    # This list also bounds what Prices::Freshness is allowed to query — see the
+    # BOOT SAFETY note there before adding a table to either side.
     REQUIRED_TABLES = %w[
       instruments
       daily_prices
@@ -39,14 +49,14 @@ module Boot
       benchmarks
     ].freeze
 
-    # US EOD data has landed by this hour (ET) — the same slot config/recurring.yml
-    # schedules the nightly sync in. Before it, the current day's close is not
-    # yet expected and its absence is not staleness.
-    DATA_LANDS_AT_HOUR = 22
-
     # status: :ok | :database_not_ready | :error
+    #
+    # reference_day is Prices::Freshness#expected_session — the day whose closes
+    # the staleness check demanded. Kept under this name because it is what the
+    # boot log calls it.
     Result = Struct.new(:status, :enqueued, :latest_price_on, :last_trading_day,
-                        :reference_day, :recurring_due, :details, keyword_init: true)
+                        :reference_day, :instruments_behind, :recurring_due,
+                        :details, keyword_init: true)
 
     def self.call = new.call
 
@@ -68,75 +78,46 @@ module Boot
     private
 
     def check_and_enqueue
-      enqueued = []
-      stale = prices_stale?
+      # check_pending: false — the sync-claim lease lives in the CACHE store,
+      # a separate database that may be unmigrated on a first boot. Boot must
+      # not read it, and the answer would not change what we do: the enqueue is
+      # already idempotent and the nightly schedule bypasses the lease too.
+      freshness = Prices::Freshness.call(check_pending: false)
       due = recurring_due?
 
-      enqueued << enqueue(Prices::DailySyncJob) if stale
+      enqueued = []
+      # Freshness#behind?, not #stale — see the note below.
+      enqueued << enqueue(Prices::DailySyncJob) if freshness.behind?
       enqueued << enqueue(Recurring::MaterializeDueJob) if due
 
-      log(:info, "prices: latest=#{@latest_price_on || 'none'} " \
-                 "last_trading_day=#{@last_trading_day || 'none'} " \
-                 "reference=#{@reference_day || 'none'} stale=#{stale}; " \
+      log(:info, "prices: latest=#{freshness.latest_price_on || 'none'} " \
+                 "last_trading_day=#{freshness.last_trading_day || 'none'} " \
+                 "reference=#{freshness.expected_session} stale=#{freshness.stale} " \
+                 "instruments_behind=#{freshness.instruments_behind}; " \
                  "recurring_due=#{due}; enqueued=#{enqueued.presence&.join(', ') || 'nothing'}")
 
-      finish(Result.new(status: :ok, enqueued: enqueued, latest_price_on: @latest_price_on,
-                        last_trading_day: @last_trading_day, reference_day: @reference_day,
+      finish(Result.new(status: :ok, enqueued: enqueued,
+                        latest_price_on: freshness.latest_price_on,
+                        last_trading_day: freshness.last_trading_day,
+                        reference_day: freshness.expected_session,
+                        instruments_behind: freshness.instruments_behind,
                         recurring_due: due))
     end
 
-    # An instrument nothing references is deliberately never synced (it burns
-    # provider quota for no one), so its stale prices must not trigger a boot
-    # sync either — the same Instrument.referenced scope the nightly fan-out
-    # uses defines "active" here.
+    # WHY Freshness#behind? AND NOT Freshness#stale. Same predicate, same
+    # expected session; this is the enqueue decision rather than the display
+    # one, and the two differ in both directions:
     #
-    # The reference day is the LATER of two signals, because neither alone is
-    # sufficient:
-    #
-    # - Trading::Calendar.last_day (the newest day in the cache) catches one
-    #   instrument lagging behind the rest — its fetch failed while SPY's
-    #   succeeded. This is the comparison docs/PLAN.md § Deployment names.
-    # - last_expected_session catches the case that motivates the whole feature:
-    #   the box was ASLEEP through one or more sessions. On its own the cached
-    #   comparison cannot see that, and would make this initializer dead code —
-    #   SPY is a seeded benchmark, so it is always `referenced`, and
-    #   Prices::SeriesWriter keeps its latest_price_on equal to the newest SPY
-    #   price row, which IS Calendar.last_day. max(latest_price_on) is therefore
-    #   never below it in a real install. See the report on issue #55.
-    #
-    # A nil latest_price_on counts as behind: a referenced instrument with no
-    # cached prices is exactly the "we are behind" state a fresh install boots
-    # into.
-    def prices_stale?
-      return false unless Instrument.referenced.exists?
-
-      @latest_price_on = Instrument.referenced.maximum(:latest_price_on)
-      @last_trading_day = Trading::Calendar.last_day
-      @reference_day = [ @last_trading_day, last_expected_session ].compact.max
-
-      @latest_price_on.nil? || @latest_price_on < @reference_day
-    end
-
-    # The most recent day whose closes should already be cached.
-    #
-    # Weekday-only, and deliberately NOT a claim about the trading calendar:
-    # Trading::Calendar is cache-derived (a trading day is a day SPY has a row
-    # for), so it cannot answer "has a session happened that we never fetched?"
-    # — the question this whole initializer exists to ask. Holidays are not
-    # modelled here for the same reason they are not modelled anywhere else in
-    # this app: a holiday boot enqueues one fan-out whose delta fetches find
-    # nothing, exactly like the nightly 7-day schedule already does. The weekend
-    # clamp mirrors the gate Prices::DailySyncJob applies to itself, so a
-    # Saturday boot with the week's data cached stays silent.
-    #
-    # NEVER use this for domain math. Trading::Calendar remains the only
-    # calendar any money calculation may consult.
-    def last_expected_session
-      now = ActiveSupport::TimeZone[Trading::Calendar::TIME_ZONE].now
-      date = now.hour < DATA_LANDS_AT_HOUR ? now.to_date - 1 : now.to_date
-      date -= 1 while date.saturday? || date.sunday?
-      date
-    end
+    # - `stale` is a MAX comparison, so it cannot see ONE referenced instrument
+    #   whose fetch failed while SPY's succeeded — SPY is always in the set and
+    #   holds the max up. (#55 claimed its cached-vs-calendar signal caught
+    #   this. It did not, and could not: both sides of that comparison were
+    #   maxima over the same cache.) `behind?` counts individual laggards, so a
+    #   boot after a partial fan-out failure retries it — one idempotent delta
+    #   fetch, the same work the nightly run would do anyway.
+    # - On an empty database `stale` is true (the UI must say "never synced")
+    #   but `behind?` is 0: nothing is referenced, so there is nothing to fetch
+    #   and enqueueing a fan-out over zero instruments is pure noise.
 
     # Mirrors Recurring::MaterializeDueJob's own selection exactly (and hits the
     # partial index on next_run_on WHERE active).

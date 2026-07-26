@@ -10,7 +10,14 @@ module Api
 
       PATH = "/api/v1/sync".freeze
 
-      setup { @user = users(:one) }
+      setup do
+        # 10:00 ET on a Wednesday. Frozen because the freshness predicate has a
+        # 22:00 ET cutoff (issue #59): without this, every seed-relative
+        # assertion below would flip meaning if the suite happened to run in the
+        # evening.
+        travel_to Time.utc(2026, 7, 22, 14, 0)
+        @user = users(:one)
+      end
 
       # ---------------------------------------------------------------------
       # GET /api/v1/sync — the freshness snapshot #57's Settings page renders.
@@ -23,7 +30,7 @@ module Api
 
         assert_response :ok
         assert_equal %w[sync], json.keys
-        assert_equal %w[last_trading_day latest_price_on pending requested_at stale],
+        assert_equal %w[instruments_behind last_trading_day latest_price_on pending requested_at stale],
           json["sync"].keys.sort, "exact frozen key set — the zod schema mirrors this"
 
         snapshot = json["sync"]
@@ -32,6 +39,26 @@ module Api
         assert_nil snapshot["requested_at"]
         assert_equal true, snapshot["stale"], "nothing cached => a sync is needed"
         assert_equal false, snapshot["pending"]
+        assert_equal 0, snapshot["instruments_behind"], "an integer, never null, even on an empty database"
+      end
+
+      # issue #59: the signal `stale` structurally cannot give. SPY is always
+      # referenced, so it holds the MAX up and one failed single-symbol fetch is
+      # invisible to `stale`.
+      test "GET reports a single lagging instrument that stale alone cannot see" do
+        seed_current_calendar
+        aapl = create_instrument(symbol: "AAPL")
+        Benchmark.create!(instrument: aapl, name: "AAPL bench")
+        aapl.update!(latest_price_on: @last_trading_day - 4)
+        sign_in_as @user
+
+        get PATH
+
+        assert_response :ok
+        assert_equal false, json.dig("sync", "stale"), "the cache as a whole is current"
+        assert_equal 1, json.dig("sync", "instruments_behind"), "one symbol is not"
+        assert_equal @last_trading_day.iso8601, json.dig("sync", "latest_price_on"),
+          "the display value stays the MAX — #57 renders 'prices current through'"
       end
 
       test "GET reports ISO dates and stale=false once the cache is current" do
@@ -203,15 +230,21 @@ module Api
 
       private
 
-      # A calendar whose newest day IS the newest expected trading day (the most
-      # recent weekday strictly before ET today), so the snapshot reads current.
+      # A calendar whose newest day IS Prices::Freshness's expected session.
+      # Time is frozen at 10:00 ET in setup, i.e. before the 22:00 data drop, so
+      # that is the most recent weekday before today and the snapshot reads
+      # current.
       def seed_current_calendar
         @last_trading_day = previous_weekday(Trading::Calendar.today)
         seed_calendar_through(@last_trading_day)
       end
 
+      # 14 days, not 10: create_trading_days only seeds weekdays, so a target
+      # that lands on a weekend would leave the calendar's real newest day two
+      # days earlier than @last_trading_day. A whole number of weeks preserves
+      # the weekday whatever `today` is.
       def seed_stale_calendar
-        @last_trading_day = previous_weekday(Trading::Calendar.today) - 10.days
+        @last_trading_day = previous_weekday(Trading::Calendar.today) - 14.days
         seed_calendar_through(@last_trading_day)
       end
 
