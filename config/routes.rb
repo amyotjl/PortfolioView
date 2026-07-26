@@ -15,7 +15,9 @@ Rails.application.routes.draw do
       # in #57). The browser cannot hold the internal bearer token, so the SPA
       # gets its own door onto the same Prices::SyncTrigger — normal session +
       # CSRF + error envelope. See Api::V1::SyncsController.
-      resource :sync, only: %i[ create ]
+      # GET reads the price-cache freshness snapshot the Settings page renders;
+      # POST triggers the sync. Same resource, so the pair reads coherently.
+      resource :sync, only: %i[ show create ]
 
       # Portfolio export/import (backlog #064). Declared as COLLECTION routes on
       # the portfolios resource so /portfolios/export is matched before the

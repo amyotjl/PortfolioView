@@ -51,6 +51,20 @@ module Prices
 
     def self.call(...) = new(...).call
 
+    # When the currently-held claim was made, or nil if no sync is pending.
+    # Read-only; claiming stays private to #call so there is exactly one writer
+    # of the lease. Backs GET /api/v1/sync's `pending`/`requested_at`, so the
+    # Settings page can show in-flight state on page load rather than only
+    # after a click.
+    def self.pending_since(cache: Rails.cache)
+      raw = cache.read(CLAIM_KEY)
+      return nil if raw.blank?
+
+      Time.iso8601(raw).utc
+    rescue ArgumentError
+      nil
+    end
+
     # `source` is for the log line only (which entry point asked) — it never
     # affects behavior, so the two callers cannot drift apart.
     def initialize(source:, cache: Rails.cache, lease: LEASE, now: Time.current)

@@ -6,10 +6,103 @@ module Api
     # "Sync now" path. Session + CSRF, never a bearer token.
     class SyncsControllerTest < ActionDispatch::IntegrationTest
       include ActiveJob::TestHelper
+      include DomainTestHelper
 
       PATH = "/api/v1/sync".freeze
 
       setup { @user = users(:one) }
+
+      # ---------------------------------------------------------------------
+      # GET /api/v1/sync — the freshness snapshot #57's Settings page renders.
+      # ---------------------------------------------------------------------
+
+      test "GET returns the frozen key set, with nulls on a fresh database" do
+        sign_in_as @user
+
+        get PATH
+
+        assert_response :ok
+        assert_equal %w[sync], json.keys
+        assert_equal %w[last_trading_day latest_price_on pending requested_at stale],
+          json["sync"].keys.sort, "exact frozen key set — the zod schema mirrors this"
+
+        snapshot = json["sync"]
+        assert_nil snapshot["latest_price_on"], "no instruments cached in a fresh database"
+        assert_nil snapshot["last_trading_day"]
+        assert_nil snapshot["requested_at"]
+        assert_equal true, snapshot["stale"], "nothing cached => a sync is needed"
+        assert_equal false, snapshot["pending"]
+      end
+
+      test "GET reports ISO dates and stale=false once the cache is current" do
+        seed_current_calendar
+        sign_in_as @user
+
+        get PATH
+
+        assert_response :ok
+        assert_equal @last_trading_day.iso8601, json.dig("sync", "latest_price_on")
+        assert_equal @last_trading_day.iso8601, json.dig("sync", "last_trading_day")
+        assert_equal false, json.dig("sync", "stale")
+        assert_match(/\A\d{4}-\d{2}-\d{2}\z/, json.dig("sync", "latest_price_on"),
+          "dates are bare ISO YYYY-MM-DD, never timestamps")
+      end
+
+      test "GET reports stale=true when the cache has fallen behind" do
+        seed_stale_calendar
+        sign_in_as @user
+
+        get PATH
+
+        assert_response :ok
+        assert_equal true, json.dig("sync", "stale")
+        assert_equal @last_trading_day.iso8601, json.dig("sync", "last_trading_day"),
+          "a stale snapshot still reports the date it IS current through"
+      end
+
+      test "GET surfaces an in-flight sync, so the page can render pending state on load" do
+        sign_in_as @user
+
+        post PATH, as: :json
+        assert_equal "enqueued", json.dig("sync", "status")
+        requested_at = json.dig("sync", "requested_at")
+
+        get PATH
+
+        assert_response :ok
+        assert_equal true, json.dig("sync", "pending")
+        assert_equal requested_at, json.dig("sync", "requested_at"),
+          "GET's requested_at is the same claim time POST returned"
+      end
+
+      test "GET never requires a CSRF token" do
+        sign_in_as @user
+
+        with_forgery_protection do
+          get PATH
+          assert_response :ok
+        end
+      end
+
+      test "GET is auth-gated with the 401 envelope" do
+        get PATH
+
+        assert_response :unauthorized
+        assert_equal %w[code details message], json.fetch("error").keys.sort
+        assert_equal "unauthenticated", json.dig("error", "code")
+      end
+
+      test "GET never enqueues anything — reading freshness is not triggering a sync" do
+        sign_in_as @user
+
+        assert_no_enqueued_jobs(only: Prices::DailySyncJob) { get PATH }
+
+        assert_response :ok
+      end
+
+      # ---------------------------------------------------------------------
+      # POST /api/v1/sync
+      # ---------------------------------------------------------------------
 
       test "a signed-in user enqueues Prices::DailySyncJob and gets 202" do
         sign_in_as @user
@@ -109,6 +202,30 @@ module Api
       end
 
       private
+
+      # A calendar whose newest day IS the newest expected trading day (the most
+      # recent weekday strictly before ET today), so the snapshot reads current.
+      def seed_current_calendar
+        @last_trading_day = previous_weekday(Trading::Calendar.today)
+        seed_calendar_through(@last_trading_day)
+      end
+
+      def seed_stale_calendar
+        @last_trading_day = previous_weekday(Trading::Calendar.today) - 10.days
+        seed_calendar_through(@last_trading_day)
+      end
+
+      def seed_calendar_through(date)
+        spy = create_trading_days(date - 20.days, date)
+        spy.update!(latest_price_on: date)
+        Benchmark.create!(instrument: spy, name: "S&P 500 test")
+      end
+
+      def previous_weekday(from)
+        date = from - 1
+        date -= 1 while date.saturday? || date.sunday?
+        date
+      end
 
       def json = JSON.parse(response.body)
 

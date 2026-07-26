@@ -14,6 +14,18 @@ module Api
     # The token-guarded internal route stays for cron / external callers, which
     # have no cookie jar.
     class SyncsController < BaseController
+      # GET /api/v1/sync
+      #
+      # The global price-cache freshness snapshot #57's Settings page renders
+      # ("prices are current through ..." / "a sync is needed"). Global, not
+      # portfolio-scoped, and never 404s — an empty cache is a valid answer
+      # (`latest_price_on: null`), not a missing resource. Always 200 for a
+      # signed-in caller. See SyncStatusSerializer for the shape and
+      # Prices::Freshness for the staleness rule.
+      def show
+        render json: SyncStatusSerializer.new(Prices::Freshness.call).as_json
+      end
+
       # POST /api/v1/sync
       #
       # Enqueues Prices::DailySyncJob via Prices::SyncTrigger and answers 202
