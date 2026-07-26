@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { formatCurrency, formatDate, formatPercent, formatSignedPercent } from './format'
+import {
+  formatCurrency,
+  formatDate,
+  formatDateTime,
+  formatPercent,
+  formatSignedPercent,
+} from './format'
 
 describe('formatCurrency', () => {
   it('formats a number as USD with two fraction digits', () => {
@@ -71,5 +77,23 @@ describe('formatDate', () => {
   it('formats a full ISO-8601 UTC timestamp', () => {
     // 2026-01-06T02:00:00Z is still Jan 5 in America/New_York (21:00 ET).
     expect(formatDate('2026-01-06T02:00:00Z')).toBe('Jan 5, 2026')
+  })
+})
+
+describe('formatDateTime', () => {
+  it('renders a UTC timestamp as an ET wall clock, zone spelled out', () => {
+    expect(formatDateTime('2026-07-26T17:42:02Z')).toBe('Jul 26, 1:42 PM EDT')
+  })
+
+  it('follows the ET offset across the DST boundary, and back a day when it must', () => {
+    // 02:00Z on Jan 6 is 21:00 on Jan 5 in EST — a naive UTC render would name
+    // the wrong day AND the wrong zone.
+    expect(formatDateTime('2026-01-06T02:00:00Z')).toBe('Jan 5, 9:00 PM EST')
+  })
+
+  it('echoes an unparseable timestamp instead of throwing', () => {
+    // Intl throws a RangeError on an Invalid Date; a malformed value must degrade
+    // to ugly copy, never to a blank card.
+    expect(formatDateTime('not-a-timestamp')).toBe('not-a-timestamp')
   })
 })
