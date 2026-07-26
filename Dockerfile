@@ -100,10 +100,11 @@ RUN bundle exec bootsnap precompile -j 1 app/ lib/
 # ---------------------------------------------------------------------------
 FROM base
 
-# Run and own only the runtime files as a non-root user for security
+# Run and own only the runtime files as a non-root user for security. The USER
+# switch happens after the copies below, because the `mv` that relocates
+# index.html has to create /rails/spa and WORKDIR made /rails itself root-owned.
 RUN groupadd --system --gid 1000 rails && \
     useradd rails --uid 1000 --gid 1000 --create-home --shell /bin/bash
-USER 1000:1000
 
 # Copy built artifacts: gems, application
 COPY --chown=rails:rails --from=build "${BUNDLE_PATH}" "${BUNDLE_PATH}"
@@ -121,7 +122,11 @@ COPY --chown=rails:rails --from=build /rails /rails
 # forces every request for the shell — "/" and deep links alike — through
 # SpaController, which sends it with no-store.
 COPY --chown=rails:rails --from=frontend /build/frontend/dist/ /rails/public/
-RUN mkdir -p /rails/spa && mv /rails/public/index.html /rails/spa/index.html
+RUN mkdir -p /rails/spa && \
+    mv /rails/public/index.html /rails/spa/index.html && \
+    chown -R rails:rails /rails/spa
+
+USER 1000:1000
 
 # Entrypoint clears a stale pidfile and prepares the database.
 ENTRYPOINT ["/rails/bin/docker-entrypoint"]

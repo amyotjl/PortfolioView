@@ -53,11 +53,16 @@ docker compose --profile production up --build -d db-prod web-prod
 
 # 3. Watch the first boot. bin/docker-entrypoint clears any stale
 #    tmp/pids/server.pid and runs `bin/rails db:prepare` before starting the
-#    server, which creates app_production plus the app_production_queue /
-#    _cache / _cable databases and loads the schema. No manual migrate step.
+#    server. That creates app_production plus the app_production_queue /
+#    _cache / _cable databases, loads the schema, and — because the database is
+#    brand new — runs db/seeds.rb for the benchmark list (SPY, VTI, QQQ).
+#    There is no separate migrate or seed step on a fresh volume.
 docker compose --profile production logs -f web-prod
+```
 
-# 4. Seed the benchmark list (SPY, VTI, QQQ, ...) once per fresh volume.
+Re-running the seeds later (they are idempotent) if you ever need to:
+
+```sh
 docker compose --profile production exec web-prod ./bin/rails db:seed
 ```
 
