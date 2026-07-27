@@ -3,6 +3,7 @@ import {
   allocationsResponseSchema,
   candlesResponseSchema,
   errorEnvelopeSchema,
+  ACTIVITIES_CSV_FORMAT,
   formatLabel,
   HOLDINGS_CSV_FORMAT,
   importReportSchema,
@@ -225,10 +226,50 @@ describe('API contract schemas (docs/API_SHAPES.md)', () => {
     expect(parsed.portfolios[0].status).toBe('quarantined')
   })
 
-  it('labels both import formats and passes an unknown one through', () => {
+  it('labels every import format and passes an unknown one through', () => {
     expect(formatLabel(NATIVE_FORMAT)).toBe('PortfolioView export')
+    expect(formatLabel(ACTIVITIES_CSV_FORMAT)).toBe('Broker activity ledger')
     expect(formatLabel(HOLDINGS_CSV_FORMAT)).toBe('Broker holdings report')
     expect(formatLabel('something.new')).toBe('something.new')
+  })
+
+  it('defaults splits_created so a server predating #68 still parses', () => {
+    // A schema failure THROWS in dev, which would blank the import dialog rather
+    // than render a slightly-incomplete report.
+    const parsed = importReportSchema.parse({
+      format: ACTIVITIES_CSV_FORMAT,
+      dry_run: false,
+      totals: {
+        portfolios_created: 1,
+        portfolios_skipped: 0,
+        portfolios_failed: 0,
+        transactions_created: 5,
+        recurring_created: 0,
+      },
+      warnings: [],
+      portfolios: [],
+    })
+
+    expect(parsed.totals.splits_created).toBe(0)
+  })
+
+  it('carries splits_created through when the server sends it', () => {
+    const parsed = importReportSchema.parse({
+      format: ACTIVITIES_CSV_FORMAT,
+      dry_run: false,
+      totals: {
+        portfolios_created: 3,
+        portfolios_skipped: 0,
+        portfolios_failed: 0,
+        transactions_created: 225,
+        recurring_created: 0,
+        splits_created: 1,
+      },
+      warnings: [],
+      portfolios: [],
+    })
+
+    expect(parsed.totals.splits_created).toBe(1)
   })
 
   it('keeps the client-side upload cap in step with the server', () => {

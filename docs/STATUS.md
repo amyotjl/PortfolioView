@@ -1,6 +1,8 @@
 # Status (living document)
 
-Last verified: 2026-07-26. **M0–M8 all merged** (M4's follow-up defects #59/#60 fixed along
+Last verified: 2026-07-26. **#68** (import the Wealthsimple *activity ledger* — a real
+transaction history, the third import format) is implemented on `m8/068-activities-import`
+and awaiting the tester gate; see "#68 as built" below. **M0–M8 all merged** (M4's follow-up defects #59/#60 fixed along
 the way). M8's three shipped issues — #52 contribution-vs-growth area, #53 sector treemap,
 #64 portfolio export/import — each passed an independent tester gate on 2026-07-26 and were
 merged that day. Still open and NOT part of the merge: **#63** (null instrument names +
@@ -17,10 +19,16 @@ invisible to Vitest and to the Rails suite.
 
 Two specs now, each registering **exactly one** user per run (registration is rate-limited to
 10 per 3 minutes, so keep new specs API-driven): `smoke.spec.js` and `transfer.spec.js`
-(#64's export download + multipart import — a blob download and a multipart upload are both
-invisible to Vitest and to fixture-based Rails tests). Set `E2E_SCREENSHOTS=1` to have
-`transfer.spec.js` write `e2e/screenshots/*.png` for the "render it and look at it" check
-below; a normal run leaves nothing behind.
+(#64's export download + multipart import, plus #68's activity-ledger upload — a blob download
+and a multipart upload are both invisible to Vitest and to fixture-based Rails tests). Set
+`E2E_SCREENSHOTS=1` to have `transfer.spec.js` write `e2e/screenshots/*.png` for the
+"render it and look at it" check below; a normal run leaves nothing behind.
+
+**If e2e fails at registration with "Bad Gateway", the `web` container is still booting** —
+`docker compose restart vite` can take its dependency chain with it, and `bundle install` +
+`db:prepare` make the restart slow. Check `curl -s -o /dev/null -w '%{http_code}'
+http://localhost:3000/up` before blaming the spec; this looked exactly like the registration
+rate limit once.
 
 **Keep this current.** Whoever closes an issue or a milestone updates the tables below in
 the same session — this file exists so a future agent doesn't have to re-run `gh issue list`
@@ -140,6 +148,8 @@ defects no assertion did.
 | [#65](https://github.com/amyotjl/PortfolioView/issues/65) | M7 | a11y: PrimeVue's unstyled `Select` renders its combobox as a `<span>` whose `aria-label` it sets to the **selected value**, so the field's visible label is never announced (`getByRole('combobox', {name: 'Kind'})` → 0 matches). Passing `aria-label` at the call site does not help — the component overwrites it | Open, not started. Pre-existing and affects **every** Select (Kind, Frequency, and M5's Benchmark). Needs a `selectPt`-level fix wiring `aria-labelledby` to `FormField`'s label id, not a per-call-site patch. Both M7 call sites carry a comment pointing at the issue |
 | [#66](https://github.com/amyotjl/PortfolioView/issues/66) | none | Support Canadian-listed securities (TSX / TSX-V / CBOE Canada). Surfaced by #64: the user's real Wealthsimple report is entirely CAD | **Open and genuinely blocked — needs two decisions from the project owner, not more investigation.** (1) *A data source:* probed live 2026-07-25, **no configured provider serves Canadian daily history on its current tier** — Tiingo 404s and has zero CAD rows, FMP returns 402 Premium for `.TO`, Twelve Data needs Grow+. FMP's free `search-symbol`/`profile` *do* return CAD name/currency/current price, so validation, autocomplete and a value snapshot are reachable free; **history is not**, and history is what backfill/candles/valuation/summary/benchmarks are all built on. (2) *A currency model:* CAD and USD can't be summed without FX. Also needs schema work — `instruments` is UNIQUE on `upper(symbol)` alone, so TSX `META` (a CAD-hedged CDR) and NASDAQ `META` cannot coexist. Confirmed live during #64's gate: an imported CAD portfolio reports `current_value`, `net_deposits` **and** `total_return` as `"0.0"` with `as_of` `nil` — with no price coverage there is no valuation series at all. The stored cost basis is exact, and the UI states this on screen |
 
+| [#68](https://github.com/amyotjl/PortfolioView/issues/68) | M8 | Import the Wealthsimple **activity ledger** (a real transaction history), the third import format alongside the native envelope and the holdings snapshot | **Implemented on `m8/068-activities-import`, awaiting the tester gate.** Verified against the user's real 372-row export: 225 transactions, 3 portfolios, and a derived 3:1 split that makes the share counts reconcile with the independent holdings report. See "#68 as built" below |
+
 ## #64 as built (export/import) — read before touching instruments or the importer
 
 **The one fact that decided this feature's whole design:** the local `listed_instruments`
@@ -201,7 +211,8 @@ source. That is a separate issue, not a bug in the importer.
 - **A holdings report is not a ledger.** `HoldingsCsvParser` synthesizes one opening buy per
   position, `price = book value / quantity` (NOT market price — that would erase all gain/loss),
   dated from the report's "As of" trailer. Total cost basis is preserved to the price column's
-  6dp; purchase dates and individual lots are fiction, and the UI says so.
+  6dp; purchase dates and individual lots are fiction, and the UI says so. **Superseded for
+  Wealthsimple users by #68's activity-ledger format** — see below; prefer the ledger.
 - **Frontend**: `types/transfer.ts`, `lib/download.ts` (`saveBlob`), `lib/importSummary.ts`
   (pure wording helpers), `composables/usePortfolioTransfer.ts`, `PortfolioImportDialog.vue`
   + `ImportReportPanel.vue`, Export/Import buttons on `PortfoliosView`. `api/client.ts` gained
@@ -212,6 +223,52 @@ source. That is a separate issue, not a bug in the importer.
   preview shipped reading "so this one **was imported** as …" for a rename, telling users their
   data had already been written. Locked by a test that greps every dry-run warning for
   `was/were imported`.
+
+## #68 as built (broker ACTIVITY-ledger import) — the third format
+
+Wealthsimple also exports an **activity ledger**, which is a real transaction history.
+**Prefer it over the holdings snapshot whenever a user has both**: `ActivitiesCsvParser`
+keeps real trade dates, individual fills and closed positions, all of which
+`HoldingsCsvParser` has to invent. Verified against the user's real 372-row export:
+225 transactions across 3 accounts, and the resulting share counts reconcile with the
+**independent holdings report** exactly on 13 of 14 positions (the 14th differs by one
+day of a $10/day recurring buy, because the two exports have different cutoffs).
+
+- **`CorporateAction/SUBDIVISION` is a split expressed as a SHARE DELTA**, not a ratio:
+  `"ZEQT … Corrected quantity of shares by 182.0398"`, no price, no cash. The ratio is
+  recovered from the position the ledger implies just before the ex-date —
+  `(91.0199 + 182.0398) / 91.0199` = exactly 3. It becomes a **`SplitEvent`**, never a
+  transaction (shares have a `price > 0` CHECK, and any invented price injects phantom
+  cash into contributed capital). Dropping it leaves that position **10% short**.
+- **Splits are written in Import's phase 2** — outer transaction, before any transaction
+  row — for two independent reasons, both load-bearing: `split_events` is
+  instrument-global so it must not sit inside a per-portfolio savepoint, and
+  `Positions::Validator` reads splits **from the database** while replaying, so a sell of
+  post-split shares is rejected as an oversell if the split isn't already there. There is
+  a matched pair of tests: the sell passes with the split and fails without it.
+- **There is no MIC/Exchange column**, so the venue signal is an `FX Rate:` marker in a
+  TRADE's description — the broker converted currency, so the security isn't
+  CAD-denominated and keeps its bare US ticker. The `currency` column is the **account's**
+  currency (CAD on every row) and must never be read as the instrument's. This correctly
+  separates US `QQQ` from CAD-listed `QQC`/`XQQ`, and correctly suffixes the CAD-hedged
+  `META`/`GOOG` CDRs. The verdict is reached **per symbol over the whole file**, because
+  only trades carry the marker while dividends and transfers for the same symbol do not.
+- **`InstrumentResolver#venue_sibling_for`** stops one security becoming two instruments:
+  the holdings report has a MIC and yields `FINN.NE`, the ledger has none and would mint
+  `FINN.TO`. Matched on base symbol + same currency and **only when both sides are
+  venue-suffixed**, so it can never collapse a US ticker into a non-US one. Whichever file
+  is imported first wins the naming. Verified with both real exports: `FINN.NE` only.
+- **`SecurityTransfer` rows are real positions** (~$51k in the sample), priced at
+  `net_cash_amount / quantity`. Sign of `quantity` decides buy vs sell.
+- **`Trade/SELL` carries a NEGATIVE `quantity`** — `abs` it, or the `shares > 0` CHECK fails.
+- **Cash rows are skipped because there is no cash account**: dividends, deposits,
+  interest, tax, fee reimbursements. The report states both consequences — contributed
+  capital comes from trade cost rather than the deposit rows, and a dividend-funded buy
+  reads as a new contribution, understating return. Auto-pairing a dividend to a later buy
+  by amount was **rejected**: guessing wrong misstates a money figure, and the user can set
+  `kind: dividend_reinvestment` per transaction.
+- Warning volume is capped (`EXAMPLE_LIMIT`): the real file renames 39 tickers, and a
+  39-item paragraph buries the two sentences that matter.
 
 ### Resolved (kept for traceability — don't reintroduce these)
 - **Charts rendered at zero height** (M6, found and fixed in M7 2026-07-25) — see the

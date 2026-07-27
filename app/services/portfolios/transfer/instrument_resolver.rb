@@ -53,7 +53,46 @@ module Portfolios
         # invent an instrument out of a bare, unvouched-for ticker.
         return directory_fallback(key) if spec.nil?
 
+        sibling = venue_sibling_for(key, spec)
+        return Result.new(instrument: sibling, error: nil) if sibling
+
         Result.new(instrument: create_from(spec), error: nil)
+      end
+
+      # An already-imported instrument for the SAME security under a different
+      # venue suffix (backlog #068).
+      #
+      # The two broker formats know different amounts about a venue: the holdings
+      # report carries a MIC and yields `FINN.NE`, while the activity ledger has no
+      # exchange column at all and falls back to `FINN.TO`. Importing both files
+      # would otherwise leave one security split across two instruments, each with
+      # half the history — which reads as two half-sized positions on the
+      # dashboard, not as an error.
+      #
+      # Matched on base symbol + same currency, and only ever when BOTH sides are
+      # venue-suffixed, so this can never collapse a US ticker into a non-US one
+      # (that is the collision SymbolQualifier exists to prevent). Whichever file
+      # is imported first wins the naming, and the second reuses it.
+      def venue_sibling_for(key, spec)
+        base, suffix = split_venue(key)
+        return nil if suffix.nil?
+
+        pattern = "#{Instrument.sanitize_sql_like(base)}.%"
+        candidates = Instrument.where("upper(symbol) LIKE ?", pattern)
+                               .where(currency: spec.currency)
+        candidates.find do |candidate|
+          candidate_base, candidate_suffix = split_venue(candidate.symbol.upcase)
+          candidate_suffix.present? && candidate_base == base
+        end
+      end
+
+      # "FINN.TO" -> ["FINN", ".TO"]; a share-class dot ("HPS.A") is not a venue,
+      # so it stays part of the base and only the trailing venue suffix is split.
+      def split_venue(symbol)
+        suffix = SymbolQualifier::KNOWN_SUFFIXES.find { |candidate| symbol.end_with?(candidate) }
+        return [ symbol, nil ] if suffix.nil?
+
+        [ symbol.delete_suffix(suffix), suffix ]
       end
 
       def directory_fallback(key)

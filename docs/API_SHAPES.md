@@ -73,12 +73,16 @@ source of truth for the frontend zod schemas (`frontend/src/types/`). Convention
   (provider-owned and re-fetchable). Export → import → export is a byte-identical fixed point.
 - `POST /api/v1/portfolios/import` → **multipart/form-data**, not JSON. Fields: `file` (required),
   `on_conflict` (`"rename"` default | `"skip"`), `dry_run` (`"true"`/`"false"`). Format is sniffed
-  from the file's CONTENT, never its name or MIME type: the native envelope above, or a broker
-  holdings-snapshot CSV (`"wealthsimple.holdings"`). Max 8 MiB.
+  from the file's CONTENT, never its name or MIME type — three are accepted:
+  the native envelope above, a broker **activity ledger** CSV
+  (`"wealthsimple.activities"`, issue #68 — a real trade history), or a broker
+  **holdings snapshot** CSV (`"wealthsimple.holdings"` — no trade dates, so trades are
+  synthesized). Max 8 MiB.
   ```jsonc
   { "import": { "format": str, "dry_run": bool,
       "totals": { portfolios_created, portfolios_skipped, portfolios_failed,
-                  transactions_created, recurring_created },   // all numbers
+                  transactions_created, recurring_created,
+                  splits_created },                           // all numbers
       "warnings": [str],                                       // file-level, belong to no portfolio
       "portfolios": [{ "name": str,                            // what the FILE asked for
                        "imported_as": str|null,                // what it became; null if skipped/failed
@@ -91,7 +95,12 @@ source of truth for the frontend zod schemas (`frontend/src/types/`). Convention
   at all (missing/empty/oversized/unrecognized/bad JSON/foreign format string). Atomicity is per
   portfolio: a failed one is rolled back whole, its siblings still commit. Nothing is overwritten.
   Client note: `status` is modelled as `z.string()`, not an enum — schema failures throw in dev, so
-  enumerating it would turn a newer backend into a blank dialog.
+  enumerating it would turn a newer backend into a blank dialog. `totals.splits_created` is
+  `z.number().default(0)` for the same reason (it postdates the rest of the contract).
+  `splits_created` counts `split_events` rows written, which are **instrument-global** — hence on
+  `totals` rather than on a portfolio row. It is non-zero only for the activity-ledger format, which
+  reports a split as a share delta that the parser converts back to a ratio; an existing event for
+  the same (instrument, ex_date) is never overwritten.
 
 ## Known envelope inconsistency (deliberate, don't "fix" in zod)
 `/candles` is a bare object; `/summary` and `/allocations` are wrapped. Model exactly as-built.

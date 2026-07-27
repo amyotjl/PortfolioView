@@ -67,6 +67,8 @@ module Portfolios
 
       def call
         results = nil
+        @split_warnings = []
+        @splits_created = 0
 
         # A dry run performs the ENTIRE real import — every model validation, the
         # position replay, the instrument creation — then rolls the outer
@@ -75,6 +77,9 @@ module Portfolios
         ActiveRecord::Base.transaction do
           planned = plan_portfolios
           preresolve_instruments(planned)
+          # Splits BEFORE any transaction, and outside every savepoint — see
+          # #create_splits.
+          create_splits
           results = planned.map { |item| write_portfolio(item) }
           raise ActiveRecord::Rollback if @dry_run
         end
@@ -84,7 +89,7 @@ module Portfolios
           dry_run: @dry_run,
           portfolios: results,
           totals: totals_for(results),
-          warnings: @document.warnings
+          warnings: @document.warnings + @split_warnings
         )
       end
 
@@ -155,6 +160,51 @@ module Portfolios
         end
 
         symbols.map { |symbol| symbol.to_s.strip.upcase }.uniq.each { |symbol| @resolver.resolve(symbol) }
+      end
+
+      # --- Phase 2b: instrument-global corporate actions -------------------------
+
+      # Splits are written here, in the OUTER transaction and BEFORE any
+      # transaction row, for two independent reasons:
+      #
+      #   1. `split_events` is instrument-global (keyed on instrument_id, ex_date),
+      #      so it does not belong inside a per-portfolio savepoint — a rollback
+      #      there would drop an event other portfolios depend on.
+      #   2. Positions::Validator reads splits FROM THE DATABASE while replaying a
+      #      proposed transaction set. A sell of post-split shares would be
+      #      rejected as an oversell if the split were not already committed.
+      #
+      # An existing event for the same (instrument, ex_date) is never overwritten:
+      # provider-fetched split data is authoritative, and the same
+      # don't-let-an-import-downgrade-local-data rule the instrument resolver
+      # follows applies here.
+      def create_splits
+        @document.splits.each do |spec|
+          result = @resolver.resolve(spec.symbol)
+          unless result.ok?
+            @split_warnings << "Split for #{spec.symbol} on #{spec.ex_date.iso8601} was skipped: " \
+                               "#{result.error}."
+            next
+          end
+
+          existing = SplitEvent.find_by(instrument_id: result.instrument.id, ex_date: spec.ex_date)
+          if existing
+            if existing.ratio != spec.ratio
+              @split_warnings << "#{spec.symbol} already has a #{existing.ratio.to_s('F')}:1 split on " \
+                                 "#{spec.ex_date.iso8601}, so the file's #{spec.ratio.to_s('F')}:1 was " \
+                                 "ignored — existing market data wins over an imported file."
+            end
+            next
+          end
+
+          event = SplitEvent.new(instrument: result.instrument, ex_date: spec.ex_date, ratio: spec.ratio)
+          if event.save
+            @splits_created += 1
+          else
+            @split_warnings << "Split for #{spec.symbol} on #{spec.ex_date.iso8601} could not be recorded: " \
+                               "#{messages_for(event)}."
+          end
+        end
       end
 
       # --- Phase 3: write --------------------------------------------------------
@@ -327,7 +377,10 @@ module Portfolios
           portfolios_skipped: results.count { |r| r.status == "skipped" },
           portfolios_failed: results.count { |r| r.status == "failed" },
           transactions_created: results.sum(&:transactions_created),
-          recurring_created: results.sum(&:recurring_created)
+          recurring_created: results.sum(&:recurring_created),
+          # Instrument-global, so it belongs to the run rather than to any one
+          # portfolio row.
+          splits_created: @splits_created
         }
       end
     end

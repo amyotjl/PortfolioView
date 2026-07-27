@@ -117,6 +117,45 @@ module Api
         assert_equal %w[RRSP TFSA], report["portfolios"].map { |p| p["name"] }.sort
       end
 
+      test "import detects a broker ACTIVITY LEDGER and reports splits it recorded" do
+        post import_api_v1_portfolios_path,
+             params: { file: upload(file_fixture("activities_report.csv").read, filename: "anything.txt") }
+
+        assert_response :ok
+        report = JSON.parse(response.body).fetch("import")
+        assert_equal Portfolios::Transfer::ACTIVITIES_CSV_FORMAT, report["format"]
+        assert_equal %w[RRSP TFSA], report["portfolios"].map { |p| p["name"] }.sort
+        assert_equal 11, report.dig("totals", "transactions_created")
+        # The ledger's CorporateAction row becomes an instrument-global SplitEvent,
+        # so the count lives on `totals`, not on a portfolio row.
+        assert_equal 1, report.dig("totals", "splits_created")
+      end
+
+      test "an activity-ledger import surfaces the cash rows it could not represent" do
+        post import_api_v1_portfolios_path,
+             params: { file: upload(file_fixture("activities_report.csv").read) }
+
+        warnings = JSON.parse(response.body).dig("import", "warnings")
+        assert warnings.any? { |w| w.include?("not a cash balance") },
+               "skipped deposits/dividends must reach the client"
+        assert warnings.any? { |w| w.include?("understates return") },
+               "the consequence for contributed capital must reach the client"
+        assert warnings.any? { |w| w.include?("3.0:1 split") },
+               "a DERIVED split ratio is an inference and must be disclosed"
+      end
+
+      test "the activity ledger and the holdings snapshot are distinguished by content" do
+        post import_api_v1_portfolios_path,
+             params: { file: upload(file_fixture("holdings_report.csv").read) }
+        assert_equal Portfolios::Transfer::HOLDINGS_CSV_FORMAT,
+                     JSON.parse(response.body).dig("import", "format")
+
+        post import_api_v1_portfolios_path,
+             params: { file: upload(file_fixture("activities_report.csv").read) }
+        assert_equal Portfolios::Transfer::ACTIVITIES_CSV_FORMAT,
+                     JSON.parse(response.body).dig("import", "format")
+      end
+
       test "a holdings CSV import surfaces its caveats as warnings" do
         post import_api_v1_portfolios_path,
              params: { file: upload(file_fixture("holdings_report.csv").read) }

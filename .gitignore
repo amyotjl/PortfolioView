@@ -48,3 +48,7 @@ Thumbs.db
 ruvector.db
 
 /portfolioExample
+
+# Agent worktrees created by Agent(..., isolation: "worktree") — local state,
+# and embedded git repos that must never be committed into the outer repo.
+/.claude/worktrees/
