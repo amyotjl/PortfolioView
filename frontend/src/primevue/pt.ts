@@ -1,6 +1,6 @@
 import type { ButtonPassThroughOptions } from 'primevue/button'
 import type { InputTextPassThroughOptions } from 'primevue/inputtext'
-import type { SelectPassThroughOptions } from 'primevue/select'
+import type { SelectPassThroughOptions, SelectProps } from 'primevue/select'
 import type { DialogPassThroughOptions } from 'primevue/dialog'
 import type { SelectButtonPassThroughOptions } from 'primevue/selectbutton'
 import type { ToggleButtonPassThroughOptions } from 'primevue/togglebutton'
@@ -13,6 +13,7 @@ import type { ToastPassThroughOptions } from 'primevue/toast'
 import type { TextareaPassThroughOptions } from 'primevue/textarea'
 import type { TagPassThroughOptions } from 'primevue/tag'
 import type { PaginatorPassThroughOptions } from 'primevue/paginator'
+import { fieldLabelId } from '@/lib/fieldIds'
 
 /**
  * PrimeVue is registered in UNSTYLED mode (main.ts), so every rendered component
@@ -51,6 +52,49 @@ export const inputTextPt: InputTextPassThroughOptions = {
   }),
 }
 
+/**
+ * ARIA for the Select's combobox element (#65).
+ *
+ * PrimeVue's unstyled Select renders the combobox as a `<span role="combobox">`.
+ * A `<span>` is not a *labelable* element, so `FormField`'s `<label for>` names
+ * nothing, and the component falls back to `:aria-label="ariaLabel || label"`
+ * where `label` is the SELECTED VALUE — which is why every Select announced as
+ * "Normal" rather than "Kind". Two things follow, both verified against
+ * primevue 4.5.5's `select/Select.vue`:
+ *
+ *  - Passing `aria-label` at the call site does NOT fix it, so don't try again.
+ *  - Any attribute Select doesn't declare as a prop (`aria-describedby`) is
+ *    swept into `ptmi('root')` and lands on the wrapper `<div>`, never on the
+ *    combobox — so the hint/error text was not announced either.
+ *
+ * `aria-labelledby` is the one hook bound straight through with no fallback
+ * (`:aria-labelledby="ariaLabelledby"`), and this `label` section is v-bound
+ * *after* those attributes (`mergeProps({…}, ptm('label'))`), so what we return
+ * here wins the merge. Per the accessible-name spec `aria-labelledby` also
+ * outranks `aria-label`, so the visible label wins over the selected value.
+ *
+ * The label id is DERIVED from the control id (see `lib/fieldIds`) rather than
+ * threaded through every call site, so present and future Selects inside a
+ * `FormField` are named automatically. A Select given an `input-id` that did
+ * NOT come from `FormField` must pass its own `aria-labelledby` (respected
+ * below) or omit `input-id`, or it will point at an element that isn't there.
+ */
+function selectComboboxAria(
+  props: SelectProps,
+  instance: { $attrs?: Record<string, unknown> } | undefined,
+): Record<string, string> {
+  const aria: Record<string, string> = {}
+
+  const labelledby = props.ariaLabelledby ?? (props.inputId ? fieldLabelId(props.inputId) : null)
+  if (labelledby) aria['aria-labelledby'] = labelledby
+
+  // Re-home the call site's aria-describedby onto the combobox itself.
+  const describedby = instance?.$attrs?.['aria-describedby']
+  if (typeof describedby === 'string' && describedby) aria['aria-describedby'] = describedby
+
+  return aria
+}
+
 export const selectPt: SelectPassThroughOptions = {
   root: ({ props }) => ({
     class: [
@@ -58,7 +102,10 @@ export const selectPt: SelectPassThroughOptions = {
       props.invalid ? 'border-down' : 'border-line focus-within:border-accent',
     ],
   }),
-  label: 'flex-1 truncate px-3 py-2 text-left',
+  label: ({ props, instance }) => ({
+    class: 'flex-1 truncate px-3 py-2 text-left',
+    ...selectComboboxAria(props, instance),
+  }),
   dropdown: 'flex w-9 shrink-0 items-center justify-center text-ink-subtle',
   clearIcon: 'text-ink-subtle',
   overlay: 'z-50 mt-1 overflow-hidden rounded-md border border-line bg-panel shadow-lg',
