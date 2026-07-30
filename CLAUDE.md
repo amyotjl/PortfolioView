@@ -56,7 +56,16 @@ docker run --rm -v "<worktree-path>:/app" -w /app/frontend node:22 bash -c "..."
 Never publish host ports from these ad-hoc containers — 3000/5173/5433 are held by the
 primary dev stack; curl from *inside* the same container to check a dev-server boot. On
 Windows, prefer the PowerShell tool over Bash/git-bash for these docker invocations —
-git-bash mangles Windows paths passed to `-v`/`-w` into POSIX-ish nonsense.
+git-bash mangles Windows paths passed to `-v`/`-w` into POSIX-ish nonsense. It also mangles
+*container-absolute* paths passed to a container command (`rails runner /tmp/x.rb` becomes a
+Windows path and "cannot be found") — write scratch scripts into the bind-mounted repo and
+use a **relative** path instead.
+
+**This recipe works in a worktree but NOT in the primary checkout**, where
+`frontend/node_modules` is a compose **named volume** (`frontend_node_modules`), so a
+disposable container bind-mounting the repo sees an empty directory and fails with
+`Cannot find package 'vitest'`. In the primary checkout run frontend tooling through the
+stack's own container instead: `docker compose exec vite npx vitest run`.
 
 Version pins are deliberate, not oversights — don't "helpfully" bump them:
 - **PrimeVue 4.5.5**, **vue-router 4.6.4** — npm's current latest are v5 majors; the plan
@@ -67,9 +76,17 @@ Version pins are deliberate, not oversights — don't "helpfully" bump them:
   zod-4 schemas correctly). Reuse the pattern; don't remove it.
 
 ## Parallel work: isolated worktrees + isolated compose stacks
-Independent slices of work run in `Agent(..., isolation: "worktree")`. To also run a full
-Docker stack from inside that worktree without colliding with the primary dev stack (ports
-3000/5173/5433) or another agent's isolated stack:
+Independent slices of work run in `Agent(..., isolation: "worktree")`.
+
+**The worktree is created on `main`, not on the branch you are currently sitting on.** A
+tester dispatched to gate a feature branch will silently verify `main` unless it checks out
+the branch itself — verify `git log -1` before trusting any worktree agent's verdict. This
+was caught during #68's gate, where the tester had to `git checkout --detach` onto the branch
+tip; a tester that missed it would have reported a confident PASS on code that isn't the
+branch. Name the exact commit or branch in the dispatch prompt.
+
+To also run a full Docker stack from inside that worktree without colliding with the primary
+dev stack (ports 3000/5173/5433) or another agent's isolated stack:
 1. In the worktree, write an **uncommitted** `docker-compose.isolated.yml`:
    ```yaml
    services:

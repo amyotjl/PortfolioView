@@ -11,7 +11,10 @@ import { buttonPt, dialogPt, selectPt } from '@/primevue/pt'
 import { MAX_IMPORT_BYTES, type ImportReport, type OnConflictMode } from '@/types'
 
 /**
- * Upload a PortfolioView export or a broker holdings report (issue #64).
+ * Upload a PortfolioView export, a broker activity ledger, or a broker holdings
+ * report (issues #64, #68). The format is sniffed from file CONTENT by the
+ * backend's Detector, so the copy here names the three formats but the input
+ * accepts any .json/.csv and lets the server decide.
  *
  * A plain <input type="file"> rather than PrimeVue's FileUpload: in unstyled mode
  * FileUpload brings a whole upload lifecycle (its own XHR, progress, chunking)
@@ -114,8 +117,10 @@ async function run(dryRun: boolean) {
 
       <template v-if="!committed">
         <p class="text-sm text-ink-muted">
-          Upload a PortfolioView export (<code class="text-xs">.json</code>) or a broker holdings
-          report (<code class="text-xs">.csv</code>). Nothing you already have is overwritten.
+          Upload a PortfolioView export (<code class="text-xs">.json</code>), a broker activity
+          ledger, or a broker holdings report (<code class="text-xs">.csv</code>). If you have both
+          broker files, prefer the activity ledger — it carries real trade dates. Nothing you
+          already have is overwritten.
         </p>
 
         <div class="flex flex-col gap-1.5">

@@ -1,8 +1,10 @@
 # Status (living document)
 
-Last verified: 2026-07-26. **#68** (import the Wealthsimple *activity ledger* — a real
-transaction history, the third import format) is implemented on `m8/068-activities-import`
-and awaiting the tester gate; see "#68 as built" below. **M0–M8 all merged** (M4's follow-up defects #59/#60 fixed along
+Last verified: 2026-07-29. **#68** (import the Wealthsimple *activity ledger* — a real
+transaction history, the third import format) **passed its tester gate and merged
+2026-07-29**; see "#68 as built" and "#68 merge gate" below. **#63** (null instrument names
++ search relevance) is implemented on `m7/063-directory-names` and **awaiting its tester
+gate** — see "#63 as built". **M0–M8 all merged** (M4's follow-up defects #59/#60 fixed along
 the way). M8's three shipped issues — #52 contribution-vs-growth area, #53 sector treemap,
 #64 portfolio export/import — each passed an independent tester gate on 2026-07-26 and were
 merged that day. Still open and NOT part of the merge: **#63** (null instrument names +
@@ -144,11 +146,11 @@ defects no assertion did.
 
 | Issue | Milestone | What | Status |
 |---|---|---|---|
-| [#63](https://github.com/amyotjl/PortfolioView/issues/63) | M7 | `listed_instruments.name` is `null` on 100% of rows — Tiingo's bulk ticker file has no name column (by design in `Directory::ImportJob`); search/autocomplete can only ever match on symbol until enriched | Open, deliberately deferred out of M7 (the autocomplete ships symbol-only and already handles the null). Candidate fix: backfill from `instruments.name` (already fetched via FMP for any symbol the user has touched) without a real-time enrichment call. **Also worth fixing the relevance ordering while there:** results cap at 20 and prefix matches are alphabetical, so searching `MSF` returns `MSF, MSFAX, MSFBX … MSFN` and **MSFT never makes the list** — verified live |
+| [#63](https://github.com/amyotjl/PortfolioView/issues/63) | M7 | **Implemented on `m7/063-directory-names`, awaiting the tester gate** — see "#63 as built" below. `listed_instruments.name` is `null` on 100% of rows — Tiingo's bulk ticker file has no name column (by design in `Directory::ImportJob`); search/autocomplete can only ever match on symbol until enriched | Open, deliberately deferred out of M7 (the autocomplete ships symbol-only and already handles the null). Candidate fix: backfill from `instruments.name` (already fetched via FMP for any symbol the user has touched) without a real-time enrichment call. **Also worth fixing the relevance ordering while there:** results cap at 20 and prefix matches are alphabetical, so searching `MSF` returns `MSF, MSFAX, MSFBX … MSFN` and **MSFT never makes the list** — verified live |
 | [#65](https://github.com/amyotjl/PortfolioView/issues/65) | M7 | a11y: PrimeVue's unstyled `Select` renders its combobox as a `<span>` whose `aria-label` it sets to the **selected value**, so the field's visible label is never announced (`getByRole('combobox', {name: 'Kind'})` → 0 matches). Passing `aria-label` at the call site does not help — the component overwrites it | Open, not started. Pre-existing and affects **every** Select (Kind, Frequency, and M5's Benchmark). Needs a `selectPt`-level fix wiring `aria-labelledby` to `FormField`'s label id, not a per-call-site patch. Both M7 call sites carry a comment pointing at the issue |
 | [#66](https://github.com/amyotjl/PortfolioView/issues/66) | none | Support Canadian-listed securities (TSX / TSX-V / CBOE Canada). Surfaced by #64: the user's real Wealthsimple report is entirely CAD | **Open and genuinely blocked — needs two decisions from the project owner, not more investigation.** (1) *A data source:* probed live 2026-07-25, **no configured provider serves Canadian daily history on its current tier** — Tiingo 404s and has zero CAD rows, FMP returns 402 Premium for `.TO`, Twelve Data needs Grow+. FMP's free `search-symbol`/`profile` *do* return CAD name/currency/current price, so validation, autocomplete and a value snapshot are reachable free; **history is not**, and history is what backfill/candles/valuation/summary/benchmarks are all built on. (2) *A currency model:* CAD and USD can't be summed without FX. Also needs schema work — `instruments` is UNIQUE on `upper(symbol)` alone, so TSX `META` (a CAD-hedged CDR) and NASDAQ `META` cannot coexist. Confirmed live during #64's gate: an imported CAD portfolio reports `current_value`, `net_deposits` **and** `total_return` as `"0.0"` with `as_of` `nil` — with no price coverage there is no valuation series at all. The stored cost basis is exact, and the UI states this on screen |
 
-| [#68](https://github.com/amyotjl/PortfolioView/issues/68) | M8 | Import the Wealthsimple **activity ledger** (a real transaction history), the third import format alongside the native envelope and the holdings snapshot | **Implemented on `m8/068-activities-import`, awaiting the tester gate.** Verified against the user's real 372-row export: 225 transactions, 3 portfolios, and a derived 3:1 split that makes the share counts reconcile with the independent holdings report. See "#68 as built" below |
+| [#68](https://github.com/amyotjl/PortfolioView/issues/68) | M8 | Import the Wealthsimple **activity ledger** (a real transaction history), the third import format alongside the native envelope and the holdings snapshot | ✅ **Merged 2026-07-29** after an independent tester PASS. Verified against the user's real 372-row export: 225 transactions, 3 portfolios, and a derived 3:1 split that makes the share counts reconcile with the independent holdings report. See "#68 as built" and "#68 merge gate" below |
 
 ## #64 as built (export/import) — read before touching instruments or the importer
 
@@ -270,6 +272,84 @@ day of a $10/day recurring buy, because the two exports have different cutoffs).
 - Warning volume is capped (`EXAMPLE_LIMIT`): the real file renames 39 tickers, and a
   39-item paragraph buries the two sentences that matter.
 
+## #68 merge gate (2026-07-29) — evidence, and what it corrected
+
+Independent tester, own worktree + own compose stack (`-p pv_t68`, all ports `[]`). Verdict
+**PASS, merge**. Evidence:
+[#68](https://github.com/amyotjl/PortfolioView/issues/68#issuecomment-5125542978). Rails
+**626 runs / 2940 assertions / 0 failures** (run twice), Vitest **245/245 across 21 files**,
+`vue-tsc` clean, RuboCop clean on all 14 changed files, `transfer.spec.js` green twice, live
+zod 7/7, both themes screenshotted and verified by `getComputedStyle`.
+
+**The matched pair is NOT vacuous, and this is how that was established.** Gutting
+`create_splits` proves little — plenty of tests fail. The discriminating probe mutated
+**order only**: `create_splits` moved *after* `write_portfolio`, so the split is still
+created, just late. That failed **exactly one** test — "a sell of POST-split shares is
+accepted" (`created` → `failed`) — which proves the test pins the real invariant
+(`Positions::Validator` reads splits *from the database* mid-replay) rather than the split's
+mere existence. 11 probes written from scratch, 11/11 discriminated.
+
+**The reconciliation was re-derived twice, outside the app.** Once in PowerShell `[decimal]`
+with no Rails code, once over real HTTP reading positions back out of Postgres. Both agree:
+13/14 open positions exact to 8dp, RRSP META short 0.3106 = one $10 recurring buy at
+$32.19/sh. Two things were checked rather than assumed: the match is **not vacuous** (all 14
+rows carry non-zero counts on *both* sides; the other 42 pairs are closed positions, zero on
+both sides, and excluded from the claim), and ZEQT's three-account match is **not a split
+artifact** (FHSA's first ZEQT trade is 2026-05-20 and RRSP's 2026-01-08, both *after* the
+2025-08-18 ex-date, so the instrument-global split legitimately doesn't touch them).
+
+Findings that did **not** block the merge:
+- **`smoke.spec.js` needs provider keys, not just a populated `listed_instruments`.** It
+  fails in a fresh isolated stack because the worktree has no `.env`, so `daily_prices` is
+  empty and the dashboard has no valuation series. A control run at pre-#68 `main` fails
+  identically — environmental, not a regression. Same class of trap as the documented
+  directory precondition; worth adding to `e2e/README.md`.
+- **`Agent(..., isolation: "worktree")` creates the worktree on `main`, not on the current
+  branch.** The tester had to `git checkout --detach 62ccf2a` to test the actual branch tip.
+  **Any future gate dispatched this way must verify `git log -1` before trusting a result** —
+  a tester who missed this would have gated the wrong tree and reported a confident PASS on
+  code that isn't the branch.
+- `HPS.A` → `HPS.A.TO` (safe and tested, but not Yahoo's `HPS-A.TO` convention).
+- **The FX-Rate venue heuristic assumes a CAD account.** A US symbol traded inside a *USD*
+  account carries no `FX Rate:` marker and would be suffixed `.TO` wrongly. Not reachable
+  with this broker's export, but it is the load-bearing assumption of the whole venue model.
+- The preview's `IMPORTED` outcome badge during a dry run is pre-existing from #64.
+
+## #63 as built (directory search relevance + name enrichment)
+
+**The search bug was a RANKING bug, not a matching bug** — `MSFT` was always in the result
+set, it just lost. The only tie-break was alphabetical, results cap at `SEARCH_LIMIT` (20),
+and mutual funds are **46% of the directory** (49,001 of 106,253) owning the dense 5-letter
+X-suffixed namespace. So `MSF` returned `MSF, MSFAX, MSFBX … MSFRX` and MSFT never appeared.
+Nothing errored; the row the user wanted was silently truncated. **A bounded result set makes
+ranking a correctness concern, not a nicety** — any future cap-plus-weak-sort has this bug.
+
+Ranking is now **match band → tradeable → asset class → symbol length → alphabetical**. The
+`tradeable` tier reuses the exchange allowlist `DirectoryResolver` already enforces: a row on
+NMFQS/PINK/OTCGREY **cannot be transacted at all**, so offering it above one that works only
+earns the user a 422. The final alphabetical tier keeps the order total and the output
+deterministic. Live: MSFT went from absent to **rank 8** through the real endpoint.
+`US_EXCHANGES` moved onto `ListedInstrument` (it describes directory rows, and both the
+resolver and search need it); `DirectoryResolver` aliases the old name so
+`SymbolQualifier`'s reference is untouched.
+
+- **`Directory::EnrichNamesJob`** copies `instruments.name` → `listed_instruments.name` in one
+  set-based `UPDATE ... FROM` at **zero provider quota** — FMP already fetched those names.
+  Coverage is deliberately partial and grows with the user's portfolio, which is exactly the
+  set of symbols worth labelling. Enqueued after a successful directory import and after each
+  metadata fetch; `IS DISTINCT FROM` makes re-runs no-ops that bump no timestamps.
+- **Matching is asset-class aware, not symbol-only.** The real directory has `MSFC` as both a
+  NASDAQ *Stock* and a BATS *ETF*, and `instruments` is UNIQUE on `upper(symbol)` alone — a
+  symbol-only join would label an unrelated ETF with an equity's company name. Pairing
+  `instrument_type` with `asset_type` keeps a name on the row it describes.
+- **The weekly import would have erased all of it.** `upsert_all` overwrites every non-key
+  column and every incoming row has `name: nil`. `COALESCE(EXCLUDED.name, …)` preserves
+  enrichment while keeping a future name-carrying source authoritative. Note `on_duplicate:`
+  **replaces** the clause `record_timestamps:` would have generated, so `updated_at` is set
+  explicitly (that option still governs the INSERT path's `created_at`).
+- No frontend change was needed: the serializer already emits `name` and zod already accepts
+  `string | null`.
+
 ### Resolved (kept for traceability — don't reintroduce these)
 - **Charts rendered at zero height** (M6, found and fixed in M7 2026-07-25) — see the
   "two traps" section above. The height lives on a wrapper div; moving it back onto
@@ -389,6 +469,10 @@ Full detail in [e2e/README.md](../e2e/README.md). Three things that will otherwi
   `Instruments::DirectoryResolver` simply has no directory to resolve against. Fix by running
   `Directory::ImportJob` (~106,300 rows, keyless static download, no quota cost). The primary
   dev stack already has it, so this only bites a brand-new database.
+- **`smoke.spec.js` additionally needs provider keys**, not just a populated directory. With
+  no `.env`, `daily_prices` is empty, the dashboard has no valuation series, and the spec
+  fails at `smoke.spec.js:185` in a way that looks like an app bug. Confirmed environmental
+  during #68's gate by a control run at pre-#68 `main` that failed identically.
 - Registration is rate-limited to **10 per 3 minutes**; each spec spends exactly one per run
   (two specs → two registrations), so keep new specs API-driven.
 - To run one spec: `docker compose --profile e2e run --rm e2e bash -c "npm install
