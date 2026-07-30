@@ -26,6 +26,10 @@ module Portfolios
     # Broker holdings snapshot (the user-supplied Wealthsimple report shape).
     HOLDINGS_CSV_FORMAT = "wealthsimple.holdings".freeze
 
+    # Broker ACTIVITY ledger (backlog #068) — a real transaction history, unlike
+    # the snapshot above. Prefer this format when a user has both.
+    ACTIVITIES_CSV_FORMAT = "wealthsimple.activities".freeze
+
     # Guard against a hostile/mistaken upload: parsing happens fully in memory,
     # so the byte cap is the real defense. 8 MiB holds ~40k transactions of
     # native JSON — far past any realistic personal portfolio.
@@ -78,7 +82,23 @@ module Portfolios
     # can least afford.
     PortfolioSpec = Data.define(:name, :benchmark_name, :transactions, :recurring_transactions, :warnings)
 
-    Document = Data.define(:format, :instruments, :portfolios, :warnings) do
+    # An instrument-global corporate action (backlog #068). NOT per portfolio:
+    # `split_events` is keyed on (instrument_id, ex_date) and every portfolio
+    # holding the instrument sees the same ratio, which is what makes
+    # Holdings::Calculator's "split applies at the START of its ex-date" sweep
+    # correct. Import therefore writes these OUTSIDE any portfolio savepoint, and
+    # before any transaction — Positions::Validator reads splits from the database
+    # while replaying, so a sell of post-split shares would be rejected if the
+    # split were not already there.
+    SplitSpec = Data.define(:symbol, :ex_date, :ratio)
+
+    Document = Data.define(:format, :instruments, :portfolios, :warnings, :splits) do
+      # `splits` defaults so the two pre-#068 parsers (and their tests) keep
+      # constructing a Document without naming a member they never produce.
+      def initialize(splits: [], **rest)
+        super(splits: splits, **rest)
+      end
+
       # symbol (upcased) => InstrumentSpec
       def instrument_index
         instruments.index_by { |spec| spec.symbol.upcase }

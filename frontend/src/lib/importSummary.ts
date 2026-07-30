@@ -61,6 +61,11 @@ export function summaryLine(report: ImportReport): string {
   if (report.totals.recurring_created > 0) {
     parts.push(plural(report.totals.recurring_created, 'recurring rule'))
   }
+  if (report.totals.splits_created > 0) {
+    // Worth naming in the headline: a split changes share counts for EVERY
+    // portfolio holding the instrument, not just the ones in this file.
+    parts.push(plural(report.totals.splits_created, 'stock split'))
+  }
 
   const head = report.dry_run
     ? parts.length > 0

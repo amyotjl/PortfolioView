@@ -59,17 +59,33 @@ module Portfolios
 
       KNOWN_SUFFIXES = (SUFFIX_BY_MIC.values | SUFFIX_BY_EXCHANGE.values).to_set.freeze
 
+      # Fallback venue for a file that identifies a security as non-US but names
+      # no venue — the Wealthsimple ACTIVITY export (#068) has no MIC/Exchange
+      # column at all. `.TO` because the TSX is far and away the most common
+      # Canadian venue; a wrong-but-consistent suffix still achieves the only
+      # thing the suffix is for, which is not colliding with a US ticker.
+      # InstrumentResolver's sibling lookup is what keeps this in step with a
+      # `.NE` symbol the holdings report may already have created.
+      DEFAULT_NON_US_SUFFIX = ".TO".freeze
+
       # Returns the qualified symbol, uppercased. Never returns blank for a
       # non-blank input.
-      def self.call(symbol:, mic: nil, exchange: nil, currency: nil)
-        new(symbol: symbol, mic: mic, exchange: exchange, currency: currency).call
+      #
+      # assume_non_us: the CALLER has established, by some means other than a
+      # venue column, that this security is not US-listed (the activities parser
+      # reads it off an "FX Rate:" marker in the row description). Only consulted
+      # when no MIC/exchange is supplied.
+      def self.call(symbol:, mic: nil, exchange: nil, currency: nil, assume_non_us: false)
+        new(symbol: symbol, mic: mic, exchange: exchange, currency: currency,
+            assume_non_us: assume_non_us).call
       end
 
-      def initialize(symbol:, mic: nil, exchange: nil, currency: nil)
+      def initialize(symbol:, mic: nil, exchange: nil, currency: nil, assume_non_us: false)
         @symbol = symbol.to_s.strip.upcase
         @mic = mic.to_s.strip.upcase
         @exchange = exchange.to_s.strip.upcase
         @currency = currency.to_s.strip.upcase
+        @assume_non_us = assume_non_us
       end
 
       def call
@@ -79,7 +95,7 @@ module Portfolios
         return @symbol if already_qualified?
         return @symbol if us_venue?
 
-        suffix = suffix_for_venue
+        suffix = suffix_for_venue || (@assume_non_us ? DEFAULT_NON_US_SUFFIX : nil)
         return @symbol if suffix.nil?
 
         "#{@symbol}#{suffix}"
@@ -96,6 +112,10 @@ module Portfolios
       def us_venue?
         return true if US_MICS.include?(@mic)
         return true if US_EXCHANGES.include?(@exchange)
+        # An explicit caller assertion outranks the currency guess below — the
+        # activities export carries the ACCOUNT's currency on every row, so its
+        # `currency` says nothing about where the security is listed.
+        return false if @assume_non_us
 
         # No venue information at all: fall back to currency. A USD row with no
         # venue is treated as US so a minimal hand-written file still works.

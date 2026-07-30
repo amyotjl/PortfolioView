@@ -20,6 +20,38 @@ import { INVITE_CODE, TEST_PASSWORD, createTransaction, uniqueEmail } from './he
  * user and builds everything else through the API.
  */
 
+/**
+ * Mirrors the Wealthsimple ACTIVITY-ledger shape (issue #68). Packs in the three
+ * rows that needed a decision: a SELL with its negative quantity, a US listing
+ * identified only by an "FX Rate:" marker, and a CorporateAction that is really a
+ * 3:1 split expressed as a share delta (10 shares held, +20 => ratio 3).
+ *
+ * The Canadian ticker is UNIQUE PER RUN. Instruments and split_events are global,
+ * not per user, so a fixed ticker would find its own split already recorded on the
+ * second run — correct idempotent behaviour that reports `splits_created: 0` and
+ * would make this spec pass once and then fail forever. QQQ is deliberately left
+ * fixed: it is a seeded benchmark instrument, so it also proves the FX/bare-ticker
+ * path reuses an existing instrument rather than minting a duplicate.
+ */
+function activitiesCsv(ticker) {
+  const name = 'Maple All-Equity ETF'
+  return [
+    'transaction_date,settlement_date,account_id,account_type,activity_type,activity_sub_type,description,direction,symbol,name,currency,quantity,unit_price,commission,net_cash_amount',
+    '2025-04-10,,X1CAD,E2E LEDGER,MoneyMovement,EFT,Deposit,,,,CAD,5000,,,5000',
+    `2025-04-12,2025-04-12,X1CAD,E2E LEDGER,Trade,BUY,${ticker} - ${name}: Bought 10.0000 shares at $60.00 per share,LONG,${ticker},${name},CAD,10,60,0,-600`,
+    `2025-04-15,,X1CAD,E2E LEDGER,Dividend,-,"${ticker} - ${name}: Cash dividend distribution, received on 2025-04-15",,${ticker},${name},CAD,12.5,,,12.5`,
+    `2025-06-01,,X1CAD,E2E LEDGER,CorporateAction,SUBDIVISION,${ticker} - ${name}: Corrected quantity of shares by 20.0,LONG,${ticker},${name},,20,,,`,
+    '2025-06-10,2025-06-10,X1CAD,E2E LEDGER,Trade,BUY,"QQQ - Invesco QQQ Trust: Bought 1.0000 shares at $500.00 per share, FX Rate: 1.36",LONG,QQQ,Invesco QQQ Trust,CAD,1,500,0,-500',
+    `2025-07-01,2025-07-01,X1CAD,E2E LEDGER,Trade,SELL,${ticker} - ${name}: Sold 25.0000 shares at $22.00 per share,LONG,${ticker},${name},CAD,-25,22,0,550`,
+    '',
+  ].join('\n')
+}
+
+/** Uppercase, unsuffixed, so the parser qualifies it to `<TICKER>.TO`. */
+function uniqueTicker() {
+  return `ZQ${Math.random().toString(36).slice(2, 7).toUpperCase()}`
+}
+
 /** Mirrors the Wealthsimple holdings-report shape, incl. a CAD/TSX CDR. */
 const HOLDINGS_CSV = [
   'Account Name,Account Type,Account Classification,Account Number,Symbol,Exchange,MIC,Name,Security Type,Quantity,Position Direction,Market Price,Market Price Currency,Book Value (CAD),Book Value Currency (CAD),Book Value (Market),Book Value Currency (Market),Market Value,Market Value Currency,Market Unrealized Returns,Market Unrealized Returns Currency',
@@ -184,7 +216,33 @@ test.describe('export / import portfolios', () => {
     await dialog.getByRole('button', { name: 'Done' }).click()
     await expect(page.getByRole('heading', { name: 'E2E TFSA' })).toBeVisible()
 
-    // --- 5. An unreadable file is a field error, not a crash ---------------
+    // --- 5. Import a broker ACTIVITY LEDGER (#68) --------------------------
+    await page.getByRole('button', { name: 'Import' }).first().click()
+    const ledgerTicker = uniqueTicker()
+    await dialog.getByLabel('File').setInputFiles({
+      name: 'activities-export.csv',
+      mimeType: 'text/csv',
+      buffer: Buffer.from(activitiesCsv(ledgerTicker), 'utf8'),
+    })
+    await dialog.getByRole('button', { name: 'Import', exact: true }).click()
+
+    await expect(dialog.getByText(/Detected format: Broker activity ledger/)).toBeVisible()
+    // 3 trades; the deposit and dividend are cash, the corporate action is a split.
+    // The SELL of 25 is only legal because the 3:1 split turned 10 shares into 30 —
+    // so this line also proves the split is written BEFORE the position replay.
+    await expect(dialog.getByText(/^Imported 1 portfolio with 3 transactions and 1 stock split\./)).toBeVisible()
+    // The caveats that make an activity import trustworthy must be on screen —
+    // including that a DERIVED ratio is an inference, and that it is global.
+    await expect(dialog.getByText(`${ledgerTicker}.TO`, { exact: false }).first()).toBeVisible()
+    await expect(dialog.getByText(/3.0:1 split/)).toBeVisible()
+    await expect(dialog.getByText(/not a cash balance/)).toBeVisible()
+    await expect(dialog.getByText(/understates return/)).toBeVisible()
+
+    await shoot(page, 'import-activities-light')
+    await dialog.getByRole('button', { name: 'Done' }).click()
+    await expect(page.getByRole('heading', { name: 'E2E LEDGER' })).toBeVisible()
+
+    // --- 6. An unreadable file is a field error, not a crash ---------------
     await page.getByRole('button', { name: 'Import' }).first().click()
     await dialog.getByLabel('File').setInputFiles({
       name: 'nonsense.csv',

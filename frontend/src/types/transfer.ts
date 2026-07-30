@@ -35,6 +35,15 @@ export const importTotalsSchema = z.object({
   portfolios_failed: z.number(),
   transactions_created: z.number(),
   recurring_created: z.number(),
+  /**
+   * Corporate actions recorded (issue #68 — a broker activity ledger reports a
+   * split as a share delta, which the parser converts back to a ratio).
+   *
+   * Instrument-GLOBAL, so it belongs to the run rather than to any portfolio row,
+   * and `.default(0)` so a server predating #68 still parses (a schema failure
+   * throws in dev and would blank the whole dialog).
+   */
+  splits_created: z.number().default(0),
 })
 
 export const importReportSchema = z.object({
@@ -66,10 +75,16 @@ export const MAX_IMPORT_BYTES = 8 * 1024 * 1024
 
 export const NATIVE_FORMAT = 'portfolioview.portfolios'
 export const HOLDINGS_CSV_FORMAT = 'wealthsimple.holdings'
+export const ACTIVITIES_CSV_FORMAT = 'wealthsimple.activities'
 
-/** Human label for the `format` the backend reports detecting. */
+/**
+ * Human label for the `format` the backend reports detecting. The two broker
+ * labels are worded to make the difference obvious: an activity LEDGER carries a
+ * real trade history, a holdings SNAPSHOT does not.
+ */
 export function formatLabel(format: string): string {
   if (format === NATIVE_FORMAT) return 'PortfolioView export'
+  if (format === ACTIVITIES_CSV_FORMAT) return 'Broker activity ledger'
   if (format === HOLDINGS_CSV_FORMAT) return 'Broker holdings report'
   return format
 }

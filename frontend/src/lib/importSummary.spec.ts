@@ -6,7 +6,7 @@ import {
   statusSeverity,
   summaryLine,
 } from '@/lib/importSummary'
-import type { ImportReport, ImportPortfolioResult } from '@/types'
+import type { ImportReport, ImportPortfolioResult, ImportTotals } from '@/types'
 
 /**
  * The import report is the only place a user learns that a portfolio was renamed
@@ -27,22 +27,31 @@ function portfolio(overrides: Partial<ImportPortfolioResult> = {}): ImportPortfo
   }
 }
 
-function report(overrides: Partial<ImportReport> = {}): ImportReport {
+/**
+ * `totals` is separately partial: the defaults are DERIVED from `portfolios`, so a
+ * test that only cares about one total (splits_created, say) must be able to
+ * override it without restating the other five.
+ */
+type ReportOverrides = Partial<Omit<ImportReport, 'totals'>> & { totals?: Partial<ImportTotals> }
+
+function report(overrides: ReportOverrides = {}): ImportReport {
   const portfolios = overrides.portfolios ?? [portfolio()]
+  const { totals, ...rest } = overrides
   return {
     format: 'portfolioview.portfolios',
     dry_run: false,
     warnings: [],
     portfolios,
+    ...rest,
     totals: {
       portfolios_created: portfolios.filter((p) => ['created', 'renamed'].includes(p.status)).length,
       portfolios_skipped: portfolios.filter((p) => p.status === 'skipped').length,
       portfolios_failed: portfolios.filter((p) => p.status === 'failed').length,
       transactions_created: portfolios.reduce((sum, p) => sum + p.transactions_created, 0),
       recurring_created: portfolios.reduce((sum, p) => sum + p.recurring_created, 0),
-      ...overrides.totals,
+      splits_created: 0,
+      ...totals,
     },
-    ...overrides,
   }
 }
 
@@ -85,6 +94,20 @@ describe('summaryLine', () => {
     expect(summaryLine(report({ portfolios: [portfolio({ recurring_created: 2 })] }))).toBe(
       'Imported 1 portfolio with 1 transaction and 2 recurring rules.',
     )
+  })
+
+  it('names recorded stock splits in the headline', () => {
+    // A split changes share counts for EVERY portfolio holding the instrument,
+    // not just the ones in the imported file, so it does not belong buried in the
+    // notes list (issue #68).
+    const line = summaryLine(report({ totals: { splits_created: 1 } }))
+
+    expect(line).toBe('Imported 1 portfolio with 1 transaction and 1 stock split.')
+    expect(summaryLine(report({ totals: { splits_created: 3 } }))).toContain('3 stock splits')
+  })
+
+  it('omits splits when there are none', () => {
+    expect(summaryLine(report())).not.toContain('split')
   })
 
   it('NEVER lets a partly-failed run read as a clean success', () => {
