@@ -90,6 +90,24 @@ RUN bundle install && \
 # Copy application code
 COPY . .
 
+# Restore the executable bit on bin/*.
+#
+# Every bin/ script is recorded in the git index as mode 100644, not 100755 —
+# check with `git ls-files -s bin/`. That is a side effect of the repo being
+# developed on a Windows host, where git runs with core.filemode=false and so
+# never captured the bit in the first place.
+#
+# It happens not to bite when the image is built from this Windows checkout,
+# because the build context marks the files executable on the way in. It does
+# bite a "clean checkout" (acceptance criterion 4) on Linux, macOS or CI: there
+# git honours the recorded 100644, COPY preserves it, and the container dies
+# immediately with "permission denied" on ENTRYPOINT (bin/docker-entrypoint) or
+# CMD (bin/thrust, bin/rails).
+#
+# chmod here makes the image build host-independent. It is idempotent, so it
+# costs nothing where the bit already survived.
+RUN chmod +x bin/*
+
 # Precompile bootsnap code for faster boot times.
 # -j 1 disable parallel compilation to avoid a QEMU bug: https://github.com/rails/bootsnap/issues/495
 RUN bundle exec bootsnap precompile -j 1 app/ lib/
