@@ -28,9 +28,10 @@ import {
  *    aria-hidden. Verified: required fields resolve 0 by label and 1 by role.
  *  - PrimeVue's unstyled AutoComplete and DatePicker expose role `combobox`, not
  *    `textbox`.
- *  - The Kind/Frequency Selects are deliberately NOT asserted on: their accessible
- *    name is the selected value, not the field label (#65). The smoke path doesn't
- *    need them, and working around it here would hide the bug.
+ *  - The Kind/Frequency Selects are not asserted on here because the smoke path
+ *    doesn't need them, not because they are broken — #65 (their accessible name
+ *    was the selected value rather than the field label) is fixed, and
+ *    select-a11y.spec.js owns that assertion for all three Selects.
  *
  * Registration is rate-limited to 10 per 3 minutes, so this file registers EXACTLY
  * ONE user per run and builds everything else through the API.

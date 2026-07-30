@@ -269,7 +269,7 @@ function onSymbolSelect(event: { value: InstrumentSearchResult }): void {
 
       <FormField label="Frequency" :error="errors.frequency" required>
         <template #default="{ id, invalid, describedby }">
-          <!-- Same Select accessible-name gap as the Kind field (#65); see the note there. -->
+          <!-- Named via selectPt's derived aria-labelledby, as the Kind field is (#65). -->
           <Select
             :input-id="id"
             v-model="frequency"
