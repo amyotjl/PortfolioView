@@ -28,6 +28,24 @@ module Directory
 
     MAX_SYMBOL_LENGTH = 32
 
+    # The default upsert overwrites EVERY non-key column, which would wipe an
+    # enriched name back to NULL on each weekly run — every row this file
+    # carries has `name: nil`, because Tiingo's bulk file has no name column
+    # (issue #63). COALESCE(EXCLUDED.name, …) keeps the incoming value
+    # authoritative if a future source ever supplies one, and otherwise
+    # preserves what EnrichNamesJob wrote.
+    #
+    # `symbol`/`exchange` are the conflict target, so they are deliberately not
+    # in the SET list. `updated_at` is set explicitly because `on_duplicate:`
+    # replaces the clause `record_timestamps:` would have generated (that option
+    # still governs the INSERT path, which needs `created_at`).
+    PRESERVE_ENRICHED_NAME = Arel.sql(<<~SQL.squish).freeze
+      name = COALESCE(EXCLUDED.name, listed_instruments.name),
+      asset_type = EXCLUDED.asset_type,
+      currency = EXCLUDED.currency,
+      updated_at = CURRENT_TIMESTAMP
+    SQL
+
     # `zip_data` and `min_rows` are injectable for tests; the scheduled run uses
     # the defaults (download + the production threshold).
     def perform(min_rows: MIN_EXPECTED_ROWS, zip_data: nil)
@@ -41,9 +59,16 @@ module Directory
       end
 
       rows.each_slice(BATCH_SIZE) do |batch|
-        ListedInstrument.upsert_all(batch, unique_by: %i[symbol exchange], record_timestamps: true)
+        ListedInstrument.upsert_all(batch, unique_by: %i[symbol exchange],
+                                    record_timestamps: true, on_duplicate: PRESERVE_ENRICHED_NAME)
       end
       Rails.logger.info("[#{self.class.name}] imported #{rows.size} listed instruments")
+
+      # Re-apply names the directory itself cannot supply. Cheap, quota-free,
+      # and it makes the pair self-healing: even if a future bulk source starts
+      # carrying names, whichever is present wins and nothing is lost.
+      EnrichNamesJob.perform_later
+
       { imported: rows.size, aborted: false }
     end
 

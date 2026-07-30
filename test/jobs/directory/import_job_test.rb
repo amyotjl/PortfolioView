@@ -3,6 +3,8 @@ require "zip"
 require "stringio"
 
 class Directory::ImportJobTest < ActiveSupport::TestCase
+  include ActiveJob::TestHelper
+
   HEADER = "ticker,exchange,assetType,priceCurrency,startDate,endDate".freeze
 
   # Wraps CSV text in a one-entry ZIP, matching Tiingo's supported_tickers.zip.
@@ -85,6 +87,50 @@ class Directory::ImportJobTest < ActiveSupport::TestCase
 
     assert_raises PriceProvider::MalformedResponse do
       Directory::ImportJob.perform_now(min_rows: 1, zip_data: data)
+    end
+  end
+
+  # --- name enrichment must survive the weekly re-import (issue #63) ---------
+
+  test "a re-import does NOT clobber an enriched name back to null" do
+    Directory::ImportJob.perform_now(min_rows: 1, zip_data: zip_of("MSFT,NASDAQ,Stock,USD,1986-03-13,2026-07-10\n"))
+    ListedInstrument.find_by(symbol: "MSFT").update!(name: "Microsoft Corporation")
+
+    # Every row this file carries has name: nil — the whole failure mode.
+    Directory::ImportJob.perform_now(min_rows: 1, zip_data: zip_of("MSFT,NASDAQ,Stock,USD,1986-03-13,2026-07-11\n"))
+
+    assert_equal "Microsoft Corporation", ListedInstrument.find_by(symbol: "MSFT").name
+  end
+
+  test "a re-import still updates the columns the file DOES own" do
+    Directory::ImportJob.perform_now(min_rows: 1, zip_data: zip_of("MSFT,NASDAQ,Stock,USD,1986-03-13,2026-07-10\n"))
+    ListedInstrument.find_by(symbol: "MSFT").update!(name: "Microsoft Corporation")
+
+    Directory::ImportJob.perform_now(min_rows: 1, zip_data: zip_of("MSFT,NASDAQ,ETF,CAD,1986-03-13,2026-07-11\n"))
+
+    row = ListedInstrument.find_by(symbol: "MSFT")
+    assert_equal "ETF", row.asset_type, "preserving the name must not freeze the whole row"
+    assert_equal "CAD", row.currency
+    assert_equal "Microsoft Corporation", row.name
+  end
+
+  test "a fresh insert still lands with timestamps set" do
+    Directory::ImportJob.perform_now(min_rows: 1, zip_data: zip_of("MSFT,NASDAQ,Stock,USD,1986-03-13,2026-07-10\n"))
+
+    row = ListedInstrument.find_by(symbol: "MSFT")
+    assert_not_nil row.created_at, "on_duplicate: must not disable record_timestamps on the INSERT path"
+    assert_not_nil row.updated_at
+  end
+
+  test "a successful import schedules name re-enrichment" do
+    assert_enqueued_with(job: Directory::EnrichNamesJob) do
+      Directory::ImportJob.perform_now(min_rows: 1, zip_data: zip_of("MSFT,NASDAQ,Stock,USD,1986-03-13,2026-07-10\n"))
+    end
+  end
+
+  test "an aborted import does not schedule enrichment" do
+    assert_no_enqueued_jobs(only: Directory::EnrichNamesJob) do
+      Directory::ImportJob.perform_now(min_rows: 5, zip_data: zip_of("AAPL,NASDAQ,Stock,USD,1980-12-12,2026-07-10\n"))
     end
   end
 end

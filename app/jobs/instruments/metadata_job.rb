@@ -36,6 +36,13 @@ module Instruments
         industry: profile.industry,
         instrument_type: profile.instrument_type.presence || instrument.instrument_type
       )
+
+      # This is the ONLY moment a company name enters the system (issue #63):
+      # the directory bulk file has no name column, so push it straight into
+      # listed_instruments and the autocomplete gains a label with no extra
+      # quota. Best-effort like the rest of this job — enrichment is cosmetic
+      # and must never fail an otherwise-successful metadata fetch.
+      Directory::EnrichNamesJob.perform_later
     rescue PriceProvider::BudgetExceeded
       # Daily FMP budget spent — defer to the monthly refresh. No retry (a retry
       # today would just re-trip the same window).
