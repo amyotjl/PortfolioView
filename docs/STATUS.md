@@ -3,8 +3,9 @@
 Last verified: 2026-07-29. **#68** (Wealthsimple *activity ledger* import, the third format)
 and **#65** (Select a11y) both passed independent tester gates and **merged 2026-07-29** —
 see "#68 as built", "#68 merge gate" and "#65 as built" below. **#63** (null instrument names
-+ search relevance) is implemented on `m7/063-directory-names` @ `da3f598` and **awaiting its
-tester gate**. Two new a11y issues were filed from #65's gate:
++ search relevance) **also passed its gate and merged**; its follow-up
+[#71](https://github.com/amyotjl/PortfolioView/issues/71) (rank by listing age) is on
+`m7/071-start-date-tier` @ `eabdf78` **awaiting a gate**. Two new a11y issues were filed from #65's gate:
 [#69](https://github.com/amyotjl/PortfolioView/issues/69) and
 [#70](https://github.com/amyotjl/PortfolioView/issues/70). **M9 is NOT unstarted** — see the
 milestone table and "M9 is further along than this file claimed". **M0–M8 all merged** (M4's follow-up defects #59/#60 fixed along
@@ -395,6 +396,13 @@ accname spec.
   10-per-3-minutes registration budget. It needs no provider keys and no populated directory.
 
 ## M9 is further along than this file claimed (discovered 2026-07-29)
+
+**Prepared 2026-07-29:** `m9/integration-rebased` (`eb54d6e`) merges `m9/integration` onto
+post-#68 `main`. It merged **cleanly, no conflicts**, adds **no migrations**, and the full
+Rails suite is green on it — **769 runs / 3508 assertions / 0 failures**. So the remaining
+M9 work is *gating*, not integration. It is deliberately **not** merged: none of #54–#57 or
+#59 has an independent tester verdict, and the merge gate applies to all five.
+
 
 `docs/STATUS.md` said "M9 not started" and listed #55–#58 as blocked on #54. **Both were
 wrong**, and the error survived several sessions because everyone trusted this file over
