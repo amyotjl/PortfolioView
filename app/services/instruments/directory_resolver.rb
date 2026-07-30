@@ -18,9 +18,12 @@ module Instruments
     # Tiingo's supported_tickers exchange codes considered US venues for v1.
     # Non-US listings (e.g. LSE, TSX) and non-USD rows are out of scope until
     # multi-currency support lands (docs/PLAN.md § Deferred to v1.1+).
-    US_EXCHANGES = [
-      "NYSE", "NASDAQ", "AMEX", "NYSE ARCA", "NYSE MKT", "BATS", "IEX", "CBOE"
-    ].to_set.freeze
+    #
+    # Defined on ListedInstrument (a property of directory rows) and aliased
+    # here because this name is the one referenced elsewhere — notably
+    # Portfolios::Transfer::SymbolQualifier. One list, two readers: what may
+    # become an Instrument, and what #search ranks first (issue #63).
+    US_EXCHANGES = ListedInstrument::US_EXCHANGES
 
     Result = Data.define(:instrument, :error) do
       def ok? = error.nil?

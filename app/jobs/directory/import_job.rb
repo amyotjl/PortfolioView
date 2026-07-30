@@ -28,6 +28,26 @@ module Directory
 
     MAX_SYMBOL_LENGTH = 32
 
+    # The default upsert overwrites EVERY non-key column, which would wipe an
+    # enriched name back to NULL on each weekly run — every row this file
+    # carries has `name: nil`, because Tiingo's bulk file has no name column
+    # (issue #63). COALESCE(EXCLUDED.name, …) keeps the incoming value
+    # authoritative if a future source ever supplies one, and otherwise
+    # preserves what EnrichNamesJob wrote.
+    #
+    # `symbol`/`exchange` are the conflict target, so they are deliberately not
+    # in the SET list. `updated_at` is set explicitly because `on_duplicate:`
+    # replaces the clause `record_timestamps:` would have generated (that option
+    # still governs the INSERT path, which needs `created_at`).
+    PRESERVE_ENRICHED_NAME = Arel.sql(<<~SQL.squish).freeze
+      name = COALESCE(EXCLUDED.name, listed_instruments.name),
+      asset_type = EXCLUDED.asset_type,
+      currency = EXCLUDED.currency,
+      start_date = EXCLUDED.start_date,
+      end_date = EXCLUDED.end_date,
+      updated_at = CURRENT_TIMESTAMP
+    SQL
+
     # `zip_data` and `min_rows` are injectable for tests; the scheduled run uses
     # the defaults (download + the production threshold).
     def perform(min_rows: MIN_EXPECTED_ROWS, zip_data: nil)
@@ -41,9 +61,16 @@ module Directory
       end
 
       rows.each_slice(BATCH_SIZE) do |batch|
-        ListedInstrument.upsert_all(batch, unique_by: %i[symbol exchange], record_timestamps: true)
+        ListedInstrument.upsert_all(batch, unique_by: %i[symbol exchange],
+                                    record_timestamps: true, on_duplicate: PRESERVE_ENRICHED_NAME)
       end
       Rails.logger.info("[#{self.class.name}] imported #{rows.size} listed instruments")
+
+      # Re-apply names the directory itself cannot supply. Cheap, quota-free,
+      # and it makes the pair self-healing: even if a future bulk source starts
+      # carrying names, whichever is present wins and nothing is lost.
+      EnrichNamesJob.perform_later
+
       { imported: rows.size, aborted: false }
     end
 
@@ -95,10 +122,25 @@ module Directory
         name: nil, # Tiingo's bulk file carries no company name
         exchange: row["exchange"].to_s.strip.presence,
         asset_type: row["assetType"].to_s.strip.presence,
-        currency: row["priceCurrency"].to_s.strip.presence
+        currency: row["priceCurrency"].to_s.strip.presence,
+        start_date: parse_date(row["startDate"]),
+        end_date: parse_date(row["endDate"])
       }
     rescue StandardError
       # A row so malformed that even field access raises is skipped, not fatal.
+      nil
+    end
+
+    # `endDate` is the last date Tiingo has prices for, which is what lets
+    # search tell a live listing from a delisted one (issue #63). A blank or
+    # unparseable date is NOT a reason to drop an otherwise-valid row — nil, and
+    # search ranks nil as live so a parse gap can never hide a real ticker.
+    def parse_date(raw)
+      value = raw.to_s.strip
+      return nil if value.empty?
+
+      Date.iso8601(value)
+    rescue Date::Error
       nil
     end
   end

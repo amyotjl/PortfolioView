@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_07_11_120302) do
+ActiveRecord::Schema[8.1].define(version: 2026_07_30_025121) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "citext"
   enable_extension "pg_catalog.plpgsql"
@@ -62,18 +62,21 @@ ActiveRecord::Schema[8.1].define(version: 2026_07_11_120302) do
     t.string "symbol", null: false
     t.datetime "updated_at", null: false
     t.index "upper((symbol)::text)", name: "index_instruments_on_upper_symbol", unique: true
-    t.check_constraint "instrument_type::text = ANY (ARRAY['stock'::character varying, 'etf'::character varying]::text[])", name: "instruments_instrument_type_check"
+    t.check_constraint "instrument_type::text = ANY (ARRAY['stock'::character varying::text, 'etf'::character varying::text])", name: "instruments_instrument_type_check"
   end
 
   create_table "listed_instruments", force: :cascade do |t|
     t.string "asset_type"
     t.datetime "created_at", null: false
     t.string "currency"
+    t.date "end_date"
     t.string "exchange"
     t.string "name"
+    t.date "start_date"
     t.string "symbol", null: false
     t.datetime "updated_at", null: false
     t.index "upper((symbol)::text) text_pattern_ops", name: "index_listed_instruments_on_upper_symbol_pattern"
+    t.index ["end_date"], name: "index_listed_instruments_on_end_date"
     t.index ["symbol", "exchange"], name: "index_listed_instruments_on_symbol_and_exchange", unique: true, nulls_not_distinct: true
   end
 
@@ -108,10 +111,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_07_11_120302) do
     t.index ["next_run_on"], name: "index_recurring_transactions_on_next_run_on_active", where: "active"
     t.index ["portfolio_id"], name: "index_recurring_transactions_on_portfolio_id"
     t.check_constraint "amount_type::text = 'dollars'::text AND COALESCE(dollar_amount, 0::numeric) > 0::numeric AND share_amount IS NULL OR amount_type::text = 'shares'::text AND COALESCE(share_amount, 0::numeric) > 0::numeric AND dollar_amount IS NULL", name: "recurring_transactions_amount_presence_check"
-    t.check_constraint "amount_type::text = ANY (ARRAY['dollars'::character varying, 'shares'::character varying]::text[])", name: "recurring_transactions_amount_type_check"
+    t.check_constraint "amount_type::text = ANY (ARRAY['dollars'::character varying::text, 'shares'::character varying::text])", name: "recurring_transactions_amount_type_check"
     t.check_constraint "consecutive_skips >= 0", name: "recurring_transactions_skips_check"
-    t.check_constraint "frequency::text = ANY (ARRAY['weekly'::character varying, 'biweekly'::character varying, 'monthly'::character varying, 'quarterly'::character varying]::text[])", name: "recurring_transactions_frequency_check"
-    t.check_constraint "side::text = ANY (ARRAY['buy'::character varying, 'sell'::character varying]::text[])", name: "recurring_transactions_side_check"
+    t.check_constraint "frequency::text = ANY (ARRAY['weekly'::character varying::text, 'biweekly'::character varying::text, 'monthly'::character varying::text, 'quarterly'::character varying::text])", name: "recurring_transactions_frequency_check"
+    t.check_constraint "side::text = ANY (ARRAY['buy'::character varying::text, 'sell'::character varying::text])", name: "recurring_transactions_side_check"
   end
 
   create_table "sessions", force: :cascade do |t|
@@ -151,10 +154,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_07_11_120302) do
     t.index ["portfolio_id", "executed_on"], name: "index_transactions_on_portfolio_id_and_executed_on"
     t.index ["recurring_transaction_id", "scheduled_for"], name: "index_transactions_on_recurring_slot", unique: true, where: "(recurring_transaction_id IS NOT NULL)"
     t.check_constraint "fees >= 0::numeric", name: "transactions_fees_nonnegative"
-    t.check_constraint "kind::text = ANY (ARRAY['normal'::character varying, 'dividend_reinvestment'::character varying]::text[])", name: "transactions_kind_check"
+    t.check_constraint "kind::text = ANY (ARRAY['normal'::character varying::text, 'dividend_reinvestment'::character varying::text])", name: "transactions_kind_check"
     t.check_constraint "price > 0::numeric", name: "transactions_price_positive"
     t.check_constraint "shares > 0::numeric", name: "transactions_shares_positive"
-    t.check_constraint "side::text = ANY (ARRAY['buy'::character varying, 'sell'::character varying]::text[])", name: "transactions_side_check"
+    t.check_constraint "side::text = ANY (ARRAY['buy'::character varying::text, 'sell'::character varying::text])", name: "transactions_side_check"
   end
 
   create_table "users", force: :cascade do |t|
