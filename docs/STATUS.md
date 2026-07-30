@@ -3,9 +3,9 @@
 Last verified: 2026-07-29. **#68** (Wealthsimple *activity ledger* import, the third format)
 and **#65** (Select a11y) both passed independent tester gates and **merged 2026-07-29** —
 see "#68 as built", "#68 merge gate" and "#65 as built" below. **#63** (null instrument names
-+ search relevance) **also passed its gate and merged**; its follow-up
-[#71](https://github.com/amyotjl/PortfolioView/issues/71) (rank by listing age) is on
-`m7/071-start-date-tier` @ `eabdf78` **awaiting a gate**. Two new a11y issues were filed from #65's gate:
++ search relevance) **also passed its gate and merged**, as did its follow-up
+[#71](https://github.com/amyotjl/PortfolioView/issues/71) (rank by listing age) after **three
+gate rounds** — see "#71: two FAILs worth more than the feature". Two new a11y issues were filed from #65's gate:
 [#69](https://github.com/amyotjl/PortfolioView/issues/69) and
 [#70](https://github.com/amyotjl/PortfolioView/issues/70). **M9 is NOT unstarted** — see the
 milestone table and "M9 is further along than this file claimed". **M0–M8 all merged** (M4's follow-up defects #59/#60 fixed along
@@ -394,6 +394,48 @@ accname spec.
   **`selectA11y.spec.ts` is the real guard** (the spec's own docstring overclaims this).
 - Third e2e spec added (`select-a11y.spec.js`), so a full suite run now spends **3** of the
   10-per-3-minutes registration budget. It needs no provider keys and no populated directory.
+
+## #71: two FAILs worth more than the feature (2026-07-30)
+
+Search now ranks on a sixth tier, `start_date`. The feature is small; the two rejected
+rounds are the part worth reading, because both failures were of a kind that passes every
+test suite.
+
+**Round 1 — the intuitive tier order was the wrong one.** Age placed *before* symbol length
+made ARM, NET, RDDT and SOFI unreachable at two characters. Not anecdotal: across all 676
+two-letter prefixes it pushed post-2020 rows in the top-20 from 42.4% to 31.7%, against a
+55.5% population share. `ARMH`, a 1998 ADR still carrying recent prices (so the liveness tier
+counts it live), outranked the 2023 `ARM`. **Age is a proxy for prominence and on its own it
+penalises exactly the recent listings people search for.** Moving it *after* length fixes it,
+and the reason that order is safe is structural, not statistical: it is a strict refinement of
+the previous ordering, so no row can cross a length boundary — 0 of 676 prefixes change their
+top-20 length profile, against 376 of 676 the other way.
+
+**Round 2 — the documented cost was wrong by ~34x.** The comment said the tier "loses only
+SOFI". That came from a 76-ticker list chosen by the person who wrote the tier. An exhaustive
+prefix sweep found **1,617** symbols displaced from a 2-character top-20, **1,219** of them
+live/tradeable/non-fund/≤4 chars — SNAP, MTCH, MBLY, ASAN, CELH, VICI, ARCC and more. The
+tester explicitly did **not** ask for the SQL to change; it asked for the cost to be written
+down truthfully, because a confidently-wrong figure in a file agents are told to trust is the
+exact failure the issue existed to delete. The justification was wrong too, even though the
+conclusion was right: the coverage numbers used to argue for it do not replicate on a larger
+list (358 tickers: 280 vs 279, a wash).
+
+**Transferable rules earned here:**
+- **A hand-picked ticker list always flatters whoever picked it.** For anything ranked against
+  the directory, sweep exhaustively or state plainly that you sampled.
+- **A capped result set makes ordering a correctness concern.** A weak sort does not return a
+  wrong row, it silently omits the right one — invisible to every assertion that checks
+  content rather than presence-within-the-cap.
+- **Commit before running mutation probes.** `git checkout --` to restore a probe destroys
+  uncommitted work in the same file; this cost real work twice in one session.
+
+Three smaller things the same gates found and fixed: `index_listed_instruments_on_end_date`
+was never used (a b-tree cannot serve a `CASE` in `ORDER BY`; `idx_scan` delta 0 over 138
+uncached searches) and is dropped; search really costs **~13ms**, not the 0.2–0.3ms #63
+reported (that was a `rails runner` query-cache artifact — not a regression, and the ticker
+AutoComplete debounces at 250ms); and `Instruments::DirectoryResolver` had **no test file at
+all**, which is why its row choice could be non-deterministic without anything noticing.
 
 ## M9 is further along than this file claimed (discovered 2026-07-29)
 
