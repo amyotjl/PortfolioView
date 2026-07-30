@@ -162,13 +162,17 @@ class ListedInstrumentSearchTest < ActiveSupport::TestCase
     assert_equal %w[QQAC QQAB], ListedInstrument.search("QQA").map(&:symbol)
   end
 
-  test "listing age outranks symbol length — an old long ticker beats a new short one" do
+  # The inverse of the tier order, pinned deliberately: LENGTH outranks AGE.
+  # The opposite (age first) is the intuitive choice and is measurably worse —
+  # it buries recent listings behind old obscure ones. See the tier comment in
+  # ListedInstrument for the measurement.
+  test "symbol length outranks listing age — a new short ticker beats an old long one" do
     ListedInstrument.create!(symbol: "QQAB", exchange: "NYSE", asset_type: "Stock",
                              currency: "USD", start_date: Date.new(2024, 1, 1))
     ListedInstrument.create!(symbol: "QQABCD", exchange: "NYSE", asset_type: "Stock",
                              currency: "USD", start_date: Date.new(1980, 12, 12))
 
-    assert_equal %w[QQABCD QQAB], ListedInstrument.search("QQA").map(&:symbol)
+    assert_equal %w[QQAB QQABCD], ListedInstrument.search("QQA").map(&:symbol)
   end
 
   test "a NULL start_date sorts LAST, so an unknown date never outranks a known one" do
@@ -181,19 +185,50 @@ class ListedInstrumentSearchTest < ActiveSupport::TestCase
     assert_equal %w[QQAC QQAB], ListedInstrument.search("QQA").map(&:symbol)
   end
 
-  test "a long-established ticker survives the cap behind 25 newer alphabetical peers" do
-    old = Date.new(1980, 12, 12)
+  # Every peer is the SAME LENGTH as the target, so the length tier cannot
+  # discriminate and only listing age can. The first version of this test seeded
+  # 5-character peers against a 4-character target, which meant it passed with
+  # the age tier deleted entirely — vacuous w.r.t. the tier it names.
+  test "a long-established ticker survives the cap behind 25 same-length newer peers" do
     25.times do |i|
       ListedInstrument.create!(symbol: format("QQA%02d", i), exchange: "NYSE", asset_type: "Stock",
                                currency: "USD", start_date: Date.new(2023, 1, 1))
     end
-    ListedInstrument.create!(symbol: "QQZZ", exchange: "NYSE", asset_type: "Stock",
-                             currency: "USD", start_date: old)
+    ListedInstrument.create!(symbol: "QQZ99", exchange: "NYSE", asset_type: "Stock",
+                             currency: "USD", start_date: Date.new(1980, 12, 12))
 
     results = ListedInstrument.search("QQ").map(&:symbol)
 
-    assert_equal "QQZZ", results.first
+    assert_equal "QQZ99", results.first,
+      "the oldest listing must lead once length ties; alphabetically it sorts last"
     assert_equal ListedInstrument::SEARCH_LIMIT, results.size
+  end
+
+  # The regression that failed #71's first gate: ranking on age alone buried
+  # recent listings behind old obscure ones (ARM, NET, RDDT, SOFI all fell out
+  # of the cap). Length must outrank age so a short recent ticker beats a long
+  # old one.
+  test "a SHORT recent listing outranks a LONGER old one — age must not dominate length" do
+    ListedInstrument.create!(symbol: "ARMH", exchange: "NYSE", asset_type: "Stock",
+                             currency: "USD", start_date: Date.new(1998, 4, 17),
+                             end_date: Date.current - 2)
+    ListedInstrument.create!(symbol: "ARM", exchange: "NASDAQ", asset_type: "Stock",
+                             currency: "USD", start_date: Date.new(2023, 9, 14),
+                             end_date: Date.current - 1)
+
+    assert_equal %w[ARM ARMH], ListedInstrument.search("AR").map(&:symbol),
+      "the 2023 ARM must beat the 1998 ARMH; reordering age above length reverses this"
+  end
+
+  test "25 old long peers cannot crowd a short recent listing out of the cap" do
+    25.times do |i|
+      ListedInstrument.create!(symbol: format("ARA%02d", i), exchange: "NYSE", asset_type: "Stock",
+                               currency: "USD", start_date: Date.new(1985, 1, 1))
+    end
+    ListedInstrument.create!(symbol: "ARM", exchange: "NASDAQ", asset_type: "Stock",
+                             currency: "USD", start_date: Date.new(2023, 9, 14))
+
+    assert_equal "ARM", ListedInstrument.search("AR").map(&:symbol).first
   end
 
   test "liveness still outranks listing age — an old delisted ticker loses to a new live one" do

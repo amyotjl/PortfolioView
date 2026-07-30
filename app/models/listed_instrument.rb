@@ -39,10 +39,14 @@ class ListedInstrument < ApplicationRecord
   # autocomplete only earns a 422 from DirectoryResolver, so it must never
   # outrank a row that works.
   # Case-insensitive on BOTH columns so this is byte-equivalent to the Ruby
-  # predicate DirectoryResolver used to inline (`currency.to_s.upcase == "USD"`)
-  # and to the same test inside #search. One definition, three readers — if the
-  # notion of "tradeable here" ever changes, it changes once (issue #71; this
-  # scope shipped in #63 unused, with the predicate duplicated in two places).
+  # predicate DirectoryResolver used to inline (`currency.to_s.upcase == "USD"`,
+  # `exchange.to_s.strip.upcase`). Verified across all 105,445 distinct symbols:
+  # scope and Ruby select the identical 23,434 rows (issue #71).
+  #
+  # `#search` still spells the same predicate inline, because there it is an
+  # ORDER BY *expression* rather than a WHERE clause and cannot reuse a scope.
+  # Keep the two spellings identical — `upper(btrim(...))` on both columns — so
+  # a row can never rank as tradeable while resolving as un-tradeable.
   scope :tradeable, -> {
     where("upper(btrim(currency)) = 'USD'")
       .where("upper(btrim(exchange)) IN (?)", US_EXCHANGES.to_a)
@@ -73,8 +77,8 @@ class ListedInstrument < ApplicationRecord
   #   3. live           — listings the provider still has recent prices for,
   #                       before delisted ones
   #   4. asset class    — ordinary equities/ETFs before mutual funds
-  #   5. listing age    — older listings are the more established ones
-  #   6. symbol length  — shorter tickers are the more prominent listing
+  #   5. symbol length  — shorter tickers are the more prominent listing
+  #   6. listing age    — older listings are the more established ones
   #
   # ...then alphabetically, so the order is total and the output deterministic.
   #
@@ -89,21 +93,42 @@ class ListedInstrument < ApplicationRecord
   # A NULL `end_date` ranks as LIVE, deliberately: a missing or unparseable date
   # must never be able to hide a real ticker.
   #
-  # Tier 5, listing age, is the one that makes SHORT queries work, and it exists
-  # because a previous version of this comment was wrong (issue #71). That
-  # version claimed two-character queries "cannot be fixed" without a
-  # popularity signal "the free directory does not carry". The signal was
-  # already in the table and simply unused: `start_date` was being stored and
-  # never read. An older listing is a more established one.
+  # Tier 6, listing age, makes SHORT queries work. It exists because an earlier
+  # version of this comment claimed two-character queries "cannot be fixed"
+  # without a popularity signal "the free directory does not carry" — which was
+  # false. The signal was already in the table and simply unread: #63 added BOTH
+  # `start_date` and `end_date` and ranked on `end_date` only (issue #71).
   #
-  # Measured against the real 106k directory, adding it took 2-character
-  # coverage from 16/26 to 25/26 while holding 3-character at 40/40 — and
-  # *improved* the 3-char ranks it was not aimed at (AAPL 6 -> 2, MSFT 7 -> 2).
-  # `AA` -> AAPL went from ABSENT to rank 2.
+  # **It sits AFTER length, and that order is load-bearing.** Putting age before
+  # length is strictly worse, and the reason is worth keeping: age is a proxy for
+  # prominence, so ranking on it alone systematically buries RECENT listings
+  # behind old obscure ones. Measured over 76 well-known tickers against the real
+  # 106k directory, 2-character coverage:
   #
-  # NULLs sort LAST: an unknown listing date must never outrank a known one.
-  # (Contrast tier 3, where a NULL `end_date` ranks as live — there the safe
-  # default is to keep a row visible; here it is to not promote it.)
+  #   #63 (no age tier)      55/76   baseline
+  #   age BEFORE length      64/76   but LOSES ARM, NET, RDDT, SOFI
+  #   age AFTER length       67/76   loses only SOFI
+  #
+  # The age-before-length regression is not incidental: `ARMH`, a 1998 ADR that
+  # still carries recent prices (so tier 3 counts it live), outranked the 2023
+  # `ARM`. Across all 676 two-letter prefixes it pushed post-2020 rows in the
+  # top-20 from 42.4% down to 31.7%, while 55.5% of live tradeable non-fund rows
+  # are post-2020. Length first keeps a short recent ticker ahead of a long old
+  # one; age then only breaks ties among equal-length symbols. 3-character
+  # coverage is 75/76 under all three orderings, so this is purely about short
+  # queries.
+  #
+  # SOFI is the one remaining regression and is honest: it is a 4-character 2020
+  # listing competing with older 4-character `SO*` rows. Separating those needs
+  # real market-cap or volume data, which this directory does not have. It is
+  # reachable at three characters. **Don't reorder these two tiers without
+  # re-running that measurement** — the intuitive order is the losing one.
+  #
+  # NULLs sort LAST so an unknown listing date never outranks a known one — the
+  # opposite convention from tier 3, where a NULL `end_date` means "assume live"
+  # so a parse gap cannot hide a ticker. (`ASC NULLS LAST` is also Postgres'
+  # default for `ASC`, so deleting those two words changes nothing; they are
+  # there to state the intent, and the tests pin the behaviour, not the syntax.)
   def self.search(query, limit: SEARCH_LIMIT)
     q = query.to_s.strip
     return none if q.empty?
@@ -116,13 +141,13 @@ class ListedInstrument < ApplicationRecord
         CASE WHEN upper(symbol) = :exact THEN 0
              WHEN upper(symbol) LIKE :prefix THEN 1
              ELSE 2 END,
-        CASE WHEN upper(currency) = 'USD' AND upper(btrim(exchange)) IN (:us) THEN 0
+        CASE WHEN upper(btrim(currency)) = 'USD' AND upper(btrim(exchange)) IN (:us) THEN 0
              ELSE 1 END,
         CASE WHEN end_date IS NULL OR end_date >= (CURRENT_DATE - :stale) THEN 0
              ELSE 1 END,
         CASE WHEN lower(asset_type) LIKE :fund THEN 1 ELSE 0 END,
-        start_date ASC NULLS LAST,
-        length(symbol)
+        length(symbol),
+        start_date ASC NULLS LAST
       SQL
         exact: q.upcase, prefix: symbol_prefix, us: US_EXCHANGES.to_a,
         stale: STALE_LISTING_WINDOW, fund: MUTUAL_FUND_PATTERN
