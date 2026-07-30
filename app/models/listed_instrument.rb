@@ -68,7 +68,7 @@ class ListedInstrument < ApplicationRecord
   # enough: the result set is capped at SEARCH_LIMIT, so with a purely
   # alphabetical tie-break a dense prefix silently truncates the one row the
   # user meant. Searching "MSF" returned MSF, MSFAX, MSFBX … MSFN and **MSFT
-  # never appeared at all** — verified live against the real 106,253-row
+  # never appeared at all** — verified live against the real 106,362-row
   # directory.
   #
   #   1. match band     — exact symbol, then symbol prefix, then name-only
@@ -114,13 +114,15 @@ class ListedInstrument < ApplicationRecord
   # **THE COST, stated properly.** This is a trade, not a free win. Ranking by
   # age displaces symbols that used to make the cap on alphabetical luck:
   # exhaustively across all 676 two-letter prefixes, **~1,617 symbols** drop out
-  # of a top-20 they previously reached — **952** of them live, tradeable,
-  # non-fund and <= 4 characters (SNAP, MTCH, MBLY, ASAN, CELH, VICI, ARCC and
-  # many more). What that buys is the head of the distribution: AAPL, MSFT,
-  # AMZN, META, TSLA, AVGO and COST become reachable at two characters for the
-  # first time. **Every displaced symbol is still reachable at three characters**
-  # (spot-checked at ranks 1-7), which is what makes the trade defensible for an
-  # incremental type-ahead.
+  # of a top-20 they previously reached — **1,219** of them live, `tradeable`
+  # (as the scope above defines it), non-fund and <= 4 characters; 952 if you
+  # additionally require a major venue, the ~267 difference being almost all
+  # BATS. Named casualties include SNAP, MTCH, MBLY, ASAN, CELH, VICI and ARCC.
+  # What that buys is the head of the distribution: AAPL, MSFT, AMZN, META,
+  # TSLA, AVGO and COST become reachable at two characters for the first time.
+  # **Every displaced symbol is still reachable at three characters** — verified
+  # exhaustively, 1,617 of 1,617, median rank 3 — which is what makes the trade
+  # defensible for an incremental type-ahead.
   #
   # Do NOT restate this as "loses only SOFI". An earlier version of this comment
   # did, measured from a 76-ticker list chosen by the same person who wrote the
