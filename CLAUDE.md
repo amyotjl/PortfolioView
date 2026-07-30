@@ -78,12 +78,28 @@ Version pins are deliberate, not oversights — don't "helpfully" bump them:
 ## Parallel work: isolated worktrees + isolated compose stacks
 Independent slices of work run in `Agent(..., isolation: "worktree")`.
 
-**The worktree is created on `main`, not on the branch you are currently sitting on.** A
-tester dispatched to gate a feature branch will silently verify `main` unless it checks out
-the branch itself — verify `git log -1` before trusting any worktree agent's verdict. This
-was caught during #68's gate, where the tester had to `git checkout --detach` onto the branch
-tip; a tester that missed it would have reported a confident PASS on code that isn't the
-branch. Name the exact commit or branch in the dispatch prompt.
+**A worktree is not created on your current branch — and not on current `main` either. It
+lands on a STALE snapshot.** Measured 2026-07-29: five worktrees created across three
+separate sessions all landed on `c1ef462`, and were still handed out that commit *after*
+`main` had advanced to `85152e9`. So an agent that dutifully asks "am I on main?" gets
+**yes** and is still three commits behind.
+
+Both failure modes have already happened here:
+- A tester silently gates the stale base instead of the branch. #68's tester caught this and
+  had to `git checkout --detach` onto the branch tip; one that missed it would have reported
+  a confident PASS on code that isn't the branch.
+- An implementer branches from a stale `main` and quietly misses recent merges. #65's agent
+  hit exactly this and had to branch from `main` explicitly after noticing.
+
+**Always name the exact commit SHA in the dispatch prompt and require the agent to confirm
+`git log -1` matches before it does anything.** "Check out branch X" is not enough on its
+own — state which commit X should be, so a stale object store is detectable rather than
+invisible. Never accept a worktree agent's verdict that doesn't evidence that check.
+
+**Also tell agents not to start Docker Desktop.** The rule below about the stale A:-drive
+bind mount reads narrowly, and a #65 agent took it that way and started Docker Desktop
+itself when it found the daemon down. Treat "don't restart Docker yourself" as blanket:
+report it and stop.
 
 To also run a full Docker stack from inside that worktree without colliding with the primary
 dev stack (ports 3000/5173/5433) or another agent's isolated stack:
