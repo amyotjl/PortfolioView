@@ -40,6 +40,13 @@ module Directory
         AND i.name IS NOT NULL
         AND btrim(i.name) <> ''
         AND upper(li.currency) = 'USD'
+        -- Both sides, not just the directory row. SymbolQualifier emits a BARE
+        -- ticker for a non-USD instrument when the file names no MIC and no
+        -- exchange, so a CAD holding can exist as an unsuffixed symbol — and
+        -- would then label the unrelated USD listing of the same ticker (Air
+        -- Canada `AC` onto NYSE `AC`). The asset-class guard does not catch it:
+        -- both map to 'stock'.
+        AND upper(i.currency) = 'USD'
         AND upper(btrim(li.exchange)) IN (:us)
         AND CASE WHEN lower(li.asset_type) LIKE '%%etf%%' THEN 'etf' ELSE 'stock' END = i.instrument_type
         AND li.name IS DISTINCT FROM i.name

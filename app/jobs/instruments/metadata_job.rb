@@ -41,8 +41,15 @@ module Instruments
       # the directory bulk file has no name column, so push it straight into
       # listed_instruments and the autocomplete gains a label with no extra
       # quota. Best-effort like the rest of this job — enrichment is cosmetic
-      # and must never fail an otherwise-successful metadata fetch.
-      Directory::EnrichNamesJob.perform_later
+      # and must never fail an otherwise-successful metadata fetch, so the
+      # enqueue is guarded rather than trusted: a full queue or an adapter
+      # error here would otherwise discard metadata already written above.
+      begin
+        Directory::EnrichNamesJob.perform_later
+      rescue StandardError => e
+        Rails.logger.warn("[#{self.class.name}] could not enqueue name enrichment (#{e.class.name}); " \
+                          "the next directory import will re-apply it")
+      end
     rescue PriceProvider::BudgetExceeded
       # Daily FMP budget spent — defer to the monthly refresh. No retry (a retry
       # today would just re-trip the same window).

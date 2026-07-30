@@ -42,16 +42,35 @@ class Directory::EnrichNamesJobTest < ActiveJob::TestCase
     assert_equal "Microsoft Corporation", row.reload.name
   end
 
-  test "is idempotent — a second run updates nothing and bumps no timestamp" do
+  # NOTE: do NOT assert `updated_at` is unchanged here. The job writes
+  # CURRENT_TIMESTAMP, which Postgres resolves to transaction_timestamp() — a
+  # constant for the whole transaction — and these tests run inside one. Such an
+  # assertion passes whether or not the row was rewritten, so it proves nothing.
+  # The row count is the honest signal, so assert on that and on the untouched
+  # data instead.
+  test "is idempotent — a second run matches zero rows" do
     row = listed("MSFT")
     instrument("MSFT", name: "Microsoft Corporation")
-    Directory::EnrichNamesJob.perform_now
-    before = row.reload.updated_at
+    assert_equal 1, Directory::EnrichNamesJob.perform_now[:enriched]
 
     result = Directory::EnrichNamesJob.perform_now
 
-    assert_equal 0, result[:enriched]
-    assert_equal before, row.reload.updated_at
+    assert_equal 0, result[:enriched],
+      "the IS DISTINCT FROM guard must make a repeat run a no-op"
+    assert_equal "Microsoft Corporation", row.reload.name
+  end
+
+  test "the IS DISTINCT FROM guard is what makes it a no-op, not luck" do
+    listed("MSFT")
+    instrument("MSFT", name: "Microsoft Corporation")
+    Directory::EnrichNamesJob.perform_now
+
+    # Change the directory row away from the instrument's name and the next run
+    # must pick it up again — proving the zero above came from the values
+    # agreeing, not from the job having stopped working after one pass.
+    ListedInstrument.find_by(symbol: "MSFT").update!(name: "Stale Name")
+
+    assert_equal 1, Directory::EnrichNamesJob.perform_now[:enriched]
   end
 
   test "a later FMP correction overwrites the stale name" do
@@ -104,6 +123,19 @@ class Directory::EnrichNamesJobTest < ActiveJob::TestCase
     Directory::EnrichNamesJob.perform_now
 
     assert_nil row.reload.name
+  end
+
+  test "a non-USD INSTRUMENT never labels the USD listing that shares its ticker" do
+    # SymbolQualifier emits a bare ticker for a non-USD instrument when the file
+    # names no MIC and no exchange, so a CAD holding can exist as plain "AC".
+    # The US directory row for AC is a different company entirely, and the
+    # asset-class guard does not separate them — both are 'stock'.
+    row = listed("AC", exchange: "NYSE", asset_type: "Stock", currency: "USD")
+    Instrument.create!(symbol: "AC", name: "Air Canada", instrument_type: "stock",
+                       currency: "CAD", skip_provider_jobs: true)
+
+    assert_equal 0, Directory::EnrichNamesJob.perform_now[:enriched]
+    assert_nil row.reload.name, "a CAD instrument must not name a USD listing"
   end
 
   test "ignores a blank instrument name rather than writing an empty label" do

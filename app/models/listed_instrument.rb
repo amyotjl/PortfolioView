@@ -23,6 +23,17 @@ class ListedInstrument < ApplicationRecord
   # MSFAX/MSFBX/… (issue #63).
   MUTUAL_FUND_PATTERN = "%mutual fund%".freeze
 
+  # How stale `end_date` may be before a listing counts as dead. Tiingo's
+  # endDate is the last date it has prices for, so a live ticker sits within a
+  # few days of the file's build date and a delisted one is typically years
+  # behind — the window only has to separate those two populations.
+  #
+  # Deliberately generous, and measured against CURRENT_DATE rather than the
+  # directory's own max: if the import ever falls badly behind, every row ages
+  # out together, the tier flattens, and ranking degrades to the previous
+  # behaviour instead of INVERTING and burying live tickers.
+  STALE_LISTING_WINDOW = 180
+
   # A row this app can actually turn into a tradeable Instrument. Anything else
   # (NMFQS, PINK, OTCGREY, a non-USD listing) is un-addable: picking it in the
   # autocomplete only earns a 422 from DirectoryResolver, so it must never
@@ -43,7 +54,7 @@ class ListedInstrument < ApplicationRecord
   # substring. LIKE metacharacters in the query are escaped, so "BRK%" can't
   # wildcard-match the whole table.
   #
-  # Ranked on four tiers, in order (issue #63). The match band alone was not
+  # Ranked on five tiers, in order (issue #63). The match band alone was not
   # enough: the result set is capped at SEARCH_LIMIT, so with a purely
   # alphabetical tie-break a dense prefix silently truncates the one row the
   # user meant. Searching "MSF" returned MSF, MSFAX, MSFBX … MSFN and **MSFT
@@ -53,10 +64,33 @@ class ListedInstrument < ApplicationRecord
   #   1. match band     — exact symbol, then symbol prefix, then name-only
   #   2. tradeable      — rows DirectoryResolver would accept, before rows it
   #                       would reject with a 422
-  #   3. asset class    — ordinary equities/ETFs before mutual funds
-  #   4. symbol length  — shorter tickers are the more prominent listing
+  #   3. live           — listings the provider still has recent prices for,
+  #                       before delisted ones
+  #   4. asset class    — ordinary equities/ETFs before mutual funds
+  #   5. symbol length  — shorter tickers are the more prominent listing
   #
   # ...then alphabetically, so the order is total and the output deterministic.
+  #
+  # Tier 3 exists because tiers 1/2/4/5 were not sufficient either, and the way
+  # that surfaced is worth keeping: **50** tradeable non-fund 4-character `AA*`
+  # rows compete for 20 slots, and nothing else stored separates AAPL
+  # (NASDAQ/Stock/USD) from AABA — Altaba, liquidated in 2019 — which is also
+  # NASDAQ/Stock/USD. `search("AA")` returned 20 rows without AAPL. Liveness is
+  # the only signal the free directory carries that distinguishes them, and it
+  # was being discarded at import until this issue.
+  #
+  # A NULL `end_date` ranks as LIVE, deliberately: a missing or unparseable date
+  # must never be able to hide a real ticker.
+  #
+  # KNOWN LIMIT — two-character queries. `search("AA")` still does not surface
+  # AAPL, and no reordering of these tiers fixes it: more than 20 LIVE, tradeable,
+  # non-fund symbols begin "AA" and sort before it, so the answer is excluded by
+  # the cap alone. Separating them needs a popularity/liquidity signal the free
+  # directory does not carry (measured: dropping the length tier changes nothing
+  # for AA/TS/GO/AM/ME). This is acceptable because autocomplete is INCREMENTAL —
+  # at three characters all of AAPL, TSLA, GOOGL, AMZN, META, BRK-B, NVDA and SPY
+  # are reachable, verified against the live directory. Don't "fix" the 2-char
+  # case by weakening a tier; it trades a real improvement for a placebo.
   def self.search(query, limit: SEARCH_LIMIT)
     q = query.to_s.strip
     return none if q.empty?
@@ -71,11 +105,13 @@ class ListedInstrument < ApplicationRecord
              ELSE 2 END,
         CASE WHEN upper(currency) = 'USD' AND upper(btrim(exchange)) IN (:us) THEN 0
              ELSE 1 END,
+        CASE WHEN end_date IS NULL OR end_date >= (CURRENT_DATE - :stale) THEN 0
+             ELSE 1 END,
         CASE WHEN lower(asset_type) LIKE :fund THEN 1 ELSE 0 END,
         length(symbol)
       SQL
-        exact: q.upcase, prefix: symbol_prefix,
-        us: US_EXCHANGES.to_a, fund: MUTUAL_FUND_PATTERN
+        exact: q.upcase, prefix: symbol_prefix, us: US_EXCHANGES.to_a,
+        stale: STALE_LISTING_WINDOW, fund: MUTUAL_FUND_PATTERN
       } ])))
       .order(:symbol, :exchange)
       .limit(limit)

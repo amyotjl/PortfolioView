@@ -89,6 +89,67 @@ class ListedInstrumentSearchTest < ActiveSupport::TestCase
     assert_equal %w[QQAC QQAB], ListedInstrument.search("QQA").map(&:symbol)
   end
 
+  # --- the liveness tier, and the second regression it was added for ---------
+
+  # `search("AA")` returned 20 rows without AAPL even after the first four
+  # tiers: 50 tradeable non-fund 4-char AA* rows compete for 20 slots, and
+  # AAPL is alphabetically ~30th among them. Nothing else stored separates it
+  # from AABA (Altaba, liquidated 2019) — both NASDAQ/Stock/USD.
+  test "AAPL is returned for 'AA' — a live ticker outranks 50 dead alphabetical peers" do
+    live = Date.current - 2
+    dead = Date.current - 6.years
+    # Every delisted AA* row sorts alphabetically before AAPL, as in the real file.
+    %w[AAAA AAAC AAAD AAAP AAAU AABA AACB AACC AACG AACI AACO AACP AACT AADR
+       AADX AAEQ AAGR AAIC AAIN AAIT AALG AAME AAMI AAOG].each do |s|
+      ListedInstrument.create!(symbol: s, exchange: "NASDAQ", asset_type: "Stock",
+                               currency: "USD", end_date: dead)
+    end
+    ListedInstrument.create!(symbol: "AAPL", exchange: "NASDAQ", asset_type: "Stock",
+                             currency: "USD", end_date: live)
+
+    results = ListedInstrument.search("AA").map(&:symbol)
+
+    assert_includes results, "AAPL",
+      "AAPL fell outside the #{ListedInstrument::SEARCH_LIMIT}-row cap behind delisted tickers"
+    assert_equal "AAPL", results.first, "the only live listing should lead"
+  end
+
+  test "a delisted listing ranks below a live one at the same match band" do
+    ListedInstrument.create!(symbol: "QQAB", exchange: "NYSE", asset_type: "Stock",
+                             currency: "USD", end_date: Date.current - 6.years)
+    ListedInstrument.create!(symbol: "QQAC", exchange: "NYSE", asset_type: "Stock",
+                             currency: "USD", end_date: Date.current - 2)
+
+    assert_equal %w[QQAC QQAB], ListedInstrument.search("QQA").map(&:symbol)
+  end
+
+  test "a NULL end_date ranks as live, so a parse gap can never hide a real ticker" do
+    ListedInstrument.create!(symbol: "QQAB", exchange: "NYSE", asset_type: "Stock",
+                             currency: "USD", end_date: Date.current - 6.years)
+    ListedInstrument.create!(symbol: "QQAC", exchange: "NYSE", asset_type: "Stock",
+                             currency: "USD", end_date: nil)
+
+    assert_equal %w[QQAC QQAB], ListedInstrument.search("QQA").map(&:symbol)
+  end
+
+  test "liveness outranks asset class — a live fund beats a delisted equity" do
+    ListedInstrument.create!(symbol: "QQAB", exchange: "NASDAQ", asset_type: "Stock",
+                             currency: "USD", end_date: Date.current - 6.years)
+    ListedInstrument.create!(symbol: "QQAC", exchange: "NASDAQ", asset_type: "Mutual Fund",
+                             currency: "USD", end_date: Date.current - 2)
+
+    assert_equal %w[QQAC QQAB], ListedInstrument.search("QQA").map(&:symbol)
+  end
+
+  test "an exact match still wins even when the listing is dead" do
+    ListedInstrument.create!(symbol: "QQAB", exchange: "NYSE", asset_type: "Stock",
+                             currency: "USD", end_date: Date.current - 6.years)
+    ListedInstrument.create!(symbol: "QQABC", exchange: "NYSE", asset_type: "Stock",
+                             currency: "USD", end_date: Date.current - 2)
+
+    assert_equal "QQAB", ListedInstrument.search("QQAB").first.symbol
+  end
+
   test "a shorter symbol outranks a longer one once the other tiers tie" do
     ListedInstrument.create!(symbol: "QQAAA", exchange: "NYSE", asset_type: "Stock", currency: "USD")
     ListedInstrument.create!(symbol: "QQAB",  exchange: "NYSE", asset_type: "Stock", currency: "USD")

@@ -43,6 +43,8 @@ module Directory
       name = COALESCE(EXCLUDED.name, listed_instruments.name),
       asset_type = EXCLUDED.asset_type,
       currency = EXCLUDED.currency,
+      start_date = EXCLUDED.start_date,
+      end_date = EXCLUDED.end_date,
       updated_at = CURRENT_TIMESTAMP
     SQL
 
@@ -120,10 +122,25 @@ module Directory
         name: nil, # Tiingo's bulk file carries no company name
         exchange: row["exchange"].to_s.strip.presence,
         asset_type: row["assetType"].to_s.strip.presence,
-        currency: row["priceCurrency"].to_s.strip.presence
+        currency: row["priceCurrency"].to_s.strip.presence,
+        start_date: parse_date(row["startDate"]),
+        end_date: parse_date(row["endDate"])
       }
     rescue StandardError
       # A row so malformed that even field access raises is skipped, not fatal.
+      nil
+    end
+
+    # `endDate` is the last date Tiingo has prices for, which is what lets
+    # search tell a live listing from a delisted one (issue #63). A blank or
+    # unparseable date is NOT a reason to drop an otherwise-valid row — nil, and
+    # search ranks nil as live so a parse gap can never hide a real ticker.
+    def parse_date(raw)
+      value = raw.to_s.strip
+      return nil if value.empty?
+
+      Date.iso8601(value)
+    rescue Date::Error
       nil
     end
   end
