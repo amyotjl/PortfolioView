@@ -26,6 +26,14 @@ import {
  * a count is what the issue specifies, and it fails loudly on the "matched 2
  * things" regression that a visibility check would sail past.
  *
+ * `exact: true` IS LOAD-BEARING, not decoration. Playwright matches the `name`
+ * option as a case-insensitive SUBSTRING by default, and the Benchmark Select's
+ * placeholder is "No benchmark" — which contains "benchmark". A non-exact query
+ * therefore matched the *unfixed* control by its placeholder-derived aria-label
+ * and this whole spec passed against the bug. Measured against reverted code:
+ * non-exact reported Benchmark:1 Kind:0 Frequency:0, exact reported 0/0/0.
+ * Drop `exact` and the Benchmark case silently stops testing anything.
+ *
  * Registration is rate-limited to 10 per 3 minutes, so this file registers
  * EXACTLY ONE user and builds everything else through the API.
  */
@@ -34,6 +42,11 @@ import {
 const KIND_LABEL = 'Kind'
 const FREQUENCY_LABEL = 'Frequency'
 const BENCHMARK_LABEL = 'Benchmark'
+
+/** Accessible-name lookup, always exact — see the note above. */
+function comboboxNamed(scope, name) {
+  return scope.getByRole('combobox', { name, exact: true })
+}
 
 test.describe('a11y: Selects are named by their field label (#65)', () => {
   test('all three Selects expose their visible label as the accessible name', async ({ page }) => {
@@ -58,7 +71,7 @@ test.describe('a11y: Selects are named by their field label (#65)', () => {
     const dialog = page.getByRole('dialog')
     await expect(dialog).toBeVisible()
 
-    const benchmark = dialog.getByRole('combobox', { name: BENCHMARK_LABEL })
+    const benchmark = comboboxNamed(dialog, BENCHMARK_LABEL)
     await expect(benchmark, 'Benchmark Select should be named by its label').toHaveCount(1)
 
     // The Select must still SELECT. This is the half of the fix a name-only
@@ -73,7 +86,7 @@ test.describe('a11y: Selects are named by their field label (#65)', () => {
     // Selecting must NOT re-point the accessible name at the chosen value —
     // that is precisely the regression being fixed.
     await expect(
-      dialog.getByRole('combobox', { name: BENCHMARK_LABEL }),
+      comboboxNamed(dialog, BENCHMARK_LABEL),
       'the name must survive a selection',
     ).toHaveCount(1)
     await expect(benchmark).toContainText('SPY')
@@ -97,14 +110,14 @@ test.describe('a11y: Selects are named by their field label (#65)', () => {
     const drawer = page.getByRole('dialog')
     await expect(drawer).toBeVisible()
 
-    const kind = drawer.getByRole('combobox', { name: KIND_LABEL })
+    const kind = comboboxNamed(drawer, KIND_LABEL)
     await expect(kind, 'Kind Select should be named by its label').toHaveCount(1)
 
     // Its default value is "Normal" — the string that used to BE the accessible
     // name. Assert it is now only the value, never the name.
     await expect(kind).toContainText('Normal')
     await expect(
-      drawer.getByRole('combobox', { name: 'Normal' }),
+      comboboxNamed(drawer, 'Normal'),
       'the selected value must not masquerade as the accessible name',
     ).toHaveCount(0)
 
@@ -113,7 +126,7 @@ test.describe('a11y: Selects are named by their field label (#65)', () => {
     await expect(drip).toBeVisible()
     await drip.click()
     await expect(kind).toContainText('Dividend reinvestment')
-    await expect(drawer.getByRole('combobox', { name: KIND_LABEL })).toHaveCount(1)
+    await expect(comboboxNamed(drawer, KIND_LABEL)).toHaveCount(1)
 
     // --- 3. Frequency (RecurringFormDrawer) ---------------------------------
     await page.goto(`/portfolios/${portfolio.id}/recurring`)
@@ -123,7 +136,7 @@ test.describe('a11y: Selects are named by their field label (#65)', () => {
     const recurringDrawer = page.getByRole('dialog')
     await expect(recurringDrawer).toBeVisible()
 
-    const frequency = recurringDrawer.getByRole('combobox', { name: FREQUENCY_LABEL })
+    const frequency = comboboxNamed(recurringDrawer, FREQUENCY_LABEL)
     await expect(frequency, 'Frequency Select should be named by its label').toHaveCount(1)
 
     await frequency.click()
@@ -131,6 +144,6 @@ test.describe('a11y: Selects are named by their field label (#65)', () => {
     await expect(quarterly).toBeVisible()
     await quarterly.click()
     await expect(frequency).toContainText('Quarterly')
-    await expect(recurringDrawer.getByRole('combobox', { name: FREQUENCY_LABEL })).toHaveCount(1)
+    await expect(comboboxNamed(recurringDrawer, FREQUENCY_LABEL)).toHaveCount(1)
   })
 })
