@@ -64,7 +64,7 @@ class ListedInstrument < ApplicationRecord
   # substring. LIKE metacharacters in the query are escaped, so "BRK%" can't
   # wildcard-match the whole table.
   #
-  # Ranked on five tiers, in order (issue #63). The match band alone was not
+  # Ranked on six tiers, in order (issues #63, #71). The match band alone was not
   # enough: the result set is capped at SEARCH_LIMIT, so with a purely
   # alphabetical tie-break a dense prefix silently truncates the one row the
   # user meant. Searching "MSF" returned MSF, MSFAX, MSFBX … MSFN and **MSFT
@@ -99,30 +99,42 @@ class ListedInstrument < ApplicationRecord
   # false. The signal was already in the table and simply unread: #63 added BOTH
   # `start_date` and `end_date` and ranked on `end_date` only (issue #71).
   #
-  # **It sits AFTER length, and that order is load-bearing.** Putting age before
-  # length is strictly worse, and the reason is worth keeping: age is a proxy for
-  # prominence, so ranking on it alone systematically buries RECENT listings
-  # behind old obscure ones. Measured over 76 well-known tickers against the real
-  # 106k directory, 2-character coverage:
+  # **It sits AFTER length, and that order is load-bearing.** Age is a proxy for
+  # prominence, so ranking on it before length systematically buries RECENT
+  # listings behind old obscure ones: `ARMH`, a 1998 ADR that still carries
+  # recent prices (so tier 3 counts it live), outranked the 2023 `ARM`, and
+  # ARM/NET/RDDT/SOFI all fell out of the 2-character cap entirely.
   #
-  #   #63 (no age tier)      55/76   baseline
-  #   age BEFORE length      64/76   but LOSES ARM, NET, RDDT, SOFI
-  #   age AFTER length       67/76   loses only SOFI
+  # What makes THIS order safe is structural, not statistical: putting age after
+  # length makes the ordering a strict REFINEMENT of the pre-#71 one — start_date
+  # only breaks ties that were previously broken alphabetically, so no row can
+  # cross a length boundary. Measured: 0 of 676 two-letter prefixes change their
+  # top-20 length profile, against 376 of 676 for age-before-length.
   #
-  # The age-before-length regression is not incidental: `ARMH`, a 1998 ADR that
-  # still carries recent prices (so tier 3 counts it live), outranked the 2023
-  # `ARM`. Across all 676 two-letter prefixes it pushed post-2020 rows in the
-  # top-20 from 42.4% down to 31.7%, while 55.5% of live tradeable non-fund rows
-  # are post-2020. Length first keeps a short recent ticker ahead of a long old
-  # one; age then only breaks ties among equal-length symbols. 3-character
-  # coverage is 75/76 under all three orderings, so this is purely about short
-  # queries.
+  # **THE COST, stated properly.** This is a trade, not a free win. Ranking by
+  # age displaces symbols that used to make the cap on alphabetical luck:
+  # exhaustively across all 676 two-letter prefixes, **~1,617 symbols** drop out
+  # of a top-20 they previously reached — **952** of them live, tradeable,
+  # non-fund and <= 4 characters (SNAP, MTCH, MBLY, ASAN, CELH, VICI, ARCC and
+  # many more). What that buys is the head of the distribution: AAPL, MSFT,
+  # AMZN, META, TSLA, AVGO and COST become reachable at two characters for the
+  # first time. **Every displaced symbol is still reachable at three characters**
+  # (spot-checked at ranks 1-7), which is what makes the trade defensible for an
+  # incremental type-ahead.
   #
-  # SOFI is the one remaining regression and is honest: it is a 4-character 2020
-  # listing competing with older 4-character `SO*` rows. Separating those needs
-  # real market-cap or volume data, which this directory does not have. It is
-  # reachable at three characters. **Don't reorder these two tiers without
-  # re-running that measurement** — the intuitive order is the losing one.
+  # Do NOT restate this as "loses only SOFI". An earlier version of this comment
+  # did, measured from a 76-ticker list chosen by the same person who wrote the
+  # tier; the real number is ~34x larger and only an exhaustive prefix sweep
+  # finds it. A hand-picked ticker list will always flatter whoever picked it.
+  #
+  # Residual bias worth knowing: post-2020 rows hold 34.2% of top-20 slots here
+  # versus 42.4% with no age tier at all (and 31.7% with age-before-length),
+  # while 55.5% of live tradeable non-fund rows are post-2020. This still tilts
+  # against recent listings — it recovers about a quarter of what the wrong
+  # order gave away, not all of it.
+  #
+  # **Don't reorder these two tiers without re-running the exhaustive sweep** —
+  # the intuitive order is the losing one, and a small sample will not show it.
   #
   # NULLs sort LAST so an unknown listing date never outranks a known one — the
   # opposite convention from tier 3, where a NULL `end_date` means "assume live"

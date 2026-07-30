@@ -75,6 +75,21 @@ class ListedInstrumentSearchTest < ActiveSupport::TestCase
     assert_equal %w[QQAC QQAB], ListedInstrument.search("QQA").map(&:symbol)
   end
 
+  # #search spells the tradeable predicate inline (it is an ORDER BY expression
+  # and cannot reuse the scope), and the model comment requires the two
+  # spellings to stay identical — `upper(btrim(...))` on BOTH columns. Nothing
+  # enforced that until this test: dropping `btrim` from #search leaves a padded
+  # row ranking as untradeable while DirectoryResolver happily resolves it.
+  test "a padded currency/exchange ranks tradeable, matching what the resolver accepts" do
+    ListedInstrument.create!(symbol: "QQAB", exchange: "OTCGREY", asset_type: "Stock", currency: "USD")
+    ListedInstrument.create!(symbol: "QQAC", exchange: " NYSE ", asset_type: "Stock", currency: " usd ")
+
+    assert_equal %w[QQAC QQAB], ListedInstrument.search("QQA").map(&:symbol),
+      "the padded row is resolvable, so it must not rank below an untradeable one"
+    assert Instruments::DirectoryResolver.call(symbol: "QQAC").ok?,
+      "sanity: the resolver and #search must agree on this row"
+  end
+
   test "a non-USD row is treated as untradeable and demoted" do
     ListedInstrument.create!(symbol: "QQAB", exchange: "NYSE", asset_type: "Stock", currency: "CAD")
     ListedInstrument.create!(symbol: "QQAC", exchange: "NYSE", asset_type: "Stock", currency: "USD")
