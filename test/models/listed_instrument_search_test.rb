@@ -95,7 +95,7 @@ class ListedInstrumentSearchTest < ActiveSupport::TestCase
   # tiers: 50 tradeable non-fund 4-char AA* rows compete for 20 slots, and
   # AAPL is alphabetically ~30th among them. Nothing else stored separates it
   # from AABA (Altaba, liquidated 2019) — both NASDAQ/Stock/USD.
-  test "AAPL is returned for 'AA' — a live ticker outranks 50 dead alphabetical peers" do
+  test "a live ticker outranks 50 dead alphabetical peers that would fill the cap" do
     live = Date.current - 2
     dead = Date.current - 6.years
     # Every delisted AA* row sorts alphabetically before AAPL, as in the real file.
@@ -148,6 +148,61 @@ class ListedInstrumentSearchTest < ActiveSupport::TestCase
                              currency: "USD", end_date: Date.current - 2)
 
     assert_equal "QQAB", ListedInstrument.search("QQAB").first.symbol
+  end
+
+  # --- listing age (issue #71) ----------------------------------------------
+
+  test "an older listing outranks a newer one once the other tiers tie" do
+    ListedInstrument.create!(symbol: "QQAB", exchange: "NYSE", asset_type: "Stock",
+                             currency: "USD", start_date: Date.new(2021, 1, 1))
+    ListedInstrument.create!(symbol: "QQAC", exchange: "NYSE", asset_type: "Stock",
+                             currency: "USD", start_date: Date.new(1980, 12, 12))
+
+    # Alphabetically QQAB wins; the older listing must still lead.
+    assert_equal %w[QQAC QQAB], ListedInstrument.search("QQA").map(&:symbol)
+  end
+
+  test "listing age outranks symbol length — an old long ticker beats a new short one" do
+    ListedInstrument.create!(symbol: "QQAB", exchange: "NYSE", asset_type: "Stock",
+                             currency: "USD", start_date: Date.new(2024, 1, 1))
+    ListedInstrument.create!(symbol: "QQABCD", exchange: "NYSE", asset_type: "Stock",
+                             currency: "USD", start_date: Date.new(1980, 12, 12))
+
+    assert_equal %w[QQABCD QQAB], ListedInstrument.search("QQA").map(&:symbol)
+  end
+
+  test "a NULL start_date sorts LAST, so an unknown date never outranks a known one" do
+    ListedInstrument.create!(symbol: "QQAB", exchange: "NYSE", asset_type: "Stock",
+                             currency: "USD", start_date: nil)
+    ListedInstrument.create!(symbol: "QQAC", exchange: "NYSE", asset_type: "Stock",
+                             currency: "USD", start_date: Date.new(2024, 6, 1))
+
+    # The opposite convention from end_date, where NULL means "assume live".
+    assert_equal %w[QQAC QQAB], ListedInstrument.search("QQA").map(&:symbol)
+  end
+
+  test "a long-established ticker survives the cap behind 25 newer alphabetical peers" do
+    old = Date.new(1980, 12, 12)
+    25.times do |i|
+      ListedInstrument.create!(symbol: format("QQA%02d", i), exchange: "NYSE", asset_type: "Stock",
+                               currency: "USD", start_date: Date.new(2023, 1, 1))
+    end
+    ListedInstrument.create!(symbol: "QQZZ", exchange: "NYSE", asset_type: "Stock",
+                             currency: "USD", start_date: old)
+
+    results = ListedInstrument.search("QQ").map(&:symbol)
+
+    assert_equal "QQZZ", results.first
+    assert_equal ListedInstrument::SEARCH_LIMIT, results.size
+  end
+
+  test "liveness still outranks listing age — an old delisted ticker loses to a new live one" do
+    ListedInstrument.create!(symbol: "QQAB", exchange: "NYSE", asset_type: "Stock", currency: "USD",
+                             start_date: Date.new(1980, 12, 12), end_date: Date.current - 6.years)
+    ListedInstrument.create!(symbol: "QQAC", exchange: "NYSE", asset_type: "Stock", currency: "USD",
+                             start_date: Date.new(2024, 1, 1), end_date: Date.current - 2)
+
+    assert_equal %w[QQAC QQAB], ListedInstrument.search("QQA").map(&:symbol)
   end
 
   test "a shorter symbol outranks a longer one once the other tiers tie" do

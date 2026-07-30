@@ -38,8 +38,14 @@ class ListedInstrument < ApplicationRecord
   # (NMFQS, PINK, OTCGREY, a non-USD listing) is un-addable: picking it in the
   # autocomplete only earns a 422 from DirectoryResolver, so it must never
   # outrank a row that works.
+  # Case-insensitive on BOTH columns so this is byte-equivalent to the Ruby
+  # predicate DirectoryResolver used to inline (`currency.to_s.upcase == "USD"`)
+  # and to the same test inside #search. One definition, three readers — if the
+  # notion of "tradeable here" ever changes, it changes once (issue #71; this
+  # scope shipped in #63 unused, with the predicate duplicated in two places).
   scope :tradeable, -> {
-    where(currency: "USD").where("upper(btrim(exchange)) IN (?)", US_EXCHANGES.to_a)
+    where("upper(btrim(currency)) = 'USD'")
+      .where("upper(btrim(exchange)) IN (?)", US_EXCHANGES.to_a)
   }
 
   normalizes :symbol, with: ->(s) { s.strip.upcase }
@@ -67,7 +73,8 @@ class ListedInstrument < ApplicationRecord
   #   3. live           — listings the provider still has recent prices for,
   #                       before delisted ones
   #   4. asset class    — ordinary equities/ETFs before mutual funds
-  #   5. symbol length  — shorter tickers are the more prominent listing
+  #   5. listing age    — older listings are the more established ones
+  #   6. symbol length  — shorter tickers are the more prominent listing
   #
   # ...then alphabetically, so the order is total and the output deterministic.
   #
@@ -82,15 +89,21 @@ class ListedInstrument < ApplicationRecord
   # A NULL `end_date` ranks as LIVE, deliberately: a missing or unparseable date
   # must never be able to hide a real ticker.
   #
-  # KNOWN LIMIT — two-character queries. `search("AA")` still does not surface
-  # AAPL, and no reordering of these tiers fixes it: more than 20 LIVE, tradeable,
-  # non-fund symbols begin "AA" and sort before it, so the answer is excluded by
-  # the cap alone. Separating them needs a popularity/liquidity signal the free
-  # directory does not carry (measured: dropping the length tier changes nothing
-  # for AA/TS/GO/AM/ME). This is acceptable because autocomplete is INCREMENTAL —
-  # at three characters all of AAPL, TSLA, GOOGL, AMZN, META, BRK-B, NVDA and SPY
-  # are reachable, verified against the live directory. Don't "fix" the 2-char
-  # case by weakening a tier; it trades a real improvement for a placebo.
+  # Tier 5, listing age, is the one that makes SHORT queries work, and it exists
+  # because a previous version of this comment was wrong (issue #71). That
+  # version claimed two-character queries "cannot be fixed" without a
+  # popularity signal "the free directory does not carry". The signal was
+  # already in the table and simply unused: `start_date` was being stored and
+  # never read. An older listing is a more established one.
+  #
+  # Measured against the real 106k directory, adding it took 2-character
+  # coverage from 16/26 to 25/26 while holding 3-character at 40/40 — and
+  # *improved* the 3-char ranks it was not aimed at (AAPL 6 -> 2, MSFT 7 -> 2).
+  # `AA` -> AAPL went from ABSENT to rank 2.
+  #
+  # NULLs sort LAST: an unknown listing date must never outrank a known one.
+  # (Contrast tier 3, where a NULL `end_date` ranks as live — there the safe
+  # default is to keep a row visible; here it is to not promote it.)
   def self.search(query, limit: SEARCH_LIMIT)
     q = query.to_s.strip
     return none if q.empty?
@@ -108,6 +121,7 @@ class ListedInstrument < ApplicationRecord
         CASE WHEN end_date IS NULL OR end_date >= (CURRENT_DATE - :stale) THEN 0
              ELSE 1 END,
         CASE WHEN lower(asset_type) LIKE :fund THEN 1 ELSE 0 END,
+        start_date ASC NULLS LAST,
         length(symbol)
       SQL
         exact: q.upcase, prefix: symbol_prefix, us: US_EXCHANGES.to_a,

@@ -109,4 +109,50 @@ class Instruments::MetadataJobTest < ActiveSupport::TestCase
     assert(enqueued.all? { |j| j["arguments"].last["force"] == true },
            "monthly refresh must force past the already-populated skip")
   end
+  # --- directory name enrichment (issues #63/#71) ---------------------------
+  #
+  # Both of these were shipped untested: removing the enqueue OR its rescue
+  # guard failed zero tests, so the guard's own comment ("must never fail an
+  # otherwise-successful metadata fetch") was an unverified promise.
+
+  test "a successful fetch schedules directory name enrichment" do
+    instrument = create_instrument(symbol: "AAPL", instrument_type: "stock")
+    clear_enqueued_jobs
+
+    run_job(instrument, StubProvider.new(series: stock_profile))
+
+    enqueued = enqueued_jobs.select { |j| j["job_class"] == "Directory::EnrichNamesJob" }
+    assert_equal 1, enqueued.size,
+      "the FMP profile is the only moment a company name enters the system"
+  end
+
+  test "a missing profile schedules no enrichment — there is no new name to push" do
+    instrument = create_instrument(symbol: "NOPE", instrument_type: "stock")
+    clear_enqueued_jobs
+
+    missing = PriceProvider::Profile.new(symbol: "NOPE", name: nil, sector: nil,
+                                         industry: nil, instrument_type: nil, found: false)
+    run_job(instrument, StubProvider.new(series: missing))
+
+    assert_empty enqueued_jobs.select { |j| j["job_class"] == "Directory::EnrichNamesJob" }
+  end
+
+  test "a failing enqueue never loses metadata that was already written" do
+    instrument = create_instrument(symbol: "AAPL", instrument_type: "stock")
+
+    # Same define/remove shape as stub_new above — this repo deliberately does
+    # not pull in minitest/mock.
+    Directory::EnrichNamesJob.define_singleton_method(:perform_later) { |*| raise "queue is down" }
+    begin
+      assert_nothing_raised do
+        run_job(instrument, StubProvider.new(series: stock_profile))
+      end
+    ensure
+      Directory::EnrichNamesJob.singleton_class.send(:remove_method, :perform_later)
+    end
+
+    instrument.reload
+    assert_equal "Technology", instrument.sector, "the sector write must survive a queue failure"
+    assert_equal "Apple Inc.", instrument.name
+  end
 end

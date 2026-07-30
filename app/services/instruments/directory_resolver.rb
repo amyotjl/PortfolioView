@@ -58,10 +58,15 @@ module Instruments
 
     # A symbol can be listed on several venues; accept it if ANY listing is a
     # USD row on a recognized US exchange, and build the Instrument from it.
+    #
+    # Delegates the predicate to ListedInstrument.tradeable rather than
+    # re-stating it in Ruby (issue #71) — the same test also drives search
+    # ranking, and two copies could drift apart silently. Ordered so the chosen
+    # listing is deterministic: the previous `.find` walked rows in whatever
+    # order Postgres returned them, so which venue named the Instrument was
+    # unspecified whenever a symbol had more than one US listing.
     def usd_us_listing_for(symbol)
-      ListedInstrument.where("upper(symbol) = ?", symbol).find do |li|
-        li.currency.to_s.upcase == "USD" && US_EXCHANGES.include?(li.exchange.to_s.strip.upcase)
-      end
+      ListedInstrument.where("upper(symbol) = ?", symbol).tradeable.order(:id).first
     end
 
     def instrument_type_for(listing)
