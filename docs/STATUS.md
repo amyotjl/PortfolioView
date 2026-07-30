@@ -1,16 +1,18 @@
 # Status (living document)
 
-Last verified: 2026-07-29. **#68** (import the Wealthsimple *activity ledger* — a real
-transaction history, the third import format) **passed its tester gate and merged
-2026-07-29**; see "#68 as built" and "#68 merge gate" below. **#63** (null instrument names
-+ search relevance) is implemented on `m7/063-directory-names` and **awaiting its tester
-gate** — see "#63 as built". **M0–M8 all merged** (M4's follow-up defects #59/#60 fixed along
+Last verified: 2026-07-29. **#68** (Wealthsimple *activity ledger* import, the third format)
+and **#65** (Select a11y) both passed independent tester gates and **merged 2026-07-29** —
+see "#68 as built", "#68 merge gate" and "#65 as built" below. **#63** (null instrument names
++ search relevance) is implemented on `m7/063-directory-names` @ `da3f598` and **awaiting its
+tester gate**. Two new a11y issues were filed from #65's gate:
+[#69](https://github.com/amyotjl/PortfolioView/issues/69) and
+[#70](https://github.com/amyotjl/PortfolioView/issues/70). **M9 is NOT unstarted** — see the
+milestone table and "M9 is further along than this file claimed". **M0–M8 all merged** (M4's follow-up defects #59/#60 fixed along
 the way). M8's three shipped issues — #52 contribution-vs-growth area, #53 sector treemap,
 #64 portfolio export/import — each passed an independent tester gate on 2026-07-26 and were
-merged that day. Still open and NOT part of the merge: **#63** (null instrument names +
-search relevance), **#65** (Select a11y), and **#66** (Canadian securities — blocked on a
-paid data source and a currency-model decision, see the table below). **M9 (#54–#58) is the
-next milestone and has not been started.**
+merged that day. Still open: **#63** (awaiting its gate), **#66** (Canadian securities —
+blocked on a paid data source and a currency-model decision), and the two a11y follow-ups
+**#69**/**#70**. #65 is now closed.
 
 M7 also has an **e2e suite now** (`e2e/`, Playwright) — one command,
 `docker compose --profile e2e run --rm e2e`, against the running dev stack. It has
@@ -19,10 +21,12 @@ height** since M6 and that **`/register` was unreachable by URL**. Run it after 
 change to the dashboard, the shell, or auth routing — those two classes of bug are
 invisible to Vitest and to the Rails suite.
 
-Two specs now, each registering **exactly one** user per run (registration is rate-limited to
-10 per 3 minutes, so keep new specs API-driven): `smoke.spec.js` and `transfer.spec.js`
-(#64's export download + multipart import, plus #68's activity-ledger upload — a blob download
-and a multipart upload are both invisible to Vitest and to fixture-based Rails tests). Set
+**Three** specs now, each registering **exactly one** user per run (registration is
+rate-limited to 10 per 3 minutes, so keep new specs API-driven — a full run now spends 3 of
+that budget): `smoke.spec.js`, `transfer.spec.js` (#64's export download + multipart import,
+plus #68's activity-ledger upload — a blob download and a multipart upload are both invisible
+to Vitest and to fixture-based Rails tests), and `select-a11y.spec.js` (#65's accessible-name
+assertions across three separate forms; needs no provider keys and no populated directory). Set
 `E2E_SCREENSHOTS=1` to have `transfer.spec.js` write `e2e/screenshots/*.png` for the
 "render it and look at it" check below; a normal run leaves nothing behind.
 
@@ -50,7 +54,7 @@ acceptance-criteria text.
 | M6 | Dashboard | Candlestick + cash-flow + drawdown linked chart, stat tiles, allocation donuts | ✅ closed (#45–48) |
 | M7 | Transaction/recurring UIs | Transaction form drawer, recurring-transactions page, Playwright e2e smoke | ✅ closed (#49–51) — **#63** deferred (still open, see below) |
 | M8 | Extra visualizations + export/import | Contribution-vs-growth stacked area, sector treemap, portfolio export/import | ✅ merged and milestone closed 2026-07-26 (#52, #53, #64 — each tester-verified independently). **The milestone was closed with #63 and #65 still open and still attached to it** (GitHub shows M8 as 3 closed / 2 open). They were deliberately *not* re-milestoned to make the number look clean — both are M7 spillover tracked in the table below, and neither was ever in M8's scope. #66 is unmilestoned |
-| M9 | Local deploy | Production Dockerfile/compose profile, boot catch-up sync, Sync-now button, persistence check | ⬜ not started (#54–58) |
+| M9 | Local deploy | Production Dockerfile/compose profile, boot catch-up sync, Sync-now button, persistence check | 🟡 **materially built but UNMERGED and UNGATED** — this row said "not started" until 2026-07-29 and that was simply wrong. See "M9 is further along than this file claimed" below |
 
 ## Frontend building blocks already in `frontend/src/` (M5+M6 — extend, don't rebuild)
 - **Charts** (`charts/`): `echarts.ts` registers ECharts modularly (`use([...])`) — add new chart types (e.g. M8's treemap) to that one call; import `VChart` from here, never from `vue-echarts` directly. `candles.ts`/`donuts.ts` are pure option builders; `theme.ts` maps `--pv-*` tokens into chart colors; `colors.ts` has the validated ordinal-ramp helpers.
@@ -136,6 +140,22 @@ defects no assertion did.
   styles (`getComputedStyle(el).backgroundColor`) before believing a theming bug from a
   screenshot. Related: the modal mask correctly blocks clicks outside an open dialog, so the
   top-bar theme toggle is unreachable while one is open — poke the attribute instead.
+- **Playwright's `getByRole` matches `name` as a case-insensitive SUBSTRING by default.**
+  Pass `exact: true` in any accessible-name assertion. This nearly shipped a vacuous test in
+  #65: the Benchmark Select's placeholder is "No benchmark", which *contains* "Benchmark", so
+  the spec **passed against the unfixed bug** — only a mutation run exposed it. A repo-wide
+  audit found Benchmark is the app's only label/placeholder overlap today, but `smoke.spec.js`'s
+  `Ticker`/`Date` lookups are still non-exact (measured non-vacuous, same shape).
+- **PrimeVue's unstyled controls are not labelable, so `<label for>` names nothing.** The
+  `Select` combobox is a `<span>` (#65) — the same family as the `Dialog`-title trap below.
+  `aria-label` at the call site cannot win, because the component overwrites it; `aria-labelledby`
+  passes through untouched and outranks `aria-label` per the accname spec. Fix at the
+  **`pt.ts` PT level** so every future instance inherits it, deriving ids through
+  **`lib/fieldIds.ts`** — never per call site. Still outstanding in the same family:
+  [#69](https://github.com/amyotjl/PortfolioView/issues/69) (`SelectButton` has *no* accessible
+  name, and leaks `input-id` as an invalid DOM attribute) and
+  [#70](https://github.com/amyotjl/PortfolioView/issues/70) (`AutoComplete`'s hint and validation
+  error are never announced — `aria-describedby` lands on the wrapper).
 - **PrimeVue's unstyled `Dialog` renders its title as a plain `<span>`.** So
   `getByRole('heading', { name: 'Import portfolios' })` matches nothing; address the dialog by
   its accessible name — `getByRole('dialog', { name: '…' })` — which *is* wired up correctly.
@@ -147,7 +167,6 @@ defects no assertion did.
 | Issue | Milestone | What | Status |
 |---|---|---|---|
 | [#63](https://github.com/amyotjl/PortfolioView/issues/63) | M7 | **Implemented on `m7/063-directory-names`, awaiting the tester gate** — see "#63 as built" below. `listed_instruments.name` is `null` on 100% of rows — Tiingo's bulk ticker file has no name column (by design in `Directory::ImportJob`); search/autocomplete can only ever match on symbol until enriched | Open, deliberately deferred out of M7 (the autocomplete ships symbol-only and already handles the null). Candidate fix: backfill from `instruments.name` (already fetched via FMP for any symbol the user has touched) without a real-time enrichment call. **Also worth fixing the relevance ordering while there:** results cap at 20 and prefix matches are alphabetical, so searching `MSF` returns `MSF, MSFAX, MSFBX … MSFN` and **MSFT never makes the list** — verified live |
-| [#65](https://github.com/amyotjl/PortfolioView/issues/65) | M7 | a11y: PrimeVue's unstyled `Select` renders its combobox as a `<span>` whose `aria-label` it sets to the **selected value**, so the field's visible label is never announced (`getByRole('combobox', {name: 'Kind'})` → 0 matches). Passing `aria-label` at the call site does not help — the component overwrites it | Open, not started. Pre-existing and affects **every** Select (Kind, Frequency, and M5's Benchmark). Needs a `selectPt`-level fix wiring `aria-labelledby` to `FormField`'s label id, not a per-call-site patch. Both M7 call sites carry a comment pointing at the issue |
 | [#66](https://github.com/amyotjl/PortfolioView/issues/66) | none | Support Canadian-listed securities (TSX / TSX-V / CBOE Canada). Surfaced by #64: the user's real Wealthsimple report is entirely CAD | **Open and genuinely blocked — needs two decisions from the project owner, not more investigation.** (1) *A data source:* probed live 2026-07-25, **no configured provider serves Canadian daily history on its current tier** — Tiingo 404s and has zero CAD rows, FMP returns 402 Premium for `.TO`, Twelve Data needs Grow+. FMP's free `search-symbol`/`profile` *do* return CAD name/currency/current price, so validation, autocomplete and a value snapshot are reachable free; **history is not**, and history is what backfill/candles/valuation/summary/benchmarks are all built on. (2) *A currency model:* CAD and USD can't be summed without FX. Also needs schema work — `instruments` is UNIQUE on `upper(symbol)` alone, so TSX `META` (a CAD-hedged CDR) and NASDAQ `META` cannot coexist. Confirmed live during #64's gate: an imported CAD portfolio reports `current_value`, `net_deposits` **and** `total_return` as `"0.0"` with `as_of` `nil` — with no price coverage there is no valuation series at all. The stored cost basis is exact, and the UI states this on screen |
 
 | [#68](https://github.com/amyotjl/PortfolioView/issues/68) | M8 | Import the Wealthsimple **activity ledger** (a real transaction history), the third import format alongside the native envelope and the holdings snapshot | ✅ **Merged 2026-07-29** after an independent tester PASS. Verified against the user's real 372-row export: 225 transactions, 3 portfolios, and a derived 3:1 split that makes the share counts reconcile with the independent holdings report. See "#68 as built" and "#68 merge gate" below |
@@ -349,6 +368,60 @@ resolver and search need it); `DirectoryResolver` aliases the old name so
   explicitly (that option still governs the INSERT path's `created_at`).
 - No frontend change was needed: the serializer already emits `name` and zod already accepts
   `string | null`.
+
+## #65 as built (Select accessible name)
+
+**The root cause was not what the issue assumed.** PrimeVue does overwrite `aria-label`, but
+the real defect is that the unstyled combobox is a **`<span>` — not a labelable element** — so
+`FormField`'s `<label for>` was naming nothing at all. `aria-labelledby` has no fallback and
+no override in `Select.vue`, passes straight through, and outranks `aria-label` per the
+accname spec.
+
+- **Fixed once, in `primevue/pt.ts`**: `selectPt.label` is now a callback deriving
+  `aria-labelledby` from `props.inputId`. All three call sites (Kind, Frequency, Benchmark)
+  and every future Select inherit it. `:input-id` is therefore **load-bearing for the
+  accessible name** — the two M7 call sites carry a comment saying so.
+- **New building block `lib/fieldIds.ts`** (`fieldLabelId`/`fieldHintId`/`fieldErrorId`) so
+  `FormField` and `pt.ts` cannot drift on the id convention. Any new PT preset that must name
+  a non-labelable control derives through it.
+- **`aria-describedby` was fixed in the same pass** — it was being swept into `ptmi('root')`
+  and landing on the wrapper `<div>`, so hint and error text were never announced on the
+  control either.
+- Gate measured both directions: by field label **0/0/0 → 1/1/1**, by selected value
+  **1/1/1 → 0/0/0**. Five mutation probes, each failing a *specific* test. Note
+  `fieldIds.spec.ts` stays green under a convention drift — it locks the pure functions only;
+  **`selectA11y.spec.ts` is the real guard** (the spec's own docstring overclaims this).
+- Third e2e spec added (`select-a11y.spec.js`), so a full suite run now spends **3** of the
+  10-per-3-minutes registration budget. It needs no provider keys and no populated directory.
+
+## M9 is further along than this file claimed (discovered 2026-07-29)
+
+`docs/STATUS.md` said "M9 not started" and listed #55–#58 as blocked on #54. **Both were
+wrong**, and the error survived several sessions because everyone trusted this file over
+`git branch`. Verified by inspection today:
+
+| Branch | Contains |
+|---|---|
+| `m9/054-prod-image` | #54 production Dockerfile + compose profile + SPA catch-all |
+| `m9/055-boot-catchup` | #55 boot catch-up sync initializer |
+| `m9/056-internal-sync` | #56 token-guarded internal sync endpoint + session-authed Sync now |
+| `m9/057-sync-now` | #57 Sync-now button + freshness card |
+| `m9/059-unify-staleness` | #59 one staleness predicate (`Prices::Freshness`) |
+| **`m9/integration`** | **all five merged — 43 files, 3,661 insertions** |
+
+All dated 2026-07-26, all unmerged, none tester-gated. The leftover
+`pv_t58_pgdata_production` volume and a `pv_t58-web-prod-1` container that exited **143**
+(clean SIGTERM) corroborate that the production stack really did boot at the time.
+
+**`m9/integration` is based on `c1ef462`, i.e. before #68 merged**, so it needs a merge into
+current `main` either way. A second #54 candidate exists on `m9/054-production-image`: the
+same two commits cherry-picked onto post-#68 `main`, plus one real fix — every `bin/` script
+is recorded mode `100644` because this repo is developed with `core.filemode=false`, so a
+build from a clean **Linux/CI** checkout dies with `permission denied` on the entrypoint.
+That claim is *reasoned, not observed* (it needs a Linux build host).
+
+**Lesson for this file:** when it disagrees with `git branch -a --sort=-committerdate`,
+git wins. Check both before declaring a milestone unstarted.
 
 ### Resolved (kept for traceability — don't reintroduce these)
 - **Charts rendered at zero height** (M6, found and fixed in M7 2026-07-25) — see the
