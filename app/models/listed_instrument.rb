@@ -38,8 +38,18 @@ class ListedInstrument < ApplicationRecord
   # (NMFQS, PINK, OTCGREY, a non-USD listing) is un-addable: picking it in the
   # autocomplete only earns a 422 from DirectoryResolver, so it must never
   # outrank a row that works.
+  # Case-insensitive on BOTH columns so this is byte-equivalent to the Ruby
+  # predicate DirectoryResolver used to inline (`currency.to_s.upcase == "USD"`,
+  # `exchange.to_s.strip.upcase`). Verified across all 105,445 distinct symbols:
+  # scope and Ruby select the identical 23,434 rows (issue #71).
+  #
+  # `#search` still spells the same predicate inline, because there it is an
+  # ORDER BY *expression* rather than a WHERE clause and cannot reuse a scope.
+  # Keep the two spellings identical — `upper(btrim(...))` on both columns — so
+  # a row can never rank as tradeable while resolving as un-tradeable.
   scope :tradeable, -> {
-    where(currency: "USD").where("upper(btrim(exchange)) IN (?)", US_EXCHANGES.to_a)
+    where("upper(btrim(currency)) = 'USD'")
+      .where("upper(btrim(exchange)) IN (?)", US_EXCHANGES.to_a)
   }
 
   normalizes :symbol, with: ->(s) { s.strip.upcase }
@@ -54,11 +64,11 @@ class ListedInstrument < ApplicationRecord
   # substring. LIKE metacharacters in the query are escaped, so "BRK%" can't
   # wildcard-match the whole table.
   #
-  # Ranked on five tiers, in order (issue #63). The match band alone was not
+  # Ranked on six tiers, in order (issues #63, #71). The match band alone was not
   # enough: the result set is capped at SEARCH_LIMIT, so with a purely
   # alphabetical tie-break a dense prefix silently truncates the one row the
   # user meant. Searching "MSF" returned MSF, MSFAX, MSFBX … MSFN and **MSFT
-  # never appeared at all** — verified live against the real 106,253-row
+  # never appeared at all** — verified live against the real 106,362-row
   # directory.
   #
   #   1. match band     — exact symbol, then symbol prefix, then name-only
@@ -68,6 +78,7 @@ class ListedInstrument < ApplicationRecord
   #                       before delisted ones
   #   4. asset class    — ordinary equities/ETFs before mutual funds
   #   5. symbol length  — shorter tickers are the more prominent listing
+  #   6. listing age    — older listings are the more established ones
   #
   # ...then alphabetically, so the order is total and the output deterministic.
   #
@@ -82,15 +93,56 @@ class ListedInstrument < ApplicationRecord
   # A NULL `end_date` ranks as LIVE, deliberately: a missing or unparseable date
   # must never be able to hide a real ticker.
   #
-  # KNOWN LIMIT — two-character queries. `search("AA")` still does not surface
-  # AAPL, and no reordering of these tiers fixes it: more than 20 LIVE, tradeable,
-  # non-fund symbols begin "AA" and sort before it, so the answer is excluded by
-  # the cap alone. Separating them needs a popularity/liquidity signal the free
-  # directory does not carry (measured: dropping the length tier changes nothing
-  # for AA/TS/GO/AM/ME). This is acceptable because autocomplete is INCREMENTAL —
-  # at three characters all of AAPL, TSLA, GOOGL, AMZN, META, BRK-B, NVDA and SPY
-  # are reachable, verified against the live directory. Don't "fix" the 2-char
-  # case by weakening a tier; it trades a real improvement for a placebo.
+  # Tier 6, listing age, makes SHORT queries work. It exists because an earlier
+  # version of this comment claimed two-character queries "cannot be fixed"
+  # without a popularity signal "the free directory does not carry" — which was
+  # false. The signal was already in the table and simply unread: #63 added BOTH
+  # `start_date` and `end_date` and ranked on `end_date` only (issue #71).
+  #
+  # **It sits AFTER length, and that order is load-bearing.** Age is a proxy for
+  # prominence, so ranking on it before length systematically buries RECENT
+  # listings behind old obscure ones: `ARMH`, a 1998 ADR that still carries
+  # recent prices (so tier 3 counts it live), outranked the 2023 `ARM`, and
+  # ARM/NET/RDDT/SOFI all fell out of the 2-character cap entirely.
+  #
+  # What makes THIS order safe is structural, not statistical: putting age after
+  # length makes the ordering a strict REFINEMENT of the pre-#71 one — start_date
+  # only breaks ties that were previously broken alphabetically, so no row can
+  # cross a length boundary. Measured: 0 of 676 two-letter prefixes change their
+  # top-20 length profile, against 376 of 676 for age-before-length.
+  #
+  # **THE COST, stated properly.** This is a trade, not a free win. Ranking by
+  # age displaces symbols that used to make the cap on alphabetical luck:
+  # exhaustively across all 676 two-letter prefixes, **~1,617 symbols** drop out
+  # of a top-20 they previously reached — **1,219** of them live, `tradeable`
+  # (as the scope above defines it), non-fund and <= 4 characters; 952 if you
+  # additionally require a major venue, the ~267 difference being almost all
+  # BATS. Named casualties include SNAP, MTCH, MBLY, ASAN, CELH, VICI and ARCC.
+  # What that buys is the head of the distribution: AAPL, MSFT, AMZN, META,
+  # TSLA, AVGO and COST become reachable at two characters for the first time.
+  # **Every displaced symbol is still reachable at three characters** — verified
+  # exhaustively, 1,617 of 1,617, median rank 3 — which is what makes the trade
+  # defensible for an incremental type-ahead.
+  #
+  # Do NOT restate this as "loses only SOFI". An earlier version of this comment
+  # did, measured from a 76-ticker list chosen by the same person who wrote the
+  # tier; the real number is ~34x larger and only an exhaustive prefix sweep
+  # finds it. A hand-picked ticker list will always flatter whoever picked it.
+  #
+  # Residual bias worth knowing: post-2020 rows hold 34.2% of top-20 slots here
+  # versus 42.4% with no age tier at all (and 31.7% with age-before-length),
+  # while 55.5% of live tradeable non-fund rows are post-2020. This still tilts
+  # against recent listings — it recovers about a quarter of what the wrong
+  # order gave away, not all of it.
+  #
+  # **Don't reorder these two tiers without re-running the exhaustive sweep** —
+  # the intuitive order is the losing one, and a small sample will not show it.
+  #
+  # NULLs sort LAST so an unknown listing date never outranks a known one — the
+  # opposite convention from tier 3, where a NULL `end_date` means "assume live"
+  # so a parse gap cannot hide a ticker. (`ASC NULLS LAST` is also Postgres'
+  # default for `ASC`, so deleting those two words changes nothing; they are
+  # there to state the intent, and the tests pin the behaviour, not the syntax.)
   def self.search(query, limit: SEARCH_LIMIT)
     q = query.to_s.strip
     return none if q.empty?
@@ -103,12 +155,13 @@ class ListedInstrument < ApplicationRecord
         CASE WHEN upper(symbol) = :exact THEN 0
              WHEN upper(symbol) LIKE :prefix THEN 1
              ELSE 2 END,
-        CASE WHEN upper(currency) = 'USD' AND upper(btrim(exchange)) IN (:us) THEN 0
+        CASE WHEN upper(btrim(currency)) = 'USD' AND upper(btrim(exchange)) IN (:us) THEN 0
              ELSE 1 END,
         CASE WHEN end_date IS NULL OR end_date >= (CURRENT_DATE - :stale) THEN 0
              ELSE 1 END,
         CASE WHEN lower(asset_type) LIKE :fund THEN 1 ELSE 0 END,
-        length(symbol)
+        length(symbol),
+        start_date ASC NULLS LAST
       SQL
         exact: q.upcase, prefix: symbol_prefix, us: US_EXCHANGES.to_a,
         stale: STALE_LISTING_WINDOW, fund: MUTUAL_FUND_PATTERN

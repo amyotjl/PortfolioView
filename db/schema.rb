@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_07_30_025121) do
+ActiveRecord::Schema[8.1].define(version: 2026_07_30_033936) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "citext"
   enable_extension "pg_catalog.plpgsql"
@@ -76,7 +76,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_07_30_025121) do
     t.string "symbol", null: false
     t.datetime "updated_at", null: false
     t.index "upper((symbol)::text) text_pattern_ops", name: "index_listed_instruments_on_upper_symbol_pattern"
-    t.index ["end_date"], name: "index_listed_instruments_on_end_date"
     t.index ["symbol", "exchange"], name: "index_listed_instruments_on_symbol_and_exchange", unique: true, nulls_not_distinct: true
   end
 
