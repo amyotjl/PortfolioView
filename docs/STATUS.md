@@ -1,6 +1,6 @@
 # Status (living document)
 
-Last verified: 2026-07-29. **#68** (Wealthsimple *activity ledger* import, the third format)
+Last verified: 2026-07-30. **#68** (Wealthsimple *activity ledger* import, the third format)
 and **#65** (Select a11y) both passed independent tester gates and **merged 2026-07-29** —
 see "#68 as built", "#68 merge gate" and "#65 as built" below. **#63** (null instrument names
 + search relevance) **also passed its gate and merged**, as did its follow-up
@@ -11,9 +11,9 @@ gate rounds** — see "#71: two FAILs worth more than the feature". Two new a11y
 milestone table and "M9 is further along than this file claimed". **M0–M8 all merged** (M4's follow-up defects #59/#60 fixed along
 the way). M8's three shipped issues — #52 contribution-vs-growth area, #53 sector treemap,
 #64 portfolio export/import — each passed an independent tester gate on 2026-07-26 and were
-merged that day. Still open: **#63** (awaiting its gate), **#66** (Canadian securities —
-blocked on a paid data source and a currency-model decision), and the two a11y follow-ups
-**#69**/**#70**. #65 is now closed.
+merged that day. **#63, #65, #68 and #71 are all merged, pushed and closed.** Still open:
+**#66** (Canadian securities — the currency model is now DECIDED, so it is blocked only on a
+data source) and the two a11y follow-ups **#69**/**#70**.
 
 M7 also has an **e2e suite now** (`e2e/`, Playwright) — one command,
 `docker compose --profile e2e run --rm e2e`, against the running dev stack. It has
