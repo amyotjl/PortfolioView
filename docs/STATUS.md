@@ -167,7 +167,7 @@ defects no assertion did.
 
 | Issue | Milestone | What | Status |
 |---|---|---|---|
-| [#63](https://github.com/amyotjl/PortfolioView/issues/63) | M7 | **Implemented on `m7/063-directory-names`, awaiting the tester gate** — see "#63 as built" below. `listed_instruments.name` is `null` on 100% of rows — Tiingo's bulk ticker file has no name column (by design in `Directory::ImportJob`); search/autocomplete can only ever match on symbol until enriched | Open, deliberately deferred out of M7 (the autocomplete ships symbol-only and already handles the null). Candidate fix: backfill from `instruments.name` (already fetched via FMP for any symbol the user has touched) without a real-time enrichment call. **Also worth fixing the relevance ordering while there:** results cap at 20 and prefix matches are alphabetical, so searching `MSF` returns `MSF, MSFAX, MSFBX … MSFN` and **MSFT never makes the list** — verified live |
+| [#63](https://github.com/amyotjl/PortfolioView/issues/63) | M7 | ✅ **MERGED and closed 2026-07-29** (see "#63 as built"), with follow-up #71 also merged. Was: `listed_instruments.name` is `null` on 100% of rows — Tiingo's bulk ticker file has no name column (by design in `Directory::ImportJob`); search/autocomplete can only ever match on symbol until enriched | Open, deliberately deferred out of M7 (the autocomplete ships symbol-only and already handles the null). Candidate fix: backfill from `instruments.name` (already fetched via FMP for any symbol the user has touched) without a real-time enrichment call. **Also worth fixing the relevance ordering while there:** results cap at 20 and prefix matches are alphabetical, so searching `MSF` returns `MSF, MSFAX, MSFBX … MSFN` and **MSFT never makes the list** — verified live |
 | [#66](https://github.com/amyotjl/PortfolioView/issues/66) | none | Support Canadian-listed securities (TSX / TSX-V / CBOE Canada). Surfaced by #64: the user's real Wealthsimple report is entirely CAD | **Still open, now blocked on ONE thing instead of two.** *Currency model — DECIDED 2026-07-30 by the project owner:* "assume everything is CAD; the fx rate and everything related to that will be for a later revision". So CAD is the reporting currency, no FX is built, and the question is **closed rather than solved** — don't re-litigate it. USD-priced holdings are deliberately NOT relabelled as CAD (the accounts hold both, and multiplying a USD close by a CAD share count and printing it as CAD would silently misstate a money figure). *Data source — STILL BLOCKING:* probed live 2026-07-25, **no configured provider serves Canadian daily history on its current tier** — Tiingo 404s with zero CAD rows, FMP returns 402 Premium for `.TO`, Twelve Data needs Grow+. History is what backfill/candles/valuation/summary/benchmarks are all built on, so TSX holdings still report market value as zero; cost basis is exact and the UI says so. Two things "assume CAD" does NOT reach: typed entry still can't find Canadian securities (the Tiingo directory has **zero** Canadian rows, so autocomplete cannot offer them — import is the working path), and `instruments` is still UNIQUE on `upper(symbol)` alone, so TSX `META` and NASDAQ `META` cannot coexist. **What unblocks this: a data source.** |
 
 | [#68](https://github.com/amyotjl/PortfolioView/issues/68) | M8 | Import the Wealthsimple **activity ledger** (a real transaction history), the third import format alongside the native envelope and the holdings snapshot | ✅ **Merged 2026-07-29** after an independent tester PASS. Verified against the user's real 372-row export: 225 transactions, 3 portfolios, and a derived 3:1 split that makes the share counts reconcile with the independent holdings report. See "#68 as built" and "#68 merge gate" below |
@@ -653,12 +653,17 @@ Full detail in [e2e/README.md](../e2e/README.md). Three things that will otherwi
 - **Restart the vite container after editing a `.vue` file before re-running e2e.** Stale
   HMR state has repeatedly made a fixed bug look unfixed (and cost several debugging
   rounds in M7).
-- **The suite has an undocumented precondition: `listed_instruments` must be populated.** Both
-  testers hit this independently on a fresh isolated stack — every spec fails with
-  `AAPL … is not a recognized US-exchange symbol`, which looks like an app bug and is not one;
-  `Instruments::DirectoryResolver` simply has no directory to resolve against. Fix by running
-  `Directory::ImportJob` (~106,300 rows, keyless static download, no quota cost). The primary
-  dev stack already has it, so this only bites a brand-new database.
+- **`listed_instruments` must be populated — but since #72 the app provisions it itself.**
+  Boot::CatchUp now enqueues `Directory::ImportJob` when the table is empty, so a brand-new
+  database heals without intervention. **There is still a ~7-second race**: the import measured
+  6.8–7.1s live, so an e2e run started immediately after boot can still hit
+  `AAPL … is not a recognized US-exchange symbol`, which looks like an app bug and is not one.
+  Wait for the boot log's `directory_unprovisioned=true; enqueued=Directory::ImportJob` line to
+  be followed by the import's own completion, or just run `Directory::ImportJob` yourself
+  (~106,300 rows, keyless, no quota cost) before the suite.
+- **Do NOT read `enqueued=nothing` in the boot log as proof nothing was enqueued.** The import
+  is enqueued *first*, so a later `perform_later` failure leaves the log line understating what
+  is actually queued (found by #72's gate).
 - **`smoke.spec.js` additionally needs provider keys**, not just a populated directory. With
   no `.env`, `daily_prices` is empty, the dashboard has no valuation series, and the spec
   fails at `smoke.spec.js:185` in a way that looks like an app bug. Confirmed environmental
