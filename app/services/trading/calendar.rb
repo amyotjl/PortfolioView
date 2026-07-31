@@ -21,7 +21,7 @@ module Trading
 
       # The wall clock in America/New_York, for the ONE caller that needs a
       # time of day rather than a date: Prices::Freshness's 22:00-ET
-      # expected-session cutoff (issue #59). Purely additive — this class stays
+      # expected-session cutoff (M9, for Prices::Freshness). Purely additive — this class stays
       # the owner of the timezone fact so that caller does not reach for
       # ActiveSupport::TimeZone itself, and `today` is untouched.
       #

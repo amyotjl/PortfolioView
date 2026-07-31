@@ -26,7 +26,7 @@ module Boot
   # this class's — .call is the pure, repeatable data check, so tests can drive
   # it directly in the test environment.
   #
-  # WHAT "BEHIND" MEANS IS NOT DECIDED HERE (issue #59). This class used to
+  # WHAT "BEHIND" MEANS IS NOT DECIDED HERE (see Prices::Freshness). This class used to
   # compute its own reference day, which drifted from the one GET /api/v1/sync
   # reported: on a Monday at 23:00 ET with the cache current through Friday it
   # enqueued a sync while the API said `stale: false`. The single definition now

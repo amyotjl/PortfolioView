@@ -1,6 +1,6 @@
 module Prices
   # "How current is the price cache?" — THE staleness predicate for the whole
-  # app (issue #56, unified with the boot catch-up by issue #59).
+  # app (issue #56, unified with the boot catch-up during M9).
   #
   # There is exactly one definition of "behind", and it lives here. Both callers
   # consume this result and neither computes a reference day of its own:
@@ -14,7 +14,7 @@ module Prices
   # most recent weekday STRICTLY BEFORE today with no cutoff. On a Monday at
   # 23:00 ET with the cache current through Friday, the boot check enqueued a
   # sync while the API reported `stale: false` — the UI said "prices are
-  # current" while the app was fetching. See the divergence table on issue #59.
+  # current" while the app was fetching. See the divergence table on issue #56.
   #
   # Global on purpose. /summary's `as_of` is the obvious-looking source and is
   # the WRONG one for this: it is portfolio-scoped, and it is nil for a
@@ -51,7 +51,7 @@ module Prices
   # "stale" costs one idempotent no-op delta sync, a false "fresh" costs the
   # user trusting old numbers.
   #
-  # BOOT SAFETY (issue #59). This is now reachable from an initializer via
+  # BOOT SAFETY (M9). This is now reachable from an initializer via
   # Boot::CatchUp, where the schema may not exist yet, so it inherits that
   # class's contract: it may only touch tables Boot::CatchUp::REQUIRED_TABLES
   # already verified (instruments, daily_prices, transactions,
