@@ -43,7 +43,7 @@ module Instruments
       return Result.new(instrument: existing, error: nil) if existing
 
       listing = usd_us_listing_for(symbol)
-      return failure("is not a recognized US-exchange symbol (unsupported in v1)") if listing.nil?
+      return failure(unresolvable_message) if listing.nil?
 
       instrument = Instrument.create!(
         symbol: symbol,
@@ -67,6 +67,22 @@ module Instruments
     # unspecified whenever a symbol had more than one US listing.
     def usd_us_listing_for(symbol)
       ListedInstrument.where("upper(symbol) = ?", symbol).tradeable.order(:id).first
+    end
+
+    # An EMPTY directory and an unknown symbol are different failures and must
+    # not share a message (issue #72). A fresh deploy has no directory until the
+    # import runs, so every symbol fails this check — and telling the user their
+    # ticker "is not recognized" blames their input for a cache that was never
+    # provisioned. They then retype a symbol that was always correct.
+    #
+    # Checked only on the failure path, so the happy path costs nothing.
+    def unresolvable_message
+      if ListedInstrument.none?
+        "can't be checked yet — the symbol directory is still downloading. " \
+          "This is a one-time setup step; try again in a few minutes."
+      else
+        "is not a recognized US-exchange symbol (unsupported in v1)"
+      end
     end
 
     def instrument_type_for(listing)

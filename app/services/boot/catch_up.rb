@@ -47,6 +47,7 @@ module Boot
       transactions
       recurring_transactions
       benchmarks
+      listed_instruments
     ].freeze
 
     # status: :ok | :database_not_ready | :error
@@ -84,8 +85,10 @@ module Boot
       # already idempotent and the nightly schedule bypasses the lease too.
       freshness = Prices::Freshness.call(check_pending: false)
       due = recurring_due?
+      directory = directory_unprovisioned?
 
       enqueued = []
+      enqueued << enqueue(Directory::ImportJob) if directory
       # Freshness#behind?, not #stale — see the note below.
       enqueued << enqueue(Prices::DailySyncJob) if freshness.behind?
       enqueued << enqueue(Recurring::MaterializeDueJob) if due
@@ -94,7 +97,8 @@ module Boot
                  "last_trading_day=#{freshness.last_trading_day || 'none'} " \
                  "reference=#{freshness.expected_session} stale=#{freshness.stale} " \
                  "instruments_behind=#{freshness.instruments_behind}; " \
-                 "recurring_due=#{due}; enqueued=#{enqueued.presence&.join(', ') || 'nothing'}")
+                 "recurring_due=#{due}; directory_unprovisioned=#{directory}; " \
+                 "enqueued=#{enqueued.presence&.join(', ') || 'nothing'}")
 
       finish(Result.new(status: :ok, enqueued: enqueued,
                         latest_price_on: freshness.latest_price_on,
@@ -118,6 +122,51 @@ module Boot
     # - On an empty database `stale` is true (the UI must say "never synced")
     #   but `behind?` is 0: nothing is referenced, so there is nothing to fetch
     #   and enqueueing a fan-out over zero instruments is pure noise.
+
+    # A fresh deploy starts with listed_instruments EMPTY, and the directory
+    # import is only scheduled weekly (Sundays 03:00). Until it runs,
+    # Instruments::DirectoryResolver has nothing to validate against, so EVERY
+    # symbol the user types is rejected with "is not a recognized US-exchange
+    # symbol" — an error that blames their input for an unprovisioned cache.
+    # Measured on a real clean deploy during #54's gate (issue #72).
+    #
+    # EMPTY, not stale. Deliberately the narrowest possible trigger:
+    #
+    # - An empty table is unambiguous — it can only mean "never provisioned",
+    #   so there is no judgement call and no threshold to tune. Refreshing a
+    #   populated-but-old directory stays the weekly schedule's job.
+    # - It is self-limiting. One successful import makes this false forever, so
+    #   the steady state is zero work per boot — which matters because
+    #   Boot::CatchUp deliberately bypasses SyncTrigger's 10-minute lease, so
+    #   anything added here runs on EVERY boot unless it guards itself.
+    # - The file is a ~106,300-row keyless download: free in provider quota,
+    #   not free in time or DB writes. A crash-looping container must not
+    #   re-download it on every restart, which is why the already-enqueued
+    #   check below exists as well.
+    #
+    # `none?` compiles to SELECT 1 ... LIMIT 1, so this costs an index probe.
+    # DELIBERATELY NO "is one already queued?" CHECK. The obvious refinement is
+    # to skip the enqueue while an import is queued-but-unrun, so a restart
+    # during provisioning does not stack duplicates. It was implemented, and
+    # removed, for two reasons found by probing it:
+    #
+    #   1. It cannot be tested here. Reading SolidQueue::Job touches the QUEUE
+    #      database, which the test environment does not migrate, so the query
+    #      always raises and the guard's real branch never runs under test.
+    #   2. Worse, that raise POISONS the surrounding transaction. Postgres
+    #      aborts a transaction after a failed statement, so in the
+    #      transactional suite the NEXT Boot::CatchUp.call failed outright and
+    #      returned status: :error with nothing enqueued. The "a restart does
+    #      not enqueue a second" test passed because the whole call had errored,
+    #      not because the guard worked - a vacuous pass hiding a real hazard.
+    #
+    # What is lost is bounded and self-correcting: a restart inside the
+    # provisioning window may enqueue a second import. Directory::ImportJob is
+    # idempotent (upsert_all on (symbol, exchange), preserving enriched names
+    # via COALESCE since #63) and its sanity guard refuses an implausibly small
+    # file, so a duplicate run costs one redundant download and changes no data.
+    # One success makes this predicate false forever.
+    def directory_unprovisioned? = ListedInstrument.none?
 
     # Mirrors Recurring::MaterializeDueJob's own selection exactly (and hits the
     # partial index on next_run_on WHERE active).
