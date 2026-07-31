@@ -11,10 +11,12 @@ gate rounds** — see "#71: two FAILs worth more than the feature". Two new a11y
 milestone table and "M9 is further along than this file claimed". **M0–M8 all merged** (M4's follow-up defects #59/#60 fixed along
 the way). M8's three shipped issues — #52 contribution-vs-growth area, #53 sector treemap,
 #64 portfolio export/import — each passed an independent tester gate on 2026-07-26 and were
-merged that day. **#63, #65, #68 and #71 are all merged, pushed and closed**, as are M9's
-**#54, #55, #56, #57** and **#72**. Still open: **#58** (M9's deployment-runtime verification,
-the last item in the milestone), **#66** (Canadian securities — the currency model is now
-DECIDED, so it is blocked only on a data source) and the two a11y follow-ups **#69**/**#70**.
+merged that day. **M0–M9 are now ALL closed** — M9 finished 2026-07-31 with #54, #55, #56,
+#57, #58 and #72. Still open: **#66** (Canadian securities — the currency model is DECIDED,
+so it is blocked only on a data source) and four defects found by gates rather than by use:
+**#69**/**#70** (a11y), **#73** (sign-out leaves the previous user's data on screen),
+**#74** (ActionCable upgradeable while cable.yml declares Redis) and **#75** (a blank internal
+token is diagnostically silent).
 
 M7 also has an **e2e suite now** (`e2e/`, Playwright) — one command,
 `docker compose --profile e2e run --rm e2e`, against the running dev stack. It has
@@ -56,7 +58,7 @@ acceptance-criteria text.
 | M6 | Dashboard | Candlestick + cash-flow + drawdown linked chart, stat tiles, allocation donuts | ✅ closed (#45–48) |
 | M7 | Transaction/recurring UIs | Transaction form drawer, recurring-transactions page, Playwright e2e smoke | ✅ closed (#49–51). Its two spillover issues are now closed too: **#63** (+ follow-up #71) and **#65** |
 | M8 | Extra visualizations + export/import | Contribution-vs-growth stacked area, sector treemap, portfolio export/import | ✅ merged and milestone closed 2026-07-26 (#52, #53, #64 — each tester-verified independently). **The milestone was closed with #63 and #65 still open and still attached to it** (GitHub shows M8 as 3 closed / 2 open). They were deliberately *not* re-milestoned to make the number look clean — both are M7 spillover tracked in the table below, and neither was ever in M8's scope. #66 is unmilestoned |
-| M9 | Local deploy | Production Dockerfile/compose profile, boot catch-up sync, Sync-now button, persistence check | 🟢 **4 of 5 merged 2026-07-30/31** — #54 (production image), #55 (boot catch-up), #56 (internal sync endpoints) and #57 (Sync-now button) each passed an independent gate, plus **#72** (a fresh deploy rejected every symbol for up to a week) found *by* #54's gate. Only **#58** remains — the milestone's own deployment-runtime verification. This row said "not started" until 2026-07-29 and that was simply wrong — see below |
+| M9 | Local deploy | Production Dockerfile/compose profile, boot catch-up sync, Sync-now button, persistence check | ✅ **merged and milestone closed 2026-07-31** (#54, #55, #56, #57, #58 — each independently gated), plus **#72** found by #54's gate. #58's runtime verification FAILED first on a defect that lived in the seam between two gated issues — see "M9 acceptance" below. This row said "not started" until 2026-07-29 and that was simply wrong |
 
 ## Frontend building blocks already in `frontend/src/` (M5+M6 — extend, don't rebuild)
 - **Charts** (`charts/`): `echarts.ts` registers ECharts modularly (`use([...])`) — add new chart types (e.g. M8's treemap) to that one call; import `VChart` from here, never from `vue-echarts` directly. `candles.ts`/`donuts.ts` are pure option builders; `theme.ts` maps `--pv-*` tokens into chart colors; `colors.ts` has the validated ordinal-ramp helpers.
@@ -437,6 +439,41 @@ uncached searches) and is dropped; search really costs **~13ms**, not the 0.2–
 reported (that was a `rails runner` query-cache artifact — not a regression, and the ticker
 AutoComplete debounces at 250ms); and `Instruments::DirectoryResolver` had **no test file at
 all**, which is why its row choice could be non-deterministic without anything noticing.
+
+## M9 acceptance (#58, 2026-07-31) — the milestone gate earned its place
+
+#58 **FAILED first**, on a defect no per-issue gate could have caught, which is the whole
+argument for verifying the assembled system rather than only its slices.
+
+**`docker-compose.yml` passed `INTERNAL_API_TOKEN` to the dev `web` service only.** `web-prod`
+never received it. `Api::Internal::BaseController` fails closed on a blank var, so in
+production `POST /api/internal/jobs/daily_sync` answered **401 to the correct token exactly as
+it does to a wrong one** — indistinguishable from a token mismatch, so it read as operator
+error. Setting it in `.env` did nothing, because compose did not forward it. **#56 gated the
+endpoint. #54 gated the image. The bug lived in the wiring between them.** Isolated with a
+control (adding only that one line to an override → 202 while a wrong token still 401'd), so
+#56's code was correct throughout. Fixed in `ef49833` and re-verified against the shipped
+config, with an override carrying only a `ports` block.
+
+**Don't "harden" the `:-` default into a required variable.** Probed directly: `${VAR}` and
+`${VAR:-}` **both** resolve to an empty string and both boot — the bare form buys a stderr
+warning and nothing else. Real enforcement needs `${VAR:?}`, which this compose file's header
+already rules out, because interpolation runs at **parse time for every service including
+profiled ones** and would break a plain `docker compose up` for the dev stack. Unset is a
+legitimate steady state (the Sync-now button uses session auth) and was confirmed a clean
+disable, not a degraded boot. The residual diagnostic gap is tracked as #75.
+
+Other evidence worth keeping: persistence proved by a **byte-identical snapshot hash** across
+`down`/`up` over 43,320 price rows; boot catch-up tested by constructing the *degenerate*
+state (`latest == last_trading_day`) that only the wall-clock predicate catches; and every
+`enqueued=` log line cross-checked against the queue, per #72's warning that the line
+under-reports.
+
+Two doc claims it measured as false, both corrected: a fresh database reports
+**`instruments_behind: 3`**, not 0 (seeded benchmarks are referenced with a NULL
+`latest_price_on` — the service was right, `API_SHAPES.md` *and* `freshness.rb`'s docstring
+were wrong), and a smoke failure can mean a **backfill still in flight** rather than absent
+keys (a real Tiingo 429 rescheduled, retried, and passed).
 
 ## M9 gate evidence (2026-07-30) — split three ways by coupling
 
