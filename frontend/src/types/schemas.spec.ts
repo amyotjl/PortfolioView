@@ -15,6 +15,10 @@ import {
   parseResponse,
   SchemaValidationError,
   summaryResponseSchema,
+  SYNC_ALREADY_PENDING,
+  SYNC_ENQUEUED,
+  syncStatusResponseSchema,
+  syncTriggerResponseSchema,
   transactionsResponseSchema,
 } from './index'
 
@@ -275,5 +279,166 @@ describe('API contract schemas (docs/API_SHAPES.md)', () => {
   it('keeps the client-side upload cap in step with the server', () => {
     // Portfolios::Transfer::MAX_FILE_BYTES
     expect(MAX_IMPORT_BYTES).toBe(8 * 1024 * 1024)
+  })
+
+  // --- Sync (#56/#57) --------------------------------------------------------
+  //
+  // Every payload below is a byte-for-byte copy of a LIVE response captured from
+  // the running API (see the issue's verification comment), not a hand-built
+  // fixture — including the fresh-database null case, which is the one most
+  // likely to break a schema.
+
+  it('parses the GET /sync snapshot (live: populated cache)', () => {
+    const payload = {
+      sync: {
+        latest_price_on: '2026-07-24',
+        last_trading_day: '2026-07-24',
+        stale: true,
+        pending: false,
+        requested_at: null,
+      },
+    }
+
+    const parsed = parseResponse(syncStatusResponseSchema, payload, 'GET /sync')
+
+    expect(parsed.sync.latest_price_on).toBe('2026-07-24')
+    expect(parsed.sync.pending).toBe(false)
+    expect(parsed.sync.requested_at).toBeNull()
+  })
+
+  it('parses the GET /sync snapshot on a FRESH DATABASE (both dates null)', () => {
+    // Real state, verified live: nothing cached yet -> both date fields null
+    // together, and `stale` is then true.
+    const parsed = parseResponse(
+      syncStatusResponseSchema,
+      {
+        sync: {
+          latest_price_on: null,
+          last_trading_day: null,
+          stale: true,
+          pending: false,
+          requested_at: null,
+        },
+      },
+      'GET /sync',
+    )
+
+    expect(parsed.sync.latest_price_on).toBeNull()
+    expect(parsed.sync.last_trading_day).toBeNull()
+    expect(parsed.sync.stale).toBe(true)
+  })
+
+  it('parses a pending GET /sync snapshot (requested_at non-null iff pending)', () => {
+    const parsed = parseResponse(
+      syncStatusResponseSchema,
+      {
+        sync: {
+          latest_price_on: '2026-07-24',
+          last_trading_day: '2026-07-24',
+          stale: true,
+          pending: true,
+          requested_at: '2026-07-26T18:03:11Z',
+        },
+      },
+      'GET /sync',
+    )
+
+    expect(parsed.sync.pending).toBe(true)
+    expect(parsed.sync.requested_at).toBe('2026-07-26T18:03:11Z')
+  })
+
+  it('parses the SIX-key snapshot #59 added (instruments_behind, integer, never null)', () => {
+    // Mirrors SyncStatusSerializer as merged on m9/integration. NOT captured
+    // live: #59 landed on the integration branch after this branch was cut, so
+    // the live probes below recorded the five-key shape.
+    const parsed = parseResponse(
+      syncStatusResponseSchema,
+      {
+        sync: {
+          latest_price_on: '2026-07-24',
+          last_trading_day: '2026-07-24',
+          stale: false,
+          instruments_behind: 1,
+          pending: false,
+          requested_at: null,
+        },
+      },
+      'GET /sync',
+    )
+
+    // "The cache as a whole is current, one symbol is not" — a real state.
+    expect(parsed.sync.stale).toBe(false)
+    expect(parsed.sync.instruments_behind).toBe(1)
+  })
+
+  it('lets an unknown sixth key through instead of failing the parse', () => {
+    // NOT .strict(): the backend is concurrently adding `instruments_behind`, and
+    // an unknown key must never blank the Settings card.
+    const parsed = syncStatusResponseSchema.parse({
+      sync: {
+        latest_price_on: '2026-07-24',
+        last_trading_day: '2026-07-24',
+        stale: false,
+        pending: false,
+        requested_at: null,
+        instruments_behind: 3,
+        something_added_later: 'whatever',
+      },
+    })
+
+    expect(parsed.sync.instruments_behind).toBe(3)
+    expect(parsed.sync.stale).toBe(false)
+  })
+
+  it('survives an unexpected type on the forward-compatible field', () => {
+    const parsed = syncStatusResponseSchema.parse({
+      sync: {
+        latest_price_on: null,
+        last_trading_day: null,
+        stale: true,
+        pending: false,
+        requested_at: null,
+        instruments_behind: 'lots',
+      },
+    })
+
+    expect(parsed.sync.instruments_behind).toBeUndefined()
+  })
+
+  it('parses POST /sync, whose `sync` wraps a DIFFERENT key set from GET', () => {
+    const enqueued = parseResponse(
+      syncTriggerResponseSchema,
+      { sync: { status: 'enqueued', requested_at: '2026-07-26T18:03:11Z' } },
+      'POST /sync',
+    )
+    const deduped = parseResponse(
+      syncTriggerResponseSchema,
+      { sync: { status: 'already_pending', requested_at: '2026-07-26T18:03:11Z' } },
+      'POST /sync',
+    )
+
+    expect(enqueued.sync.status).toBe(SYNC_ENQUEUED)
+    // The deduped 202 echoes the FIRST request's claim time, not this one's.
+    expect(deduped.sync.status).toBe(SYNC_ALREADY_PENDING)
+    expect(deduped.sync.requested_at).toBe('2026-07-26T18:03:11Z')
+  })
+
+  it('accepts a POST /sync status this build does not know', () => {
+    // Same rule as /portfolios/import's status: z.string(), not z.enum.
+    expect(
+      syncTriggerResponseSchema.parse({
+        sync: { status: 'coalesced', requested_at: '2026-07-26T18:03:11Z' },
+      }).sync.status,
+    ).toBe('coalesced')
+  })
+
+  it('rejects a GET payload shaped like the POST one (the two are not interchangeable)', () => {
+    expect(() =>
+      parseResponse(
+        syncStatusResponseSchema,
+        { sync: { status: 'enqueued', requested_at: '2026-07-26T18:03:11Z' } },
+        'GET /sync',
+      ),
+    ).toThrow(SchemaValidationError)
   })
 })

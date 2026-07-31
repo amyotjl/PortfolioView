@@ -42,6 +42,21 @@ const dateFormatter = new Intl.DateTimeFormat('en-US', {
   timeZone: 'America/New_York',
 })
 
+/**
+ * Timestamps ("a sync was requested at …") are shown in America/New_York like
+ * every other time in this app, with the zone abbreviation spelled out so the
+ * reader is never left guessing whose clock it is. No year: the only timestamps
+ * rendered this way are minutes old.
+ */
+const dateTimeFormatter = new Intl.DateTimeFormat('en-US', {
+  month: 'short',
+  day: 'numeric',
+  hour: 'numeric',
+  minute: '2-digit',
+  timeZone: 'America/New_York',
+  timeZoneName: 'short',
+})
+
 function formatWith(formatter: Intl.NumberFormat, value: IntlValue): string {
   return (formatter.format as (v: IntlValue) => string)(value)
 }
@@ -82,4 +97,15 @@ export function formatDate(iso: string): string {
   // For a bare date, anchor at midday UTC so the ET calendar day is unambiguous.
   const date = dateOnly ? new Date(`${iso}T12:00:00Z`) : new Date(iso)
   return dateFormatter.format(date)
+}
+
+/**
+ * ISO-8601 timestamp -> `'Jul 17, 3:42 PM EDT'` in America/New_York.
+ * An unparseable value is echoed back rather than thrown on: a malformed
+ * timestamp must degrade to ugly copy, never to a blank card.
+ */
+export function formatDateTime(iso: string): string {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return iso
+  return dateTimeFormatter.format(date)
 }
