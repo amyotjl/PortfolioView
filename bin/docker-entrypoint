@@ -1,5 +1,13 @@
 #!/bin/bash -e
 
+# Clear a stale pidfile before boot, the same guard docker-compose.yml's dev
+# `web` command runs: a pidfile left behind by an unclean shutdown (SIGKILL, a
+# host crash, `docker kill`) otherwise aborts Rails with "A server is already
+# running" when the container is restarted. Production sets no PIDFILE (see
+# config/puma.rb), so this is cheap insurance rather than a routine cleanup,
+# but `docker start` on a hard-killed container is exactly the case that bites.
+rm -f ./tmp/pids/server.pid
+
 # If running the rails server then create or migrate existing database
 if [ "${@: -2:1}" == "./bin/rails" ] && [ "${@: -1:1}" == "server" ]; then
   ./bin/rails db:prepare

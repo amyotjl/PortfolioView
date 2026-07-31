@@ -53,6 +53,20 @@ Rails.application.routes.draw do
   # get "manifest" => "rails/pwa#manifest", as: :pwa_manifest
   # get "service-worker" => "rails/pwa#service_worker", as: :pwa_service_worker
 
-  # Defines the root path route ("/")
-  # root "posts#index"
+  # SPA catch-all (docs/PLAN.md § Architecture; backlog #054). Everything that
+  # isn't a real route and isn't a file under public/ renders the Vue shell, so
+  # a deep link like /portfolios/1 or a browser refresh boots the client router
+  # instead of 404ing.
+  #
+  # MUST stay last in this file. Routes are matched top-down, so every /api/v1
+  # endpoint, /up, and the /api/* JSON-404 catch-all above are all matched
+  # first. The constraint is belt-and-braces for the two paths a glob could
+  # still reach: bare "/api" (which the /api/*unmatched glob needs a trailing
+  # segment to match) and the Rails-internal /rails/* engine routes.
+  #
+  # GET-only on purpose: an unknown non-/api POST stays a routing 404 rather
+  # than being handed an HTML page.
+  root to: "spa#show"
+  get "*path", to: "spa#show", format: false,
+      constraints: ->(request) { !request.path.start_with?("/api", "/rails/") }
 end
