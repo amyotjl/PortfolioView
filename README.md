@@ -45,6 +45,12 @@ cp .env.example .env
 #      APP_DATABASE_PASSWORD=$(openssl rand -hex 24)
 #      INVITE_CODE=<your own value>       # blank => registration stays closed
 #      TIINGO_API_KEY / FMP_API_KEY / TWELVE_DATA_API_KEY as available
+#      INTERNAL_API_TOKEN=$(openssl rand -hex 32)
+#        Optional, and blank => the /api/internal namespace stays CLOSED.
+#        Set it only if you want to trigger a sync from cron or curl; the
+#        Settings "Sync now" button uses your session and needs no token.
+#        Note a blank value makes the endpoint answer 401 to every request,
+#        including a correct token — that is fail-closed, not a bug.
 
 # 2. Build the image (multi-stage: `npm ci && npm run build`, then Rails) and
 #    start both services. Naming the services is what keeps the dev containers,
