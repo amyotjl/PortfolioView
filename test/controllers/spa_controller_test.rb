@@ -89,6 +89,28 @@ class SpaControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  # The routes constraint is `!request.path.start_with?("/api", "/rails/")`.
+  # Its "/api" half is belt-and-braces — the /api/* JSON-404 catch-all is
+  # declared ABOVE the glob and matches first — so removing the whole lambda
+  # broke no test, which #54's gate flagged as vacuous coverage.
+  #
+  # "/rails/" has no such earlier guard. Without the constraint the glob
+  # swallows framework-reserved paths (Active Storage, Action Mailbox, the
+  # health mount) and answers 200 with the SPA shell instead of letting Rails
+  # 404 them — so an engine mounted there later would silently never be
+  # reachable. This is the assertion that actually holds the lambda in place.
+  test "the catch-all does not swallow framework-reserved /rails/ paths" do
+    with_spa_build do
+      with_framework_exception_rendering do
+        get "/rails/active_storage/blobs/nonexistent"
+
+        assert_response :not_found
+        assert_not_includes response.body, SHELL_MARKER,
+          "the SPA glob must not answer /rails/* — the routes constraint exists for this"
+      end
+    end
+  end
+
   test "the health check still answers itself, not the SPA shell" do
     with_spa_build do
       get "/up"
