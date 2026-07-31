@@ -55,7 +55,7 @@ acceptance-criteria text.
 | M6 | Dashboard | Candlestick + cash-flow + drawdown linked chart, stat tiles, allocation donuts | ✅ closed (#45–48) |
 | M7 | Transaction/recurring UIs | Transaction form drawer, recurring-transactions page, Playwright e2e smoke | ✅ closed (#49–51) — **#63** deferred (still open, see below) |
 | M8 | Extra visualizations + export/import | Contribution-vs-growth stacked area, sector treemap, portfolio export/import | ✅ merged and milestone closed 2026-07-26 (#52, #53, #64 — each tester-verified independently). **The milestone was closed with #63 and #65 still open and still attached to it** (GitHub shows M8 as 3 closed / 2 open). They were deliberately *not* re-milestoned to make the number look clean — both are M7 spillover tracked in the table below, and neither was ever in M8's scope. #66 is unmilestoned |
-| M9 | Local deploy | Production Dockerfile/compose profile, boot catch-up sync, Sync-now button, persistence check | 🟡 **materially built but UNMERGED and UNGATED** — this row said "not started" until 2026-07-29 and that was simply wrong. See "M9 is further along than this file claimed" below |
+| M9 | Local deploy | Production Dockerfile/compose profile, boot catch-up sync, Sync-now button, persistence check | 🟢 **3 of 5 merged 2026-07-30** — #54 (production image), #55 (boot catch-up) and #56 (internal sync endpoints) each passed an independent gate. #57 (Sync-now button) is gating now on `m9/gate-c-057`; #58 (verify the deployment runtime) is the milestone's own acceptance gate and runs last. This row said "not started" until 2026-07-29 and that was simply wrong — see below |
 
 ## Frontend building blocks already in `frontend/src/` (M5+M6 — extend, don't rebuild)
 - **Charts** (`charts/`): `echarts.ts` registers ECharts modularly (`use([...])`) — add new chart types (e.g. M8's treemap) to that one call; import `VChart` from here, never from `vue-echarts` directly. `candles.ts`/`donuts.ts` are pure option builders; `theme.ts` maps `--pv-*` tokens into chart colors; `colors.ts` has the validated ordinal-ramp helpers.
@@ -436,6 +436,73 @@ uncached searches) and is dropped; search really costs **~13ms**, not the 0.2–
 reported (that was a `rails runner` query-cache artifact — not a regression, and the ticker
 AutoComplete debounces at 250ms); and `Instruments::DirectoryResolver` had **no test file at
 all**, which is why its row choice could be non-deterministic without anything noticing.
+
+## M9 gate evidence (2026-07-30) — split three ways by coupling
+
+Not one gate over five issues, and not five gates. Split by **coupling**: `Prices::Freshness`
+unifies the staleness predicate that #55 and #56 both consume, so gating those apart would
+have gated a refactor against callers that weren't merged. Branches were built by
+cherry-picking the original commits onto current `main` (all applied cleanly) and each was
+verified green *before* a gate run was spent on it.
+
+**Gate A — #54 production image (PASS).** The `chmod +x bin/*` fix was the one claim
+unverifiable from this machine: every `bin/` script is recorded mode `100644` because the repo
+is developed with `core.filemode=false`, and building from the Windows checkout masks it. The
+tester proved it instead of reasoning about it — `git archive HEAD` emits a tarball carrying
+`-rw-rw-r--`, and `docker build - < ctx.tar` is then a clean Linux checkout exactly:
+**without the fix, exit 126 `permission denied` on the entrypoint; with it, it runs.** The
+full production build was re-run from that clean context. It also refused to accept
+200-with-HTML as proof of the deep link and checked **Vue actually mounts** in headless
+Chromium.
+
+**Gate B — #55/#56 + the staleness refactor (PASS).** Equivalence was proven, not assumed: the
+tester reconstructed the *pre-refactor* predicate and ran it beside the new one across 25
+cache-state × wall-clock combinations. Its first probe **failed**, catching a real reference-day
+divergence when the cache is ahead of the wall clock (reporting-only, unreachable without
+future-dated rows). 14 probes, each against a `cmp`-verified pristine tree. Live evidence
+included a server boot with `app_development` **dropped** and a full auth attack matrix on the
+internal route (wrong scheme, wrong header, query param, session-only → all 401, byte-identical
+envelope, no timing oracle).
+
+### "#59" is not the staleness issue — do not cite it that way
+**#59 is a CLOSED M4 issue** about token-less non-GET requests returning 422 HTML. The M9
+staleness unification has **no GitHub issue at all** (M9 covers #54–#58); the original author
+labelled it #59 anyway and later sessions repeated the error into branch names, dispatch
+prompts and this file. Five source comments were corrected in `b9296e3`. **`base_controller.rb`'s
+`#59` is CORRECT** and was deliberately left alone — it genuinely refers to the
+`ErrorsController` work, so a blanket find-and-replace breaks a true reference while fixing
+false ones.
+
+### Non-blocking findings carried forward
+- **`Boot::CatchUp` bypasses `SyncTrigger`'s 10-minute lease** — 5 calls enqueue 5 jobs, and a
+  second real boot enqueues again. Bounded by `PriceProvider::Budget` (Tiingo 1000/day, 50/hr)
+  so the provider **cannot** be stormed; the cost is queue churn. This is precisely why a
+  directory import must not be dropped into boot catch-up unguarded (see #72).
+- **A permanently unpriceable referenced instrument makes every boot enqueue, indefinitely** —
+  the imported-CAD-portfolio case. The old MAX predicate didn't fire here; the new COUNT does.
+  Deliberate, but unbounded in time.
+- **Puma cluster mode would multiply the catch-up.** `config/puma.rb` has no `workers` and no
+  `preload_app!` today, so it fires once. If that ever changes without `preload_app!`, every
+  worker runs it — worth checking during #58.
+- **Blank provider keys are NOT silent** — jobs are discarded at ERROR level naming the missing
+  variable.
+- **The SPA catch-all's route constraint was vacuously covered** (deleting it broke zero tests).
+  Its `/api` half is genuinely redundant — the `/api/*` JSON-404 route is declared *above* the
+  glob — but `/rails/` has no earlier guard, so without the lambda the glob swallows
+  framework-reserved paths and answers 200 with the shell. Pinned in `4cac915`.
+- **`app_production_cable` is created empty** (no `db/cable_schema.rb`) while
+  `config/cable.yml` production still declares `adapter: redis`, contradicting the no-Redis
+  invariant. Nothing in M9 reaches for ActionCable, so it doesn't bite yet.
+
+### For whoever picks up #57 or #58
+- **`/api/v1/sync` needs TWO zod schemas.** `GET` and `POST` share the `sync` wrapper but have
+  different inner key sets, and on a fresh install `latest_price_on` and `last_trading_day` are
+  **both null together** with `stale: true`. A schema assuming non-null strings rejects every
+  response on a fresh deploy — the same class of bug as the `/instruments/search` nullability
+  defect caught before merge in M5.
+- **Dev uses `:memory_store`**, so the sync dedupe lease is per-process: clearing `CLAIM_KEY`
+  from `rails runner` does not clear the running server's, and manual Sync-now testing sees a
+  sticky `pending: true` for 10 minutes. Production (`:solid_cache_store`) is correct.
 
 ## M9 is further along than this file claimed (discovered 2026-07-29)
 
