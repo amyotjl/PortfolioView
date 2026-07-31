@@ -11,9 +11,10 @@ gate rounds** — see "#71: two FAILs worth more than the feature". Two new a11y
 milestone table and "M9 is further along than this file claimed". **M0–M8 all merged** (M4's follow-up defects #59/#60 fixed along
 the way). M8's three shipped issues — #52 contribution-vs-growth area, #53 sector treemap,
 #64 portfolio export/import — each passed an independent tester gate on 2026-07-26 and were
-merged that day. **#63, #65, #68 and #71 are all merged, pushed and closed.** Still open:
-**#66** (Canadian securities — the currency model is now DECIDED, so it is blocked only on a
-data source) and the two a11y follow-ups **#69**/**#70**.
+merged that day. **#63, #65, #68 and #71 are all merged, pushed and closed**, as are M9's
+**#54, #55, #56, #57** and **#72**. Still open: **#58** (M9's deployment-runtime verification,
+the last item in the milestone), **#66** (Canadian securities — the currency model is now
+DECIDED, so it is blocked only on a data source) and the two a11y follow-ups **#69**/**#70**.
 
 M7 also has an **e2e suite now** (`e2e/`, Playwright) — one command,
 `docker compose --profile e2e run --rm e2e`, against the running dev stack. It has
@@ -53,9 +54,9 @@ acceptance-criteria text.
 | M4 | API | Full REST API, error envelope, CSRF, caching, contract test suite | ✅ closed (#29–39, plus follow-up defects #59/#60 fixed and merged) |
 | M5 | Frontend shell + auth + portfolios | Router/Pinia/PrimeVue shell, zod schemas, auth pages, portfolios CRUD, Vitest harness | ✅ closed (#40–44) |
 | M6 | Dashboard | Candlestick + cash-flow + drawdown linked chart, stat tiles, allocation donuts | ✅ closed (#45–48) |
-| M7 | Transaction/recurring UIs | Transaction form drawer, recurring-transactions page, Playwright e2e smoke | ✅ closed (#49–51) — **#63** deferred (still open, see below) |
+| M7 | Transaction/recurring UIs | Transaction form drawer, recurring-transactions page, Playwright e2e smoke | ✅ closed (#49–51). Its two spillover issues are now closed too: **#63** (+ follow-up #71) and **#65** |
 | M8 | Extra visualizations + export/import | Contribution-vs-growth stacked area, sector treemap, portfolio export/import | ✅ merged and milestone closed 2026-07-26 (#52, #53, #64 — each tester-verified independently). **The milestone was closed with #63 and #65 still open and still attached to it** (GitHub shows M8 as 3 closed / 2 open). They were deliberately *not* re-milestoned to make the number look clean — both are M7 spillover tracked in the table below, and neither was ever in M8's scope. #66 is unmilestoned |
-| M9 | Local deploy | Production Dockerfile/compose profile, boot catch-up sync, Sync-now button, persistence check | 🟢 **3 of 5 merged 2026-07-30** — #54 (production image), #55 (boot catch-up) and #56 (internal sync endpoints) each passed an independent gate. #57 (Sync-now button) is gating now on `m9/gate-c-057`; #58 (verify the deployment runtime) is the milestone's own acceptance gate and runs last. This row said "not started" until 2026-07-29 and that was simply wrong — see below |
+| M9 | Local deploy | Production Dockerfile/compose profile, boot catch-up sync, Sync-now button, persistence check | 🟢 **4 of 5 merged 2026-07-30/31** — #54 (production image), #55 (boot catch-up), #56 (internal sync endpoints) and #57 (Sync-now button) each passed an independent gate, plus **#72** (a fresh deploy rejected every symbol for up to a week) found *by* #54's gate. Only **#58** remains — the milestone's own deployment-runtime verification. This row said "not started" until 2026-07-29 and that was simply wrong — see below |
 
 ## Frontend building blocks already in `frontend/src/` (M5+M6 — extend, don't rebuild)
 - **Charts** (`charts/`): `echarts.ts` registers ECharts modularly (`use([...])`) — add new chart types (e.g. M8's treemap) to that one call; import `VChart` from here, never from `vue-echarts` directly. `candles.ts`/`donuts.ts` are pure option builders; `theme.ts` maps `--pv-*` tokens into chart colors; `colors.ts` has the validated ordinal-ramp helpers.
