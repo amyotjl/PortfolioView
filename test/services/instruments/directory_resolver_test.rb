@@ -58,6 +58,31 @@ class Instruments::DirectoryResolverTest < ActiveSupport::TestCase
     assert_nil result.instrument
   end
 
+  # An empty directory and an unknown symbol are different failures (issue #72).
+  # A fresh deploy has no directory at all, so every symbol fails validation —
+  # and the old shared message told the user their correct ticker "is not a
+  # recognized US-exchange symbol", so they retyped a symbol that was fine.
+  test "an EMPTY directory says so, instead of blaming the user's symbol" do
+    assert_equal 0, ListedInstrument.count, "precondition: no directory"
+
+    result = Instruments::DirectoryResolver.call(symbol: "AAPL")
+
+    assert_not result.ok?
+    assert_match(/still downloading/, result.error)
+    assert_no_match(/not a recognized/, result.error,
+      "an unprovisioned cache must not be reported as a bad symbol")
+  end
+
+  test "a POPULATED directory still rejects an unknown symbol as unrecognized" do
+    listed("AAPL", exchange: "NASDAQ")
+
+    result = Instruments::DirectoryResolver.call(symbol: "NOSUCHTICKER")
+
+    assert_not result.ok?
+    assert_match(/not a recognized US-exchange symbol/, result.error)
+    assert_no_match(/still downloading/, result.error)
+  end
+
   test "rejects a non-USD listing" do
     listed("QQAE", exchange: "NYSE", currency: "CAD")
 

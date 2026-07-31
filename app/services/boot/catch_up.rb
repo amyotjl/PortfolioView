@@ -47,6 +47,7 @@ module Boot
       transactions
       recurring_transactions
       benchmarks
+      listed_instruments
     ].freeze
 
     # status: :ok | :database_not_ready | :error
@@ -84,8 +85,10 @@ module Boot
       # already idempotent and the nightly schedule bypasses the lease too.
       freshness = Prices::Freshness.call(check_pending: false)
       due = recurring_due?
+      directory = directory_unprovisioned?
 
       enqueued = []
+      enqueued << enqueue(Directory::ImportJob) if directory
       # Freshness#behind?, not #stale — see the note below.
       enqueued << enqueue(Prices::DailySyncJob) if freshness.behind?
       enqueued << enqueue(Recurring::MaterializeDueJob) if due
@@ -94,7 +97,8 @@ module Boot
                  "last_trading_day=#{freshness.last_trading_day || 'none'} " \
                  "reference=#{freshness.expected_session} stale=#{freshness.stale} " \
                  "instruments_behind=#{freshness.instruments_behind}; " \
-                 "recurring_due=#{due}; enqueued=#{enqueued.presence&.join(', ') || 'nothing'}")
+                 "recurring_due=#{due}; directory_unprovisioned=#{directory}; " \
+                 "enqueued=#{enqueued.presence&.join(', ') || 'nothing'}")
 
       finish(Result.new(status: :ok, enqueued: enqueued,
                         latest_price_on: freshness.latest_price_on,
@@ -118,6 +122,51 @@ module Boot
     # - On an empty database `stale` is true (the UI must say "never synced")
     #   but `behind?` is 0: nothing is referenced, so there is nothing to fetch
     #   and enqueueing a fan-out over zero instruments is pure noise.
+
+    # A fresh deploy starts with listed_instruments EMPTY, and the directory
+    # import is only scheduled weekly (Sundays 03:00). Until it runs,
+    # Instruments::DirectoryResolver has nothing to validate against, so EVERY
+    # symbol the user types is rejected with "is not a recognized US-exchange
+    # symbol" — an error that blames their input for an unprovisioned cache.
+    # Measured on a real clean deploy during #54's gate (issue #72).
+    #
+    # EMPTY, not stale. Deliberately the narrowest possible trigger:
+    #
+    # - An empty table is unambiguous — it can only mean "never provisioned",
+    #   so there is no judgement call and no threshold to tune. Refreshing a
+    #   populated-but-old directory stays the weekly schedule's job.
+    # - It is self-limiting. One successful import makes this false forever, so
+    #   the steady state is zero work per boot — which matters because
+    #   Boot::CatchUp deliberately bypasses SyncTrigger's 10-minute lease, so
+    #   anything added here runs on EVERY boot unless it guards itself.
+    # - The file is a ~106,300-row keyless download: free in provider quota,
+    #   not free in time or DB writes. A crash-looping container must not
+    #   re-download it on every restart, which is why the already-enqueued
+    #   check below exists as well.
+    #
+    # `none?` compiles to SELECT 1 ... LIMIT 1, so this costs an index probe.
+    def directory_unprovisioned?
+      return false unless ListedInstrument.none?
+
+      !import_already_queued?
+    end
+
+    # Don't pile up a second import while the first is still waiting to run —
+    # the empty-table check alone would re-enqueue on every restart until the
+    # worker gets round to it.
+    #
+    # Reads the Solid Queue database, which is a SEPARATE database that may be
+    # unmigrated on a first boot. That is no worse than the perform_later this
+    # class already does (both are inside #call's rescue), but the failure mode
+    # differs: if this check cannot run we must still ENQUEUE, because an
+    # unprovisioned directory is the thing we are fixing. So it fails toward
+    # enqueueing, not away from it.
+    def import_already_queued?
+      SolidQueue::Job.where(class_name: Directory::ImportJob.name, finished_at: nil).exists?
+    rescue StandardError => e
+      log(:warn, "could not check for a queued directory import (#{e.class}); enqueueing anyway")
+      false
+    end
 
     # Mirrors Recurring::MaterializeDueJob's own selection exactly (and hits the
     # partial index on next_run_on WHERE active).

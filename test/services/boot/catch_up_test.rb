@@ -16,10 +16,20 @@ class Boot::CatchUpTest < ActiveSupport::TestCase
     @aapl = create_instrument(symbol: "AAPL")
     create_trading_days(Date.new(2026, 3, 23), LAST_TRADING_DAY)
     buy!(@portfolio, @aapl, on: Date.new(2026, 3, 23), shares: "10", price: "100")
+    # A provisioned symbol directory is the STEADY state — every boot after the
+    # first has one — so it is the default here and the empty case is set up
+    # explicitly by the issue #72 tests below. Without this, every test in this
+    # file would also assert on a Directory::ImportJob enqueue.
+    ListedInstrument.create!(symbol: "AAPL", exchange: "NASDAQ", asset_type: "Stock", currency: "USD")
     # Creating an instrument fires its first-reference backfill/metadata jobs
     # (after_commit callbacks DO run in transactional tests) — start clean so
     # every count below is about the boot catch-up and nothing else.
     clear_enqueued_jobs
+  end
+
+  # Puts the deploy back into its first-boot state.
+  def unprovisioned_directory!
+    ListedInstrument.delete_all
   end
 
   # --- criterion 1: stale prices enqueue exactly one DailySyncJob ---
@@ -313,5 +323,81 @@ class Boot::CatchUpTest < ActiveSupport::TestCase
     # A create clamps next_run_on forward to today; force the schedule the test needs.
     rule.update_columns(next_run_on: next_run_on, active: active)
     rule
+  end
+  # --- issue #72: a fresh deploy must not reject every symbol for a week ---
+  #
+  # A clean production volume starts with listed_instruments EMPTY and the
+  # directory import only runs weekly, so until it does, DirectoryResolver has
+  # nothing to validate against and every typed symbol 422s. Measured on a real
+  # clean deploy during #54's gate.
+
+  test "an EMPTY directory enqueues the import so a fresh deploy can validate symbols" do
+    priced_through(@aapl, LAST_TRADING_DAY)
+    unprovisioned_directory!
+    assert_equal 0, ListedInstrument.count, "precondition: fresh deploy"
+
+    result = Boot::CatchUp.call
+
+    assert_includes result.enqueued, "Directory::ImportJob"
+    assert_enqueued_jobs 1, only: Directory::ImportJob
+  end
+
+  # The anti-storm guard. Boot::CatchUp deliberately bypasses SyncTrigger's
+  # 10-minute lease, so anything added here runs on EVERY boot unless it guards
+  # itself — and this one is a ~106,300-row download.
+  test "a POPULATED directory enqueues no import, so repeated boots do no work" do
+    priced_through(@aapl, LAST_TRADING_DAY)   # setup already provisioned the directory
+
+    3.times { Boot::CatchUp.call }
+
+    assert_no_enqueued_jobs only: Directory::ImportJob
+  end
+
+  test "a restart while the first import is still queued does not enqueue a second" do
+    priced_through(@aapl, LAST_TRADING_DAY)
+    unprovisioned_directory!
+
+    first = Boot::CatchUp.call
+    assert_includes first.enqueued, "Directory::ImportJob"
+
+    # The directory is still empty (the worker has not run the job yet) — the
+    # empty-table check alone would re-enqueue on every restart.
+    second = Boot::CatchUp.call
+
+    assert_not_includes second.enqueued, "Directory::ImportJob",
+      "a queued-but-unrun import must suppress the next boot's enqueue"
+    assert_enqueued_jobs 1, only: Directory::ImportJob
+  end
+
+  test "if the queue cannot be inspected it enqueues anyway — failing toward provisioning" do
+    priced_through(@aapl, LAST_TRADING_DAY)
+    unprovisioned_directory!
+
+    SolidQueue::Job.define_singleton_method(:where) { |*| raise "queue database unavailable" }
+    begin
+      result = Boot::CatchUp.call
+    ensure
+      SolidQueue::Job.singleton_class.send(:remove_method, :where)
+    end
+
+    assert_includes result.enqueued, "Directory::ImportJob",
+      "an unprovisioned directory is the failure being fixed; the guard must not suppress the fix"
+  end
+
+  # Same shape as the two unmigrated-database tests above: a GENUINELY missing
+  # table via transactional DDL, not a stub, so it exercises the real
+  # data_sources check. listed_instruments joined REQUIRED_TABLES for #72, and
+  # the whole point of that list is that a boot racing db:prepare must degrade
+  # rather than crash.
+  test "a missing listed_instruments table is schema-not-loaded, not a crash" do
+    execute_sql("ALTER TABLE listed_instruments RENAME TO listed_instruments_not_yet_migrated")
+
+    result = nil
+    assert_nothing_raised { result = Boot::CatchUp.call }
+
+    assert_equal :database_not_ready, result.status
+    assert_equal [ "listed_instruments" ], result.details[:missing_tables]
+    assert_empty result.enqueued
+    assert_no_enqueued_jobs
   end
 end
