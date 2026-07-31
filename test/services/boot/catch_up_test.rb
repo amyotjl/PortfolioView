@@ -353,42 +353,32 @@ class Boot::CatchUpTest < ActiveSupport::TestCase
     assert_no_enqueued_jobs only: Directory::ImportJob
   end
 
-  test "a restart while the first import is still queued does not enqueue a second" do
+  # This slot used to hold "a restart while the first import is still queued
+  # does not enqueue a second", guarding a SolidQueue::Job lookup. Both the
+  # guard and the test are gone: the test passed for the WRONG reason. Reading
+  # SolidQueue::Job raises in the test environment (the queue database is not
+  # migrated), and in Postgres a failed statement ABORTS the surrounding
+  # transaction — so the second Boot::CatchUp.call errored out entirely and
+  # enqueued nothing at all, including the price sync. The assertion saw
+  # "no second import" and passed. See the note on #directory_unprovisioned?.
+  #
+  # What replaces it is the honest property: a restart during provisioning DOES
+  # enqueue again, and that is safe because the import is idempotent.
+  test "a restart during provisioning enqueues again — bounded and idempotent, not suppressed" do
     priced_through(@aapl, LAST_TRADING_DAY)
     unprovisioned_directory!
 
     first = Boot::CatchUp.call
-    assert_includes first.enqueued, "Directory::ImportJob"
-
-    # The directory is still empty (the worker has not run the job yet) — the
-    # empty-table check alone would re-enqueue on every restart.
     second = Boot::CatchUp.call
 
-    assert_not_includes second.enqueued, "Directory::ImportJob",
-      "a queued-but-unrun import must suppress the next boot's enqueue"
-    assert_enqueued_jobs 1, only: Directory::ImportJob
+    assert_includes first.enqueued, "Directory::ImportJob"
+    assert_includes second.enqueued, "Directory::ImportJob",
+      "an empty directory is still unprovisioned, so the next boot must try again"
+    # Both boots ran fully — the point the vacuous version missed.
+    assert_equal :ok, second.status
+    assert_enqueued_jobs 2, only: Directory::ImportJob
   end
 
-  test "if the queue cannot be inspected it enqueues anyway — failing toward provisioning" do
-    priced_through(@aapl, LAST_TRADING_DAY)
-    unprovisioned_directory!
-
-    SolidQueue::Job.define_singleton_method(:where) { |*| raise "queue database unavailable" }
-    begin
-      result = Boot::CatchUp.call
-    ensure
-      SolidQueue::Job.singleton_class.send(:remove_method, :where)
-    end
-
-    assert_includes result.enqueued, "Directory::ImportJob",
-      "an unprovisioned directory is the failure being fixed; the guard must not suppress the fix"
-  end
-
-  # Same shape as the two unmigrated-database tests above: a GENUINELY missing
-  # table via transactional DDL, not a stub, so it exercises the real
-  # data_sources check. listed_instruments joined REQUIRED_TABLES for #72, and
-  # the whole point of that list is that a boot racing db:prepare must degrade
-  # rather than crash.
   test "a missing listed_instruments table is schema-not-loaded, not a crash" do
     execute_sql("ALTER TABLE listed_instruments RENAME TO listed_instruments_not_yet_migrated")
 

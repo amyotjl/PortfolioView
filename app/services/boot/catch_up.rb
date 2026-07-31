@@ -145,28 +145,28 @@ module Boot
     #   check below exists as well.
     #
     # `none?` compiles to SELECT 1 ... LIMIT 1, so this costs an index probe.
-    def directory_unprovisioned?
-      return false unless ListedInstrument.none?
-
-      !import_already_queued?
-    end
-
-    # Don't pile up a second import while the first is still waiting to run —
-    # the empty-table check alone would re-enqueue on every restart until the
-    # worker gets round to it.
+    # DELIBERATELY NO "is one already queued?" CHECK. The obvious refinement is
+    # to skip the enqueue while an import is queued-but-unrun, so a restart
+    # during provisioning does not stack duplicates. It was implemented, and
+    # removed, for two reasons found by probing it:
     #
-    # Reads the Solid Queue database, which is a SEPARATE database that may be
-    # unmigrated on a first boot. That is no worse than the perform_later this
-    # class already does (both are inside #call's rescue), but the failure mode
-    # differs: if this check cannot run we must still ENQUEUE, because an
-    # unprovisioned directory is the thing we are fixing. So it fails toward
-    # enqueueing, not away from it.
-    def import_already_queued?
-      SolidQueue::Job.where(class_name: Directory::ImportJob.name, finished_at: nil).exists?
-    rescue StandardError => e
-      log(:warn, "could not check for a queued directory import (#{e.class}); enqueueing anyway")
-      false
-    end
+    #   1. It cannot be tested here. Reading SolidQueue::Job touches the QUEUE
+    #      database, which the test environment does not migrate, so the query
+    #      always raises and the guard's real branch never runs under test.
+    #   2. Worse, that raise POISONS the surrounding transaction. Postgres
+    #      aborts a transaction after a failed statement, so in the
+    #      transactional suite the NEXT Boot::CatchUp.call failed outright and
+    #      returned status: :error with nothing enqueued. The "a restart does
+    #      not enqueue a second" test passed because the whole call had errored,
+    #      not because the guard worked - a vacuous pass hiding a real hazard.
+    #
+    # What is lost is bounded and self-correcting: a restart inside the
+    # provisioning window may enqueue a second import. Directory::ImportJob is
+    # idempotent (upsert_all on (symbol, exchange), preserving enriched names
+    # via COALESCE since #63) and its sanity guard refuses an implausibly small
+    # file, so a duplicate run costs one redundant download and changes no data.
+    # One success makes this predicate false forever.
+    def directory_unprovisioned? = ListedInstrument.none?
 
     # Mirrors Recurring::MaterializeDueJob's own selection exactly (and hits the
     # partial index on next_run_on WHERE active).
