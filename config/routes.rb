@@ -11,6 +11,14 @@ Rails.application.routes.draw do
 
       resources :benchmarks, only: %i[ index ]
 
+      # Session-authenticated "Sync now" (issue #56, used by the Settings page
+      # in #57). The browser cannot hold the internal bearer token, so the SPA
+      # gets its own door onto the same Prices::SyncTrigger — normal session +
+      # CSRF + error envelope. See Api::V1::SyncsController.
+      # GET reads the price-cache freshness snapshot the Settings page renders;
+      # POST triggers the sync. Same resource, so the pair reads coherently.
+      resource :sync, only: %i[ show create ]
+
       # Portfolio export/import (backlog #064). Declared as COLLECTION routes on
       # the portfolios resource so /portfolios/export is matched before the
       # /portfolios/:id member route could swallow "export" as an id.
@@ -36,6 +44,14 @@ Rails.application.routes.draw do
           get :allocations, to: "allocations#show"
         end
       end
+    end
+
+    # Machine-to-machine job triggers (docs/PLAN.md § Deployment; issue #56).
+    # Bearer-token guarded via INTERNAL_API_TOKEN, deliberately outside /v1:
+    # no session, no CSRF pair, no user. For cron / external callers only —
+    # the SPA uses POST /api/v1/sync above.
+    namespace :internal do
+      post "jobs/daily_sync", to: "jobs#daily_sync"
     end
   end
   # Define your application routes per the DSL in https://guides.rubyonrails.org/routing.html

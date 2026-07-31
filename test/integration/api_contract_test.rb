@@ -27,7 +27,14 @@ require "test_helper"
 module ApiContract
   # The frozen contract, verbatim (docs/PLAN.md § API contract). PUT aliases of
   # PATCH updates are swept too but the canonical list pins PATCH.
-  # (POST /api/internal/jobs/daily_sync is M9/backlog #052 — not yet routed.)
+  #
+  # POST /api/internal/jobs/daily_sync (M9/backlog #052, issue #56) is routed now
+  # but deliberately absent from this list AND from the auth sweep below: it is
+  # not a /api/v1 route, it is bearer-token guarded, and it is the one endpoint
+  # that must answer without a session or a CSRF token. Its contract lives in
+  # test/controllers/api/internal/jobs_controller_test.rb. Its session-
+  # authenticated twin POST /api/v1/sync IS swept (auth-gated like everything
+  # else); it is additive to the frozen list, exactly like /portfolios/export.
   FROZEN_ROUTES = [
     [ "GET",    "/api/v1/session" ],
     [ "POST",   "/api/v1/session" ],

@@ -112,6 +112,99 @@ Search costs **~13 ms** on the real directory (Seq Scan; an index cannot serve a
   reports a split as a share delta that the parser converts back to a ratio; an existing event for
   the same (instrument, ex_date) is never overwritten.
 
+## Sync status (issue #56) — `GET /api/v1/sync`
+
+The **global** price-cache freshness snapshot the Settings page renders (#57). Session-
+authenticated like every other `/api/v1` GET; no CSRF on a GET. Always `200` for a signed-in
+caller — an empty cache is a valid answer, not a 404. `401` `unauthenticated` signed out.
+
+```jsonc
+{ "sync": { "latest_price_on":    "2026-07-24" | null, // ISO date; MAX(latest_price_on) over referenced instruments
+            "last_trading_day":   "2026-07-24" | null, // ISO date; Trading::Calendar.last_day
+            "stale":              false,               // bool, never null
+            "instruments_behind": 0,                   // integer, never null; 0 when all current
+            "pending":            false,               // bool, never null — a sync claim is held right now
+            "requested_at":       null } }             // ISO-8601 UTC | null; null iff pending is false
+```
+
+Both date fields are `null` together on a **fresh database** (nothing cached yet), `stale` is
+then `true` and `instruments_behind` is `0` — #57 must render that case ("never synced"), it is
+not hypothetical.
+
+**Why not `/summary`'s `as_of`:** that is portfolio-scoped and is `null` for a portfolio with no
+price coverage (an imported CAD portfolio does exactly this), which reads as "never synced" when
+the truth is "this portfolio has no prices". Settings is not portfolio-scoped.
+
+**`stale` is `max(latest_price_on)` over referenced instruments vs the *expected session*: the
+most recent WEEKDAY in ET, counting today once it is past 22:00 ET.** It is not the literal
+`max(latest_price_on) < last_trading_day` that PLAN.md § Deployment words the boot catch-up as.
+That comparison is **degenerate and can never be true**: a trading day is *defined* as a date
+where SPY has a `daily_prices` row, SPY is a seeded benchmark and therefore always referenced, so
+`Calendar.last_day` is derived FROM the same cache the max is taken over — a box asleep for a
+week has a week-old cache *and* a week-old calendar, and they agree. Only the wall clock knows.
+
+The **22:00 ET cutoff** is the slot `config/recurring.yml` schedules the nightly sync in and the
+hour by which US EOD data has landed, so today's close *is* expected once it passes. (Issue #59:
+this replaced an earlier cutoff-free "strictly before today" rule that called the cache fresh for
+a full evening every weekday, and disagreed with the boot catch-up's own rule — on a Monday at
+23:00 ET the app fetched while this endpoint said `stale: false`. There is now exactly one
+predicate, `Prices::Freshness`, and `Boot::CatchUp` consumes it.) **Weekend-aware, deliberately
+not holiday-aware** (the app has no holiday table by design): on the ~9 US market holidays a
+year, and the evening of each, `stale` reads `true` while the cache is in fact current. Chosen
+direction — a false "stale" costs one idempotent no-op sync; a false "fresh" costs the user
+trusting old numbers. Don't "fix" it without a holiday source.
+
+**`instruments_behind` is the signal `stale` structurally cannot give.** `stale` is a MAX, and
+SPY is always in the set, so **one** referenced instrument whose fetch failed while SPY's
+succeeded can never move it. This counts referenced instruments individually behind the expected
+session (a `NULL latest_price_on` — never priced — counts as behind). Therefore
+`stale: false, instruments_behind: 1` is a real, meaningful state: *the cache as a whole is
+current, one symbol is not*. `stale: true` implies `instruments_behind >= 1`; the converse does
+not hold. `latest_price_on` deliberately stays the MAX — it is the display value ("prices current
+through …"), not a health check.
+
+**`sync` wraps a DIFFERENT key set on GET than on POST** — GET is a state snapshot
+(`latest_price_on`/`last_trading_day`/`stale`/`instruments_behind`/`pending`/`requested_at`),
+POST is an action result
+(`status`/`requested_at`). Two zod schemas, not one. POST's shape was frozen and coded against
+before GET existed and was deliberately not reshaped. `requested_at` means the same thing in
+both: when the currently-pending sync was claimed.
+
+## Sync triggers (issue #56) — two doors, one body
+
+Both endpoints enqueue the **same** `Prices::DailySyncJob` through the **same**
+`Prices::SyncTrigger`, and therefore share one dedupe lease. Identical response body on
+purpose, so the SPA never has to care which door it came through:
+
+```jsonc
+{ "sync": { "status": "enqueued" | "already_pending",
+            "requested_at": "2026-07-26T17:42:02Z" } }   // ISO-8601 UTC, always ...Z
+```
+
+- `POST /api/v1/sync` — **the SPA's supported path** (the Settings "Sync now" button, #57).
+  Session cookie **+ CSRF pair**, like every other non-GET. Takes no parameters and no body.
+  `202` on success; `401` `unauthenticated` signed out; `403` `invalid_csrf_token` without the
+  `X-XSRF-TOKEN` header. A bearer token does **not** authorize this route.
+- `POST /api/internal/jobs/daily_sync` — **machine callers only** (cron / `curl` from the host).
+  `Authorization: Bearer <INTERNAL_API_TOKEN>`; **no session, no CSRF, no browser-UA check**.
+  `202` on success; `401` `unauthenticated` (envelope + `WWW-Authenticate: Bearer realm=
+  "portfolioview-internal"`) for a missing, malformed or wrong token — **and always when
+  `INTERNAL_API_TOKEN` is unset or blank** (fails closed). Note it is under `/api/internal`,
+  **not** `/api/v1`, and is deliberately excluded from the contract suite's `/api/v1` auth sweep.
+
+**The browser must never hold the internal token.** Anything the JS bundle can read, every user
+and every devtools panel can read; `/api/v1/sync` exists precisely so the UI can trigger a sync
+with the credential the browser already has.
+
+**Dedupe: `202` in BOTH outcomes** — the request was accepted either way; `status` says what
+happened. The trigger claims a cache lease (`prices/daily_sync/claim`, TTL
+`Prices::SyncTrigger::LEASE` = 10 min) with an atomic `unless_exist` write; the winner enqueues,
+everyone else gets `already_pending` and enqueues nothing. On `already_pending`, `requested_at`
+is the **pending sync's** claim time, not this request's — so a UI can say "a sync requested at
+13:42 is already running". Nothing releases the lease early; it just expires, so a dead job can
+never wedge the trigger. The nightly `config/recurring.yml` schedule enqueues `DailySyncJob`
+directly and bypasses the lease by design.
+
 ## Known envelope inconsistency (deliberate, don't "fix" in zod)
 `/candles` is a bare object; `/summary` and `/allocations` are wrapped. Model exactly as-built.
 `/portfolios/export` is a **file download** (no envelope at all) and `/portfolios/import` is wrapped

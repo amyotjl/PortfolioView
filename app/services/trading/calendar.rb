@@ -19,6 +19,20 @@ module Trading
         ActiveSupport::TimeZone[TIME_ZONE].today
       end
 
+      # The wall clock in America/New_York, for the ONE caller that needs a
+      # time of day rather than a date: Prices::Freshness's 22:00-ET
+      # expected-session cutoff (issue #59). Purely additive — this class stays
+      # the owner of the timezone fact so that caller does not reach for
+      # ActiveSupport::TimeZone itself, and `today` is untouched.
+      #
+      # This is a WALL-CLOCK reading, not a calendar reading: it knows nothing
+      # about sessions, holidays or trading days, and no money calculation may
+      # use it. Everything domain-facing goes through `today` / `days_between` /
+      # `last_day_on_or_before` as before.
+      def now
+        ActiveSupport::TimeZone[TIME_ZONE].now
+      end
+
       # Trading days in from..to, ascending.
       def days_between(from, to)
         calendar_scope.where(date: from..to).order(:date).pluck(:date)
