@@ -665,10 +665,15 @@ Full detail in [e2e/README.md](../e2e/README.md). Three things that will otherwi
 - **Do NOT read `enqueued=nothing` in the boot log as proof nothing was enqueued.** The import
   is enqueued *first*, so a later `perform_later` failure leaves the log line understating what
   is actually queued (found by #72's gate).
-- **`smoke.spec.js` additionally needs provider keys**, not just a populated directory. With
+- **`smoke.spec.js` additionally needs provider keys — or a backfill that has FINISHED.** With
   no `.env`, `daily_prices` is empty, the dashboard has no valuation series, and the spec
   fails at `smoke.spec.js:185` in a way that looks like an app bug. Confirmed environmental
-  during #68's gate by a control run at pre-#68 `main` that failed identically.
+  during #68's gate by a control run at pre-#68 `main` that failed identically. #58 widened
+  this: with keys present it can *still* fail if a backfill is mid-flight. A real Tiingo **429**
+  produced `RateLimited; rescheduling in 60s (attempt 1)`, both retries then succeeded, and the
+  identical spec passed on re-run. So a smoke failure on a fresh deploy means "prices aren't
+  there **yet**" at least as often as it means "prices can't be fetched" — check the job log
+  before concluding anything.
 - Registration is rate-limited to **10 per 3 minutes**; each spec spends exactly one per run
   (two specs → two registrations), so keep new specs API-driven.
 - To run one spec: `docker compose --profile e2e run --rm e2e bash -c "npm install

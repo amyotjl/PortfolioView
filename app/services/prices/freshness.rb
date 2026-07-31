@@ -73,8 +73,12 @@ module Prices
     # stale              — a sync is worth running: the newest thing we have is
     #                      older than the newest thing we should have.
     # instruments_behind — how many referenced instruments are individually
-    #                      behind expected_session. Integer, never nil, 0 on an
-    #                      empty database. A MAX cannot see one lagging ticker
+    #                      behind expected_session. Integer, never nil. NOT 0 on
+    #                      a fresh deploy: seeds create three benchmarks, a
+    #                      benchmark counts as referenced, and all three have a
+    #                      NULL latest_price_on — measured live as 3 by #58.
+    #                      It is 0 only with NOTHING referenced at all.
+    #                      A MAX cannot see one lagging ticker
     #                      whose fetch failed while SPY's succeeded (SPY is
     #                      always in the set, so it holds the max up); this
     #                      count can. `stale` implies this is >= 1, never the

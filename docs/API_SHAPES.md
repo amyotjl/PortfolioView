@@ -127,9 +127,15 @@ caller — an empty cache is a valid answer, not a 404. `401` `unauthenticated` 
             "requested_at":       null } }             // ISO-8601 UTC | null; null iff pending is false
 ```
 
-Both date fields are `null` together on a **fresh database** (nothing cached yet), `stale` is
-then `true` and `instruments_behind` is `0` — #57 must render that case ("never synced"), it is
-not hypothetical.
+Both date fields are `null` together on a **fresh database** (nothing cached yet) and `stale`
+is then `true` — #57 must render that case ("never synced"), it is not hypothetical.
+
+**`instruments_behind` is NOT 0 on a fresh database — measured live it is 3.** This file said 0
+until #58's runtime verification measured otherwise. `db/seeds.rb` creates the three benchmark
+instruments (SPY, VTI, QQQ), and a benchmark counts as *referenced*, so on an untouched deploy
+there are three referenced instruments with `latest_price_on = NULL`, each individually behind.
+The service is right and the old sentence was wrong: a brand-new instance correctly reports
+"3 symbols are behind".
 
 **Why not `/summary`'s `as_of`:** that is portfolio-scoped and is `null` for a portfolio with no
 price coverage (an imported CAD portfolio does exactly this), which reads as "never synced" when

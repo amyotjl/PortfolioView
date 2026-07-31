@@ -159,6 +159,19 @@ services:
       TIINGO_API_KEY: ${TIINGO_API_KEY:-}
       TWELVE_DATA_API_KEY: ${TWELVE_DATA_API_KEY:-}
       FMP_API_KEY: ${FMP_API_KEY:-}
+      # Guards every /api/internal route (the cron / curl sync trigger).
+      # Omitting this line is how #58 found the whole namespace unreachable in
+      # production: Api::Internal::BaseController fails closed on a blank var,
+      # so the endpoint answered 401 to the CORRECT token exactly as it does to
+      # a wrong one — indistinguishable from a token mismatch, and invisible to
+      # #56's gate (which tested the endpoint) and #54's (which tested the
+      # image), because neither owned the compose wiring between them.
+      #
+      # `:-` default, unlike INVITE_CODE above: an unset token means "internal
+      # namespace disabled", which is a legitimate deployment choice — the
+      # Settings Sync-now button uses session auth and needs no token. Blank is
+      # closed, not open, so this is safe to default.
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-}
       RAILS_MAX_THREADS: ${RAILS_MAX_THREADS:-5}
     ports:
       # Thruster listens on :80 inside the container and proxies to Puma;
