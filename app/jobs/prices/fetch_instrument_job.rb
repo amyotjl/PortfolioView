@@ -66,13 +66,26 @@ module Prices
     # everywhere) — it propagates to discard_on.
     def fetch_delta_with_failover(instrument)
       from = instrument.latest_price_on
-      budget = PriceProvider::Budget.new(TIINGO)
-      budget.charge!
+      # Tiingo for a US symbol, Yahoo for a venue-suffixed one (issue #66).
+      route = Prices::ProviderRouter.for(instrument)
+      PriceProvider::Budget.new(route.budget_name).charge! if route.budgeted?
       # INCLUSIVE of latest_price_on — the returned overlap row is the drift probe.
-      [ tiingo.fetch_daily(instrument.symbol, from: from), TIINGO ]
+      [ route.provider.fetch_daily(instrument.symbol, from: from), route.name ]
     rescue PriceProvider::UnknownSymbol, PriceProvider::ConfigurationError
       raise
     rescue PriceProvider::RateLimited, PriceProvider::ServerError => e
+      # NO FAILOVER OFF THE YAHOO PATH (issue #66). TwelveData cannot serve a
+      # Canadian symbol — its free tier 403s them — and it never returns events,
+      # so "failing over" would swap the only source that HAS the data for one
+      # that answers UnknownSymbol, or worse, a different price basis. A Yahoo
+      # failure is simply no new prices today: the stored history and the cost
+      # basis are untouched, which is the posture the whole adapter assumes.
+      unless route.failover?
+        Rails.logger.warn("[#{self.class.name}] #{route.name} delta failed for " \
+          "#{instrument.symbol} (#{e.class.name.demodulize}); no failover on this path")
+        raise
+      end
+
       Rails.logger.warn("[#{self.class.name}] Tiingo delta failed for #{instrument.symbol} " \
         "(#{e.class.name.demodulize}); failing over to TwelveData (forward delta only)")
       failover_via_twelve_data(instrument, since: from)
@@ -84,7 +97,6 @@ module Prices
       [ twelve_data.fetch_delta(instrument.symbol, since: since), TWELVE_DATA ]
     end
 
-    def tiingo = PriceProvider::Tiingo.new
     def twelve_data = PriceProvider::TwelveData.new
 
     def basis_drift?(instrument, series)

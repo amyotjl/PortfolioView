@@ -9,6 +9,12 @@ module Prices
   # split-adjusted and raw price bases and corrupt valuations, so a backfill
   # failure alerts/retries and leaves the instrument marked un-backfilled
   # (prices_backfilled_at stays nil) rather than reaching for the fallback.
+  #
+  # WHICH provider is Prices::ProviderRouter's decision, not this job's — a
+  # venue-suffixed symbol goes to Yahoo because Tiingo has no Canadian data at
+  # all (issue #66). Both return the same raw-prices-plus-events shape, so the
+  # rest of this job is provider-agnostic; only the budget differs, because a
+  # keyless provider has no quota to charge.
   class BackfillInstrumentJob < ApplicationJob
     include ProviderErrorHandling
 
@@ -20,15 +26,21 @@ module Prices
 
     def perform(instrument_id)
       instrument = Instrument.find(instrument_id)
-      budget = PriceProvider::Budget.new("tiingo")
+      # Tiingo for a US symbol, Yahoo for a venue-suffixed one (issue #66).
+      # Tiingo's directory has no Canadian rows at all, so this is not a
+      # preference — it is the difference between having history and having none.
+      route = Prices::ProviderRouter.for(instrument)
 
-      # Charge the scarcer monthly unique-symbol quota first, then the daily/
-      # hourly request budget; either raising BudgetExceeded reschedules the job.
-      budget.register_symbol!(instrument.symbol)
-      budget.charge!
+      if route.budgeted?
+        budget = PriceProvider::Budget.new(route.budget_name)
+        # Charge the scarcer monthly unique-symbol quota first, then the daily/
+        # hourly request budget; either raising BudgetExceeded reschedules the job.
+        budget.register_symbol!(instrument.symbol)
+        budget.charge!
+      end
 
-      series = provider.fetch_full_history(instrument.symbol)
-      Prices::SeriesWriter.call(instrument:, series:, source: PROVIDER_NAME, write_events: true)
+      series = route.provider.fetch_full_history(instrument.symbol)
+      Prices::SeriesWriter.call(instrument:, series:, source: route.name, write_events: true)
 
       instrument.update_columns(prices_backfilled_at: Time.current)
       bump_series_version(instrument)
@@ -39,10 +51,6 @@ module Prices
     end
 
     private
-
-    PROVIDER_NAME = "tiingo".freeze
-
-    def provider = PriceProvider::Tiingo.new
 
     # series_version bumps on backfill completion (docs/PLAN.md § Caching): any
     # portfolio that trades or has a recurring rule on this instrument.
