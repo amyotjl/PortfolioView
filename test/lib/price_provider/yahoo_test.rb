@@ -170,6 +170,27 @@ class PriceProvider::YahooTest < ActiveSupport::TestCase
     assert_empty series.splits, "an event after the window must not be handed back to be written"
   end
 
+  # The slicing test above cannot catch a NARROWED REQUEST, because a stubbed
+  # response is returned whatever the query says — a mutation that puts `to:`
+  # back into period2 leaves it green. This asserts the request itself.
+  test "a `to:` never narrows the REQUEST, only the returned window" do
+    captured = nil
+    stubs = Faraday::Adapter::Test::Stubs.new
+    stubs.get("/v8/finance/chart/AAPL") do |env|
+      captured = env.params
+      [ 200, { "Content-Type" => "application/json" },
+        chart(timestamps: [], quote: {}) ]
+    end
+
+    travel_to Time.utc(2026, 7, 15, 12) do
+      build_adapter(stubs).fetch_daily("AAPL", from: Date.new(2020, 1, 2), to: Date.new(2020, 6, 30))
+
+      expected = (Trading::Calendar.today + 1).to_time(:utc).to_i
+      assert_equal expected.to_s, captured["period2"].to_s,
+        "period2 must run through today so every later split is present to un-adjust with"
+    end
+  end
+
   test "a genuine 5% stock dividend (21:20) IS a share-count split despite being near 1" do
     d = Date.new(2024, 6, 3)
     body = chart(
