@@ -51,6 +51,38 @@ module PriceProvider
       build_series(sym, body)
     end
 
+    # --- REFERENCE data (issue #66) -------------------------------------------
+    #
+    # A deliberate exception to this class's forward-delta-only rule, and the
+    # exception is safe because it returns NO PRICES. /stocks and /etf are
+    # symbol directories, and on the FREE tier they cover markets whose price
+    # series are paywalled — Canada included: 5,500 stocks and 3,686 ETFs
+    # across XTSE / XTSX / NEOE / XCNQ, each carrying a NAME, which Tiingo's
+    # bulk file has never had for anything.
+    #
+    # That is what makes Canadian autocomplete possible without a live provider
+    # call from the ticker box: the local directory gains the rows, and
+    # ListedInstrument.search keeps working exactly as it does for US symbols.
+    # Prices for those same symbols still come from Yahoo (Prices::ProviderRouter)
+    # because Twelve Data 403s their time series on this tier.
+    #
+    # Returns an array of plain hashes; the caller maps them onto
+    # listed_instruments. Paging is not used: both endpoints return the full
+    # country list in one response.
+    def fetch_country_listings(country:, kind:)
+      unless %w[stocks etf].include?(kind.to_s)
+        raise ArgumentError, "kind must be stocks or etf, got #{kind.inspect}"
+      end
+
+      body = get_json("/#{kind}", country: country)
+      rows = body.is_a?(Hash) ? body["data"] : nil
+      unless rows.is_a?(Array)
+        raise MalformedResponse, "#{provider_name}: expected a data array from /#{kind}"
+      end
+
+      rows
+    end
+
     private
 
     # Auth travels in the Authorization header (not the URL) so the key never
