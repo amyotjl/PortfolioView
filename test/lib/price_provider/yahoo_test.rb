@@ -112,6 +112,64 @@ class PriceProvider::YahooTest < ActiveSupport::TestCase
       "the reclassification must be visible, not silent")
   end
 
+  # #66's gate broke the previous magnitude-based rule with real securities:
+  # Yahoo encodes SPIN-OFFS in the same n:1000 shape, just larger, so a band
+  # around 1 classified the same corporate action two different ways by size.
+  # A spin-off does not change the parent's share count either.
+  test "a spin-off factor is price-only, however large — magnitude must not decide" do
+    d = Date.new(2024, 10, 2)
+    body = chart(
+      timestamps: [ ts(d) ],
+      quote: { "open" => [ 10.0 ], "high" => [ 10.0 ], "low" => [ 10.0 ], "close" => [ 10.0 ], "volume" => [ 1 ] },
+      # TRP.TO, the South Bow spin-off: holders kept 1:1 and received 0.2 SOBO.
+      splits: { "s" => { "date" => ts(d), "numerator" => 1097.0, "denominator" => 1000.0 } }
+    )
+
+    series = build_adapter(stub_chart("TRP.TO", body)).fetch_daily("TRP.TO", from: d, to: d)
+
+    assert_empty series.splits,
+      "1097:1000 as a SplitEvent would invent 9.7% of phantom shares"
+    assert(series.warnings.any? { |w| w.include?("price-only") },
+      "a kept-or-dropped decision on a large-denominator factor must never be silent")
+  end
+
+  test "two spin-offs of different sizes classify the SAME way" do
+    small, large = Date.new(2013, 4, 15), Date.new(2022, 12, 12)
+    body = chart(
+      timestamps: [ ts(small), ts(large) ],
+      quote: { "open" => [ 10.0, 10.0 ], "high" => [ 10.0, 10.0 ], "low" => [ 10.0, 10.0 ],
+               "close" => [ 10.0, 10.0 ], "volume" => [ 1, 1 ] },
+      # Both BN.TO, both spin-offs; the old rule kept one and dropped the other.
+      splits: { "a" => { "date" => ts(small), "numerator" => 1033.0, "denominator" => 1000.0 },
+                "b" => { "date" => ts(large), "numerator" => 1237.0, "denominator" => 1000.0 } }
+    )
+
+    series = build_adapter(stub_chart("BN.TO", body)).fetch_daily("BN.TO", from: small, to: large)
+
+    assert_empty series.splits, "classification must not depend on the size of the factor"
+    assert_equal 2, series.warnings.count { |w| w.include?("price-only") }
+  end
+
+  # A windowed fetch used to under-correct: Yahoo only reports events INSIDE the
+  # requested window, so a window ending before a split returned prices already
+  # divided by it with the split absent. Measured at 91.20 against a raw 364.80.
+  test "a windowed fetch is still un-adjusted by splits AFTER the window" do
+    jan, jun, aug = Date.new(2020, 1, 2), Date.new(2020, 6, 30), Date.new(2020, 8, 31)
+    body = chart(
+      timestamps: [ ts(jan), ts(jun), ts(aug) ],
+      quote: { "open" => [ 10.0, 10.0, 10.0 ], "high" => [ 100.0, 100.0, 100.0 ],
+               "low" => [ 1.0, 1.0, 1.0 ], "close" => [ 91.2, 91.2, 129.04 ], "volume" => [ 1, 1, 1 ] },
+      splits: { "s" => { "date" => ts(aug), "numerator" => 4.0, "denominator" => 1.0 } }
+    )
+
+    series = build_adapter(stub_chart("AAPL", body)).fetch_daily("AAPL", from: jan, to: jun)
+
+    assert_equal [ jan, jun ], series.bars.map(&:date), "the window still bounds what is RETURNED"
+    assert_equal BigDecimal("364.8"), series.bars.first.close,
+      "but the August 4:1 must still have been reversed"
+    assert_empty series.splits, "an event after the window must not be handed back to be written"
+  end
+
   test "a genuine 5% stock dividend (21:20) IS a share-count split despite being near 1" do
     d = Date.new(2024, 6, 3)
     body = chart(

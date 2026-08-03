@@ -121,6 +121,52 @@ class Prices::BackfillInstrumentJobTest < ActiveSupport::TestCase
     assert_equal 0, @instrument.daily_prices.count
     assert_nil @instrument.reload.prices_backfilled_at
   end
+  # --- issue #66: the Yahoo route is KEYLESS and must not be budgeted ---------
+  #
+  # #66's gate found this uncovered: deleting the `route.budgeted?` guard left
+  # the whole 815-test suite green, so the branch's own stated safety property
+  # had no test at all. Charging a Tiingo budget for a Yahoo fetch would burn a
+  # scarce monthly unique-symbol slot on a provider that has no account, and
+  # would reschedule Canadian backfills against a quota that does not apply.
+
+  test "a venue-suffixed symbol backfills via Yahoo and charges NO budget" do
+    canadian = create_instrument(symbol: "ZEQT.TO", currency: "CAD")
+    series = build_series(symbol: "ZEQT.TO",
+                          bars: [ { date: Date.new(2026, 7, 1), open: 20, high: 21, low: 19, close: 20.5, volume: 1 } ])
+    provider = StubProvider.new(series: series)
+
+    travel_to ET.local(2026, 7, 11, 20) do
+      budget = PriceProvider::Budget.new("tiingo")
+      before = budget.requests_today
+      stub_new(PriceProvider::Yahoo, provider) do
+        Prices::BackfillInstrumentJob.perform_now(canadian.id)
+      end
+
+      assert_equal before, budget.requests_today,
+        "Yahoo is keyless — charging Tiingo's quota for it spends a budget that does not apply"
+      assert_equal 0, budget.unique_symbols_this_month,
+        "and must not consume a scarce monthly unique-symbol slot either"
+    end
+
+    assert_equal 1, canadian.daily_prices.count
+    assert_equal "yahoo", canadian.daily_prices.first.source
+  end
+
+  test "an exhausted Tiingo budget does NOT block a Canadian backfill" do
+    canadian = create_instrument(symbol: "VDY.TO", currency: "CAD")
+    series = build_series(symbol: "VDY.TO",
+                          bars: [ { date: Date.new(2026, 7, 1), open: 70, high: 80, low: 70, close: 78, volume: 1 } ])
+
+    travel_to ET.local(2026, 7, 11, 20) do
+      PriceProvider::Budget.new("tiingo").charge!(50) # fill Tiingo's hourly window
+      stub_new(PriceProvider::Yahoo, StubProvider.new(series: series)) do
+        Prices::BackfillInstrumentJob.perform_now(canadian.id)
+      end
+    end
+
+    assert_equal 1, canadian.daily_prices.count,
+      "a Canadian symbol has no dependence on Tiingo's quota and must still backfill"
+  end
 end
 
 # The after_create_commit trigger only fires on a real COMMIT, which the default

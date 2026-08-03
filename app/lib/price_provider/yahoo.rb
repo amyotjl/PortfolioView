@@ -46,26 +46,50 @@ module PriceProvider
     # purely about not being fingerprinted as a bot on a keyless endpoint.
     USER_AGENT = "Mozilla/5.0 (compatible; PortfolioView/1.0)".freeze
 
+    # `to:` filters the RETURNED bars but deliberately does NOT narrow the
+    # request. Un-adjusting needs every split AFTER a bar's date, and Yahoo only
+    # reports events that fall inside the requested window — so asking for
+    # Jan–Jun 2020 returns prices already divided by AAPL's August 4:1 with the
+    # split itself absent, and the reconstruction silently under-corrects by
+    # exactly that factor (measured: close 91.20 against a true raw 364.80).
+    # Requesting through today and slicing afterwards makes that unreachable by
+    # construction rather than by the caller remembering. #66's gate found this
+    # while it was still latent, because the only live caller passes no `to:`.
     def fetch_daily(symbol, from:, to: nil)
       sym = normalize_symbol(symbol)
-      # period2 is EXCLUSIVE-ish and Yahoo compares against the bar's open
-      # instant, so a `to` of today with no +1 day silently drops today's bar.
-      last = (to&.to_date || Trading::Calendar.today) + 1
+      cutoff = to&.to_date
+      # period2 is exclusive of the bar's open instant, so today needs +1 or
+      # today's bar is dropped.
       params = {
         period1: epoch_for(from.to_date),
-        period2: epoch_for(last),
+        period2: epoch_for(Trading::Calendar.today + 1),
         interval: "1d",
         events: "div,split",
         # adjclose is dividend-adjusted as well and is never stored; asking for
         # it only enlarges the response.
         includeAdjustedClose: "false"
       }
-      build_series(sym, get_json("/v8/finance/chart/#{sym}", params))
+      series = build_series(sym, get_json("/v8/finance/chart/#{sym}", params))
+      cutoff ? slice_to(series, cutoff) : series
     end
 
     def fetch_full_history(symbol, to: nil) = fetch_daily(symbol, from: EPOCH_START, to: to)
 
     private
+
+    # Applied AFTER un-adjustment, so the prices are already reconstructed with
+    # the full split history before anything is discarded. Events outside the
+    # window go too: a caller asking for a past window must not be handed a
+    # future split to write.
+    def slice_to(series, cutoff)
+      DailySeries.new(
+        symbol: series.symbol,
+        bars: series.bars.select { |b| b.date <= cutoff }.freeze,
+        splits: series.splits.select { |s| s.ex_date <= cutoff }.freeze,
+        dividends: series.dividends.select { |d| d.ex_date <= cutoff }.freeze,
+        warnings: series.warnings
+      )
+    end
 
     def default_headers = super.merge("User-Agent" => USER_AGENT)
 
@@ -175,12 +199,27 @@ module PriceProvider
     # belongs in `adjustments` — dropping it outright would leave every
     # pre-2025-12-30 ZEQT price 0.7% below what actually traded.
     #
-    # The discriminator is the denominator, not just proximity to 1: a genuine
-    # 5% stock dividend arrives as 21:20, whereas these arrive as n:1000. Both
-    # conditions must hold, and every reclassification is warned about rather
-    # than dropped silently.
+    # SPIN-OFFS ARRIVE IN THE SAME SHAPE, and that is why this rule is about the
+    # DENOMINATOR ALONE. An earlier version also required the ratio to sit near
+    # 1, which made the classification depend on MAGNITUDE rather than on the
+    # property that matters — whether the share count moved. #66's gate found
+    # real securities that routes here and broke it:
+    #
+    #   TRP.TO  1097:1000  2024-10-02  South Bow spin-off  -> +9.7% phantom shares
+    #   BN.TO   1237:1000  2022-12-12  BAM spin-off        -> +23.7% phantom shares
+    #   BN.TO   1033:1000  2013-04-15  BPY spin-off        -> suppressed
+    #
+    # The same corporate action classified two different ways purely by size.
+    # And a spin-off does NOT change the parent's share count either: holders
+    # keep their shares and receive new ones in the spun-off entity, so Yahoo's
+    # factor is a price adjustment exactly as a reinvested distribution is.
+    #
+    # A GENUINE split is always a small-integer ratio — 4:1, 3:2, 1:8, 21:20 —
+    # because that is what a split IS. Yahoo has not been observed expressing
+    # one over a large denominator (MSFT's two 3:2 splits arrive as 3:2), so the
+    # denominator cleanly separates "the share count moved" from "only the price
+    # did". Every reclassification is warned about, never silent.
     DISTRIBUTION_MIN_DENOMINATOR = 100
-    DISTRIBUTION_BAND = (BigDecimal("0.95")..BigDecimal("1.05"))
 
     def build_splits(sym, result)
       warnings = []
@@ -205,10 +244,10 @@ module PriceProvider
 
         adjustments << Split.new(ex_date:, ratio:)
 
-        if den >= DISTRIBUTION_MIN_DENOMINATOR && DISTRIBUTION_BAND.cover?(ratio)
+        if den >= DISTRIBUTION_MIN_DENOMINATOR
           warnings << skip_warning(sym, "treated #{num.to_i}:#{den.to_i} on #{ex_date} as a " \
-            "reinvested distribution, not a share-count split — prices are un-adjusted by it, " \
-            "holdings are not")
+            "price-only corporate action (reinvested distribution or spin-off), not a " \
+            "share-count split — prices are un-adjusted by it, holdings are not")
         else
           splits << Split.new(ex_date:, ratio:)
         end

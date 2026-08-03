@@ -32,7 +32,10 @@ module PriceProvider
 
     DEFAULT_RETRY_AFTER = 60 # seconds, when the provider sends no hint
 
-    # v1 is US-listed/USD only; this also keeps symbols path-safe.
+    # Keeps symbols path-safe. Dots and dashes are allowed because a venue
+    # suffix (ZEQT.TO, FINN.NE) and a share class (BRK-B) are both legitimate
+    # symbols — the "US/USD only" restriction this comment used to state was
+    # lifted by issue #66.
     SYMBOL_FORMAT = /\A[A-Z0-9.\-]{1,12}\z/
 
     # faraday_adapter: pass `[:test, stubs]` in unit tests so requests hit
