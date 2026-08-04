@@ -214,11 +214,28 @@ module PriceProvider
     # keep their shares and receive new ones in the spun-off entity, so Yahoo's
     # factor is a price adjustment exactly as a reinvested distribution is.
     #
-    # A GENUINE split is always a small-integer ratio — 4:1, 3:2, 1:8, 21:20 —
-    # because that is what a split IS. Yahoo has not been observed expressing
-    # one over a large denominator (MSFT's two 3:2 splits arrive as 3:2), so the
-    # denominator cleanly separates "the share count moved" from "only the price
-    # did". Every reclassification is warned about, never silent.
+    # AND `num > 1`, WHICH IS THE MIRROR-IMAGE HOLE. Dropping the ratio band
+    # fixed spin-offs and immediately broke CONSOLIDATIONS: a reverse split
+    # arrives as `1:300`, so a denominator test alone routes the most
+    # share-count-changing event there is into the price-only branch. The old
+    # band excluded it only by accident (0.0033 fell outside 0.95..1.05).
+    #
+    # It was live on real holdings. `HMMC.TO` has a 1:300 consolidation on
+    # 2023-01-04 — suppressing it makes a backdated buy report CAD 1,230 against
+    # a true CAD 4.10 — and `VTI.CN`, now typeable through the new autocomplete,
+    # carries two 1:100 events that turn a CAD 1.00 position into CAD 2,100.
+    #
+    # So both halves are needed, and each covers what the other misses:
+    #
+    #   den >= 100   a distribution (993:1000) or a spin-off (1097:1000) —
+    #                price-only, the share count did not move
+    #   num > 1      ...but NOT a consolidation (1:300), which is a genuine
+    #                share-count event that also has a large denominator
+    #
+    # A real split is otherwise a small-integer ratio — 4:1, 3:2, 1:8, 21:20 —
+    # because that is what a split IS. Verified across all 15 genuine and 13
+    # price-only factors observed on this feed: 15/15 kept, 13/13 suppressed.
+    # Every suppression warns, never silently.
     DISTRIBUTION_MIN_DENOMINATOR = 100
 
     def build_splits(sym, result)
@@ -244,7 +261,7 @@ module PriceProvider
 
         adjustments << Split.new(ex_date:, ratio:)
 
-        if den >= DISTRIBUTION_MIN_DENOMINATOR
+        if den >= DISTRIBUTION_MIN_DENOMINATOR && num > 1
           warnings << skip_warning(sym, "treated #{num.to_i}:#{den.to_i} on #{ex_date} as a " \
             "price-only corporate action (reinvested distribution or spin-off), not a " \
             "share-count split — prices are un-adjusted by it, holdings are not")

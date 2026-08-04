@@ -96,11 +96,31 @@ class Instruments::DirectoryResolverTest < ActiveSupport::TestCase
     assert_equal "etf", result.instrument.instrument_type
   end
 
-  test "every Canadian venue is accepted" do
-    ListedInstrument::CANADIAN_EXCHANGES.each_with_index do |venue, i|
-      sym = "QQC#{i}.TO"
+  # Each venue is exercised with ITS OWN suffix. The first version of this test
+  # iterated the four venues but named every fixture "QQC#{i}.TO", so .V/.CN/.NE
+  # were never exercised at all — #66's gate broke the SIMILAR TO pattern's
+  # parentheses and un-tradeabled 5,998 real rows with the whole suite green.
+  # NEO is the LARGEST Canadian venue in the directory.
+  VENUE_SUFFIXES = { "TSX" => ".TO", "TSXV" => ".V", "CSE" => ".CN", "NEO" => ".NE" }.freeze
+
+  test "every Canadian venue is accepted, each with its own suffix" do
+    assert_equal ListedInstrument::CANADIAN_EXCHANGES.to_a.sort, VENUE_SUFFIXES.keys.sort,
+      "a new Canadian venue must be added here too, or it goes untested"
+
+    VENUE_SUFFIXES.each_with_index do |(venue, suffix), i|
+      sym = "QQC#{i}#{suffix}"
       listed(sym, exchange: venue, currency: "CAD")
-      assert Instruments::DirectoryResolver.call(symbol: sym).ok?, "#{venue} should resolve"
+      assert Instruments::DirectoryResolver.call(symbol: sym).ok?,
+        "#{venue} (#{suffix}) should resolve"
+    end
+  end
+
+  test "each Canadian suffix is accepted by the tradeable predicate independently" do
+    VENUE_SUFFIXES.each_with_index do |(venue, suffix), i|
+      sym = "QQD#{i}#{suffix}"
+      row = listed(sym, exchange: venue, currency: "CAD")
+      assert_includes ListedInstrument.tradeable.pluck(:id), row.id,
+        "#{suffix} must satisfy TRADEABLE_SQL on its own"
     end
   end
 

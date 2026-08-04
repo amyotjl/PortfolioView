@@ -191,6 +191,57 @@ class PriceProvider::YahooTest < ActiveSupport::TestCase
     end
   end
 
+  # THE MIRROR IMAGE of the spin-off finding. A consolidation arrives as 1:300,
+  # so a denominator test ALONE routes the most share-count-changing event there
+  # is into the price-only branch. Live on real holdings: HMMC.TO has a 1:300 on
+  # 2023-01-04, and VTI.CN carries two 1:100s that would turn a CAD 1.00
+  # position into CAD 2,100.
+  test "a consolidation (1:300) IS a share-count split despite its large denominator" do
+    d = Date.new(2023, 1, 4)
+    body = chart(
+      timestamps: [ ts(d) ],
+      quote: { "open" => [ 7.5 ], "high" => [ 7.5 ], "low" => [ 7.5 ], "close" => [ 7.5 ], "volume" => [ 1 ] },
+      splits: { "c" => { "date" => ts(d), "numerator" => 1.0, "denominator" => 300.0 } },
+      currency: "CAD"
+    )
+
+    series = build_adapter(stub_chart("HMMC.TO", body)).fetch_daily("HMMC.TO", from: d, to: d)
+
+    assert_equal 1, series.splits.size,
+      "suppressing a consolidation overstates the holder's position by the ratio"
+    assert_in_delta BigDecimal("0.003333"), series.splits.first.ratio, BigDecimal("0.000001")
+    assert_empty series.warnings.select { |w| w.include?("price-only") }
+  end
+
+  test "the two halves of the rule cover what the other misses" do
+    d = Date.new(2024, 6, 3)
+    cases = {
+      # num > 1 AND den >= 100 -> price-only
+      [ 993.0, 1000.0 ]  => :suppressed,   # reinvested distribution
+      [ 1097.0, 1000.0 ] => :suppressed,   # spin-off
+      # num == 1 -> a consolidation, share-count event even with a big denominator
+      [ 1.0, 300.0 ]     => :split,
+      [ 1.0, 100.0 ]     => :split,
+      # small denominators are ordinary splits either way
+      [ 4.0, 1.0 ]       => :split,
+      [ 3.0, 2.0 ]       => :split,
+      [ 1.0, 8.0 ]       => :split,        # ordinary reverse split
+      [ 21.0, 20.0 ]     => :split         # 5% stock dividend
+    }
+
+    cases.each do |(num, den), expected|
+      body = chart(
+        timestamps: [ ts(d) ],
+        quote: { "open" => [ 10.0 ], "high" => [ 10.0 ], "low" => [ 10.0 ], "close" => [ 10.0 ], "volume" => [ 1 ] },
+        splits: { "x" => { "date" => ts(d), "numerator" => num, "denominator" => den } }
+      )
+      series = build_adapter(stub_chart("XYZ", body)).fetch_daily("XYZ", from: d, to: d)
+      actual = series.splits.any? ? :split : :suppressed
+
+      assert_equal expected, actual, "#{num.to_i}:#{den.to_i} should be #{expected}"
+    end
+  end
+
   test "a genuine 5% stock dividend (21:20) IS a share-count split despite being near 1" do
     d = Date.new(2024, 6, 3)
     body = chart(

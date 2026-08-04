@@ -94,6 +94,26 @@ class Directory::ImportCanadianJobTest < ActiveSupport::TestCase
     assert_equal 0, ListedInstrument.count
   end
 
+  # ~50 real Twelve Data rows carry a space in the symbol (#66's gate). Stored,
+  # they would be autocompletable and resolvable and then blow up at fetch time
+  # on PriceProvider::Base#normalize_symbol — worse than never appearing.
+  test "a symbol the price adapters cannot request is skipped" do
+    run_job(stocks: [ { "symbol" => "AAB PR A", "name" => "Odd Row", "exchange" => "TSX",
+                        "mic_code" => "XTSE", "currency" => "CAD", "type" => "Common Stock" } ],
+            etf: [])
+
+    assert_equal 0, ListedInstrument.where("symbol LIKE '%% %%'").count
+    assert_equal 0, ListedInstrument.count
+  end
+
+  test "every imported symbol satisfies the price adapters' symbol format" do
+    run_job
+
+    ListedInstrument.pluck(:symbol).each do |sym|
+      assert_match PriceProvider::Base::SYMBOL_FORMAT, sym, "#{sym} could never be fetched"
+    end
+  end
+
   test "a blank symbol is skipped without failing the run" do
     result, = run_job(stocks: [ { "symbol" => "", "mic_code" => "XTSE", "currency" => "CAD" } ], etf: ETF_ROWS)
 

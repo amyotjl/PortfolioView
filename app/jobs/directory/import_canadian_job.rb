@@ -86,6 +86,11 @@ module Directory
       symbol = Portfolios::Transfer::SymbolQualifier.call(symbol: raw, mic: mic,
                                                           currency: row["currency"])
       return nil if symbol == raw || symbol.length > MAX_SYMBOL_LENGTH
+      # A symbol the price adapters cannot even request is worse than absent: it
+      # is autocompletable and resolvable, then fails at fetch time with an
+      # ArgumentError from normalize_symbol. Twelve Data returns ~50 of these
+      # with spaces in them (#66's gate), so they are dropped at the door.
+      return nil unless PriceProvider::Base::SYMBOL_FORMAT.match?(symbol)
 
       {
         symbol: symbol,
