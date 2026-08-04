@@ -17,6 +17,11 @@ class ListedInstrument < ApplicationRecord
     "NYSE", "NASDAQ", "AMEX", "NYSE ARCA", "NYSE MKT", "BATS", "IEX", "CBOE"
   ].to_set.freeze
 
+  # Canadian venues, added by issue #66. The exchange NAMES are what
+  # Directory::ImportCanadianJob stores (the MICs XTSE/XTSX/NEOE/XCNQ live in
+  # SymbolQualifier, which maps them to the venue suffix).
+  CANADIAN_EXCHANGES = [ "TSX", "TSXV", "NEO", "CSE" ].to_set.freeze
+
   # Mutual funds are 46% of the directory (49,001 of 106,253) and share the
   # dense 5-letter X-suffixed namespace, so a plain alphabetical prefix sort
   # buries ordinary equities under them — this is what hid MSFT behind
@@ -34,23 +39,47 @@ class ListedInstrument < ApplicationRecord
   # behaviour instead of INVERTING and burying live tickers.
   STALE_LISTING_WINDOW = 180
 
-  # A row this app can actually turn into a tradeable Instrument. Anything else
-  # (NMFQS, PINK, OTCGREY, a non-USD listing) is un-addable: picking it in the
+  # A row this app can actually turn into an Instrument. Anything else (NMFQS,
+  # PINK, OTCGREY, a currency/venue mismatch) is un-addable: picking it in the
   # autocomplete only earns a 422 from DirectoryResolver, so it must never
   # outrank a row that works.
-  # Case-insensitive on BOTH columns so this is byte-equivalent to the Ruby
-  # predicate DirectoryResolver used to inline (`currency.to_s.upcase == "USD"`,
-  # `exchange.to_s.strip.upcase`). Verified across all 105,445 distinct symbols:
-  # scope and Ruby select the identical 23,434 rows (issue #71).
   #
-  # `#search` still spells the same predicate inline, because there it is an
-  # ORDER BY *expression* rather than a WHERE clause and cannot reuse a scope.
-  # Keep the two spellings identical — `upper(btrim(...))` on both columns — so
-  # a row can never rank as tradeable while resolving as un-tradeable.
-  scope :tradeable, -> {
-    where("upper(btrim(currency)) = 'USD'")
-      .where("upper(btrim(exchange)) IN (?)", US_EXCHANGES.to_a)
-  }
+  # Both halves of each pair matter. A USD row on the TSX, or a CAD row on
+  # NASDAQ, is neither a US listing nor a Canadian one, and pricing it would
+  # mean guessing which feed serves it — so it is not tradeable here (#66).
+  #
+  # ONE definition, used as a WHERE by #tradeable and as an ORDER BY expression
+  # by #search. They must not drift, or a row could rank as tradeable while
+  # resolving as un-tradeable; it is a SQL string rather than a scope because a
+  # scope cannot be reused inside ORDER BY. Case-insensitive on both columns,
+  # byte-equivalent to the Ruby predicate DirectoryResolver used to inline —
+  # verified in #71 across all 105,445 distinct symbols, 23,434 rows both ways.
+  # A Canadian row must ALSO be venue-suffixed. Directory::ImportCanadianJob
+  # always stores them that way, and the suffix is what stops a Canadian ticker
+  # binding to the US security of the same name: `instruments` is UNIQUE on
+  # upper(symbol) alone, so a bare `SHOP` on the TSX and NYSE Shopify are the
+  # same row. That collision is what #64's SymbolQualifier exists to prevent and
+  # what a CDR makes dangerous — TSX `META` is a CAD-hedged fraction of the
+  # underlying, not NASDAQ META. A bare symbol on a Canadian venue is therefore
+  # ambiguous by construction and is not tradeable here.
+  CANADIAN_SUFFIXES = %w[.TO .V .CN .NE].freeze
+
+  TRADEABLE_SQL = <<~SQL.squish.freeze
+    (upper(btrim(currency)) = 'USD' AND upper(btrim(exchange)) IN (:us))
+    OR (upper(btrim(currency)) = 'CAD' AND upper(btrim(exchange)) IN (:ca)
+        AND upper(btrim(symbol)) SIMILAR TO :ca_suffixed)
+  SQL
+
+  # Postgres SIMILAR TO: one alternation over the escaped suffixes.
+  CANADIAN_SUFFIX_PATTERN = "%(#{CANADIAN_SUFFIXES.map { |s| s.sub('.', '\\.') }.join('|')})".freeze
+
+  TRADEABLE_BINDS = {
+    us: US_EXCHANGES.to_a,
+    ca: CANADIAN_EXCHANGES.to_a,
+    ca_suffixed: CANADIAN_SUFFIX_PATTERN
+  }.freeze
+
+  scope :tradeable, -> { where(TRADEABLE_SQL, **TRADEABLE_BINDS) }
 
   normalizes :symbol, with: ->(s) { s.strip.upcase }
 
@@ -155,15 +184,15 @@ class ListedInstrument < ApplicationRecord
         CASE WHEN upper(symbol) = :exact THEN 0
              WHEN upper(symbol) LIKE :prefix THEN 1
              ELSE 2 END,
-        CASE WHEN upper(btrim(currency)) = 'USD' AND upper(btrim(exchange)) IN (:us) THEN 0
-             ELSE 1 END,
+        CASE WHEN #{TRADEABLE_SQL} THEN 0 ELSE 1 END,
         CASE WHEN end_date IS NULL OR end_date >= (CURRENT_DATE - :stale) THEN 0
              ELSE 1 END,
         CASE WHEN lower(asset_type) LIKE :fund THEN 1 ELSE 0 END,
         length(symbol),
         start_date ASC NULLS LAST
       SQL
-        exact: q.upcase, prefix: symbol_prefix, us: US_EXCHANGES.to_a,
+        **TRADEABLE_BINDS,
+        exact: q.upcase, prefix: symbol_prefix,
         stale: STALE_LISTING_WINDOW, fund: MUTUAL_FUND_PATTERN
       } ])))
       .order(:symbol, :exchange)

@@ -79,8 +79,82 @@ class Instruments::DirectoryResolverTest < ActiveSupport::TestCase
     result = Instruments::DirectoryResolver.call(symbol: "NOSUCHTICKER")
 
     assert_not result.ok?
-    assert_match(/not a recognized US-exchange symbol/, result.error)
+    assert_match(/not a recognized US or Canadian exchange symbol/, result.error)
     assert_no_match(/still downloading/, result.error)
+  end
+
+  # --- issue #66: Canadian listings resolve too ------------------------------
+
+  test "a CAD listing on a Canadian venue resolves, with CAD currency" do
+    listed("ZEQT.TO", exchange: "TSX", currency: "CAD", asset_type: "ETF")
+
+    result = Instruments::DirectoryResolver.call(symbol: "ZEQT.TO")
+
+    assert result.ok?, result.error
+    assert_equal "CAD", result.instrument.currency,
+      "stamping USD here would make the instrument disagree with the feed that prices it"
+    assert_equal "etf", result.instrument.instrument_type
+  end
+
+  test "every Canadian venue is accepted" do
+    ListedInstrument::CANADIAN_EXCHANGES.each_with_index do |venue, i|
+      sym = "QQC#{i}.TO"
+      listed(sym, exchange: venue, currency: "CAD")
+      assert Instruments::DirectoryResolver.call(symbol: sym).ok?, "#{venue} should resolve"
+    end
+  end
+
+  # The currency and the venue must AGREE. Either half alone is a row this app
+  # cannot price, because which feed serves it would be a guess.
+  test "a CAD row on a US venue does NOT resolve" do
+    listed("QQAH", exchange: "NASDAQ", currency: "CAD")
+
+    assert_not Instruments::DirectoryResolver.call(symbol: "QQAH").ok?
+  end
+
+  test "a USD row on a Canadian venue does NOT resolve" do
+    listed("QQAI.TO", exchange: "TSX", currency: "USD")
+
+    assert_not Instruments::DirectoryResolver.call(symbol: "QQAI.TO").ok?
+  end
+
+  test "the rejection message tells a user a Canadian symbol needs its suffix" do
+    listed("AAPL", exchange: "NASDAQ")
+
+    result = Instruments::DirectoryResolver.call(symbol: "ZEQT")
+
+    assert_not result.ok?
+    assert_match(/venue suffix/, result.error)
+  end
+
+  # A bare Canadian ticker must not resolve to the US security of the same name.
+  # `instruments` is UNIQUE on upper(symbol) alone, so this is the collision
+  # SymbolQualifier and the suffixed directory rows exist to prevent.
+  test "a bare ticker never resolves to the Canadian listing of the same name" do
+    listed("META.TO", exchange: "TSX", currency: "CAD", asset_type: "Depositary Receipt")
+
+    assert_not Instruments::DirectoryResolver.call(symbol: "META").ok?,
+      "typing META must not silently bind to the CAD-hedged CDR"
+  end
+
+  # A pre-existing contract test (transactions_controller_test) creates a BARE
+  # "SHOP" on the TSX and asserts it is rejected. #66 must not weaken that:
+  # Shopify is dual-listed, `instruments` is UNIQUE on upper(symbol) alone, so a
+  # bare SHOP could bind to either listing. The suffix is the disambiguator.
+  test "a BARE symbol on a Canadian venue is ambiguous and does NOT resolve" do
+    listed("SHOP", exchange: "TSX", currency: "CAD")
+
+    assert_not Instruments::DirectoryResolver.call(symbol: "SHOP").ok?,
+      "a bare Canadian ticker could bind to the US security of the same name"
+  end
+
+  test "the same listing DOES resolve once it carries its venue suffix" do
+    listed("SHOP.TO", exchange: "TSX", currency: "CAD")
+
+    result = Instruments::DirectoryResolver.call(symbol: "SHOP.TO")
+
+    assert result.ok?, result.error
+    assert_equal "CAD", result.instrument.currency
   end
 
   test "rejects a non-USD listing" do
