@@ -9,11 +9,17 @@ export type AuthStatus = 'idle' | 'loading' | 'authenticated' | 'anonymous'
 /**
  * Drops every cached server response, so nothing survives a session boundary.
  *
- * `cancelQueries()` comes FIRST and is load-bearing: a request already in
- * flight when the session ends resolves into the cache *afterwards*, so
- * removing entries without aborting leaves a race that re-populates the cache
- * with the outgoing user's data. Aborting first makes that unreachable rather
- * than unlikely.
+ * `cancelQueries()` comes first, and NO TEST PINS IT — measured: deleting that
+ * line leaves all four specs in `auth.spec.ts` green, including the in-flight
+ * one. Removal alone already closes the disclosure, because a fetch that
+ * settles late writes into an entry that is no longer in the map and so can
+ * never be served to the next mount. It is kept anyway for a different reason:
+ * at the moment `clear()` runs the signed-out page is still mounted (the router
+ * push happens after), so an un-aborted request will land a 401, fire the
+ * unauthorized handler, and push a redundant /login navigation carrying the old
+ * page as `redirect`. Aborting is the correct behaviour on a session boundary;
+ * it is not what makes the cache safe. Don't upgrade this comment to
+ * "load-bearing" without a probe that discriminates it.
  *
  * There is no `cache.clear()` in @pinia/colada 1.4.2 (issue #73 assumed one) —
  * `getEntries()` with no filter returns every entry and `remove()` drops it,

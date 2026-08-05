@@ -128,4 +128,28 @@ describe('ending a session and the server-state cache', () => {
 
     expect(useQueryCache(pinia).getEntries()).toEqual([])
   })
+
+  /**
+   * The race the ordering inside `discardServerState` exists for: a request
+   * that was already in flight when the session ended settles AFTERWARDS, and
+   * must not put the outgoing user's rows back into an emptied cache.
+   */
+  it('a request still in flight when the session ends cannot repopulate the cache', async () => {
+    const { pinia, mountPortfolios } = harness()
+
+    let settle: (v: unknown) => void = () => {}
+    apiGet.mockImplementation(() => new Promise((resolve) => (settle = resolve)))
+    const first = mountPortfolios()
+    await waitFor(() => expect(useQueryCache(pinia).getEntries().length).toBeGreaterThan(0))
+
+    first.unmount()
+    useAuthStore(pinia).clear()
+
+    // A's response arrives late.
+    settle(A_PORTFOLIOS)
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(useQueryCache(pinia).getEntries()).toEqual([])
+    expect(useQueryCache(pinia).getQueryData(['portfolios'])).toBeUndefined()
+  })
 })
