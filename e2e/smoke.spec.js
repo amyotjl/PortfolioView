@@ -156,14 +156,14 @@ test.describe('smoke: register -> portfolio -> transaction -> dashboard', () => 
     // name, and within prefix matches alphabetically — so 'MSF' returns
     // MSF, MSFAX, MSFBX … MSFN and MSFT never makes the cut. A partial query here
     // would fail for a reason that has nothing to do with the wiring under test.
-    const ticker = drawer.getByRole('combobox', { name: 'Ticker' })
+    const ticker = drawer.getByRole('combobox', { name: 'Ticker', exact: true })
     await ticker.fill('MSFT')
     const suggestion = page.getByRole('option', { name: /^MSFT/ }).first()
     await expect(suggestion).toBeVisible()
     await suggestion.click()
     await expect(ticker).toHaveValue('MSFT')
 
-    await drawer.getByRole('combobox', { name: 'Date' }).fill('2026-05-15')
+    await drawer.getByRole('combobox', { name: 'Date', exact: true }).fill('2026-05-15')
     await drawer.getByRole('textbox', { name: 'Shares', exact: true }).fill('4')
     await drawer.getByRole('textbox', { name: 'Price', exact: true }).fill('400.00')
     await drawer.getByRole('button', { name: 'Add transaction' }).click()
