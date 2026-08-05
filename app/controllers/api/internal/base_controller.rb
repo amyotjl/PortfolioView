@@ -19,6 +19,10 @@ module Api
     #
     # Opting out narrowly here keeps ApplicationController's app-wide defaults
     # untouched: every /api/v1 route still requires a session AND the CSRF pair.
+    #
+    # The credential itself — including the fail-closed-on-blank rule and why the
+    # blank case is announced in the log but never in the response — lives in
+    # `InternalApi::Token`. Read that before changing anything here.
     class BaseController < ActionController::Base
       include ErrorRendering
 
@@ -30,14 +34,16 @@ module Api
 
       before_action :authenticate_internal_token!
 
-      # The env var guarding every /api/internal route. Blank or unset => the
-      # whole namespace is CLOSED (see #valid_internal_token?).
-      TOKEN_ENV = "INTERNAL_API_TOKEN".freeze
-
       private
 
       def authenticate_internal_token!
-        return if valid_internal_token?
+        return if InternalApi::Token.matches?(bearer_token)
+
+        # #75: says, in the log only, WHICH kind of rejection this is. A blank
+        # configured token answers 401 to a correct token exactly as to a wrong
+        # one, and that ambiguity is what made #58's wiring bug read as operator
+        # error. Nothing about it reaches the response — see InternalApi::Token.
+        InternalApi::Token.log_rejection
 
         # Correct HTTP for a bearer-guarded resource; the BODY is the standard
         # error envelope, unchanged (docs/API_SHAPES.md).
@@ -47,19 +53,6 @@ module Api
           message: "A valid internal API token is required.",
           status: :unauthorized
         )
-      end
-
-      # FAILS CLOSED: an unset or blank INTERNAL_API_TOKEN authenticates nobody,
-      # so a deploy that forgets the var is inert rather than wide open (same
-      # rule as INVITE_CODE in RegistrationsController). Constant-time compare
-      # so the token can't be recovered byte-by-byte from response timing;
-      # `secure_compare` digests first, so unequal lengths are safe too.
-      def valid_internal_token?
-        configured = ENV[TOKEN_ENV]
-        presented = bearer_token
-
-        configured.present? && presented.present? &&
-          ActiveSupport::SecurityUtils.secure_compare(configured, presented)
       end
 
       # Only the `Bearer` scheme is accepted. A bare token, `Basic`, or Rails'
