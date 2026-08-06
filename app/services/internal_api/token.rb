@@ -44,9 +44,14 @@ module InternalApi
       "unaffected."
     ).freeze
 
+    # ASCII only in these three strings, deliberately. They are the one part of
+    # this codebase a deployer reads with `type`, `cat` or a log shipper rather
+    # than in an editor, and an em dash renders as mojibake when the log is read
+    # with a Windows ANSI codepage (observed while verifying this live). Comments
+    # in this repo use em dashes freely; runtime log output should not.
     REJECTION_MESSAGE = (
       "rejected an /api/internal request: #{ENV_NAME} is not configured, so NO token can " \
-      "authenticate here. This is NOT a token mismatch — set the variable to enable the " \
+      "authenticate here. This is NOT a token mismatch - set the variable to enable the " \
       "namespace."
     ).freeze
 
