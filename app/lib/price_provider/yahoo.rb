@@ -273,10 +273,10 @@ module PriceProvider
     #   2. denominator in lowest terms > MAX_DECLARED_DENOMINATOR -> PRICE-ONLY.
     #      A market-derived decimal near 1: a distribution or a spin-off.
     #   3. otherwise ask the series, requiring GAP_MARGIN of separation.
-    #   4. if the series cannot decide (or there is no bar on one side)
-    #      -> PRICE-ONLY. In the band, and only in the band, price-only actions
-    #      outnumber share-count ones 41 to 7 in the sample below, so this is the
-    #      majority class rather than a coin flip. Every such call warns.
+    #   4. no bar on one side -> SHARE-COUNT: what reaches here is a DECLARED
+    #      exchange ratio (rule 2 sent the market-derived ones away), and that is a
+    #      share-count change by definition. It is also the inconsequential case —
+    #      with no earlier close, #unadjust! has nothing to scale either way.
     #
     # ── HOW THE RULE WAS CHOSEN, AND WHAT IT COSTS ──────────────────────────────
     #
@@ -287,9 +287,19 @@ module PriceProvider
     # the three gate rounds, an evenly-spaced sample across the whole Canadian
     # directory, and US controls with known corporate histories.
     #
-    # Scored against 35 events whose truth is independently known (public corporate
-    # actions plus every case the gates named): THIS RULE 35/35. The shipped
-    # round-3 rule: 27/35. It disagrees with round 3 on 17 of 203 events.
+    # The sweep: 1,797 symbols requested, 789 distinct factors found on 423 of them
+    # — against the round-3 gate's own 482 factors on 209 symbols.
+    #
+    # Scored by driving THIS METHOD over all of it, against 35 events whose truth is
+    # independently known (public corporate actions plus every case the three gates
+    # named): THIS RULE 35/35. The shipped round-3 rule: 28/35. The two disagree on
+    # 24 of the 789, every one in the direction of the known truth. Only 3 of 789
+    # are close calls, and no factor outside the band is suppressed — the direction
+    # that produced rounds 2 and 3's blockers is closed by construction, not by
+    # tuning.
+    #
+    # In-band population, which is what makes the band worth having: 108 price-only
+    # against 8 share-count. Outside it, 681 share-count against 0 price-only.
     #
     # Two known imperfections, stated rather than papered over:
     #
@@ -310,8 +320,9 @@ module PriceProvider
     # here is ever silent.
 
     # A price-only corporate action moves a few percent of a security's value; it
-    # never moves 30%. Chosen from the data: every price-only event in the sample
-    # lies in [0.875, 1.237], every genuine large event outside [0.71, 1.4].
+    # never moves 30%. Chosen from the data, not by taste: across 789 real factors
+    # every price-only one lies in [0.875, 1.237], and every genuine share-count
+    # event outside that sits well beyond [0.71, 1.4].
     NEAR_ONE_BAND = (1 / 1.4)..1.4
 
     # A DECLARED exchange ratio is small integers. Applied in lowest terms, so

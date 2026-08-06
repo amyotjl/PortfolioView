@@ -231,6 +231,43 @@ class PriceProvider::YahooTest < ActiveSupport::TestCase
     assert_equal [ BigDecimal("1.05") ], series.splits.map(&:ratio)
   end
 
+  test "a declared ratio written UNREDUCED is still a declared ratio" do
+    # `declared_ratio?` reduces to lowest terms, and this is the case that makes
+    # that load-bearing. 1050:1000 is a 5% stock dividend written the long way:
+    # unreduced its denominator is 1000 and it would be dismissed as a
+    # market-derived decimal, but in lowest terms it is 21/20 — a declared
+    # exchange ratio — so the price series gets to decide, and here says the price
+    # moved.
+    #
+    # CONSTRUCTED, not observed: the sweep found no in-band factor whose reduction
+    # changes the verdict. It is guarded anyway because Yahoo demonstrably DOES
+    # write declared ratios unreduced in the same feed — GOOG's 2:1 arrives as
+    # 2002:1000 and F's 3:2 as 1748175:1000000 — and only the band guard saves
+    # those. A near-1 one would have nothing else to save it.
+    # gap 0.995, i.e. continuous — which is what a REAL 5% stock dividend looks
+    # like on Yahoo's adjusted series, because it adjusted for a price move that
+    # genuinely happened. (Setting the gap to 1/1.05 instead would describe a
+    # distribution, and the rule would correctly call it price-only.)
+    series = classify_factor(symbol: "XYZ", ex_date: Date.new(2024, 6, 3),
+                             num: 1050.0, den: 1000.0, before_close: 99.5, after_close: 100.0)
+
+    assert_equal [ BigDecimal("1.05") ], series.splits.map(&:ratio),
+      "reduced, 1050:1000 is 21/20 and the series says the price moved"
+  end
+
+  test "Factor#declared_ratio? and #label read the fraction as Yahoo wrote it" do
+    factor = PriceProvider::Factor.new(ex_date: Date.new(2024, 1, 1), ratio: BigDecimal("1.14"),
+                                       numerator: BigDecimal("114"), denominator: BigDecimal("100"))
+
+    assert_equal "114:100", factor.label, "the warning must quote the feed, not a reduction"
+    assert factor.declared_ratio?(100), "114:100 is 57/50 in lowest terms"
+    assert_not factor.declared_ratio?(49), "and 50 is above a limit of 49"
+
+    market = PriceProvider::Factor.new(ex_date: Date.new(2024, 1, 1), ratio: BigDecimal("1.097"),
+                                       numerator: BigDecimal("1097"), denominator: BigDecimal("1000"))
+    assert_not market.declared_ratio?(100), "1097:1000 does not reduce at all"
+  end
+
   test "a factor whose evidence is thin is kept, and flagged as a close call" do
     # gap 1.0001 against hypotheses 1 and 1.0101: it leans share-count by a whisker.
     # The lean decides — a third "cannot tell" branch would need an arbitrary
