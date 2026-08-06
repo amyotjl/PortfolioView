@@ -1,3 +1,27 @@
+# Action Cable is NOT MOUNTED in this app — see the comment on
+# `config.action_cable.mount_path = nil` in config/application.rb (issue #74).
+# This file therefore configures a pub/sub backend nothing subscribes to and
+# nothing broadcasts through.
+#
+# It still says `async` rather than `redis` because the previous value was a
+# standing contradiction: production declared `adapter: redis` with a REDIS_URL
+# default, while THIS STACK HAS NO REDIS BY DESIGN — Solid Queue and Solid Cache
+# are Postgres-backed precisely so none is needed (docs/PLAN.md § Deployment and
+# the stack description in CLAUDE.md). Boot survived only because nothing
+# broadcasts; the first broadcast would have reached for a Redis that does not
+# exist, at a URL nobody configured.
+#
+# `async` is a process-local backend, which is the honest description of a
+# not-mounted cable: it needs no external service and cannot fail at boot. It is
+# ALSO NOT SUITABLE for real multi-process real-time features — under Puma
+# cluster mode a broadcast would reach only the worker that made it. So do not
+# read this as "cable is configured and ready".
+#
+# If real-time features are ever added, the correct production adapter here is
+# `solid_cable` (already in the Gemfile), which keeps the no-Redis invariant
+# genuinely true. It needs a schema — `db/cable_schema.rb` does not exist yet —
+# and the production `cable` database re-added to config/database.yml, and the
+# mount restored. All four, together.
 development:
   adapter: async
 
@@ -5,6 +29,4 @@ test:
   adapter: test
 
 production:
-  adapter: redis
-  url: <%= ENV.fetch("REDIS_URL") { "redis://localhost:6379/1" } %>
-  channel_prefix: app_production
+  adapter: async

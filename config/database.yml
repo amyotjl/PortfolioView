@@ -84,7 +84,12 @@ production:
     <<: *primary_production
     database: app_production_queue
     migrations_paths: db/queue_migrate
-  cable:
-    <<: *primary_production
-    database: app_production_cable
-    migrations_paths: db/cable_migrate
+# There is deliberately NO `cable` database here (issue #74). It used to be
+# declared, and because there is no db/cable_schema.rb and no db/cable_migrate,
+# `db:prepare` CREATED app_production_cable and then loaded nothing into it — a
+# database that exists and cannot be used, for a framework this app does not
+# mount (config.action_cable.mount_path = nil in config/application.rb).
+#
+# Re-add it — together with a generated db/cable_schema.rb, `adapter: solid_cable`
+# in config/cable.yml, and the mount — if real-time features are ever wanted.
+# Re-adding it alone just recreates the empty database.
