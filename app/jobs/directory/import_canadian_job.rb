@@ -91,6 +91,7 @@ module Directory
       # ArgumentError from normalize_symbol. Twelve Data returns ~50 of these
       # with spaces in them (#66's gate), so they are dropped at the door.
       return nil unless PriceProvider::Base::SYMBOL_FORMAT.match?(symbol)
+      return nil unless well_formed?(symbol)
 
       {
         symbol: symbol,
@@ -110,6 +111,26 @@ module Directory
       return "ETF" if kind == "etf"
 
       row["type"].to_s.strip.presence
+    end
+
+    # SYMBOL_FORMAT admits a dot anywhere, including twice in a row, so it passes
+    # shapes no venue ever issued (#66's gate, Finding 5). Twelve Data returns 151
+    # Canadian preferred-share rows whose symbol already ENDS in a dot — `AAAJ.PR.`
+    # — and suffixing those produces `AAAJ.PR..V`. An empty dot-separated segment
+    # cannot name a real security anywhere, so these are dropped at the door with
+    # the space-carrying ones rather than shipped as autocompletable rows that
+    # resolve and then price to zero.
+    #
+    # This deliberately does NOT touch the other 913 multi-dot rows (`ACO.X.TO`,
+    # `AD.DBB.TO`). Those name real securities; the problem is only that Yahoo
+    # spells a class or series with a DASH (`ACO-X.TO`), so they fetch nothing.
+    # Correcting that means changing SymbolQualifier, which is also #68's identity
+    # source for broker imports — a user who has already imported `ACO.X.TO` would
+    # get a SECOND instrument for `ACO-X.TO`, which is the exact failure
+    # InstrumentResolver#venue_sibling_for exists to prevent. It needs its own
+    # coordinated change, tracked separately.
+    def well_formed?(symbol)
+      symbol.split(".", -1).none?(&:empty?)
     end
 
     # The same (symbol, exchange) pair can appear twice in one response; a

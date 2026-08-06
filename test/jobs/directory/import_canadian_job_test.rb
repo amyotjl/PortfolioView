@@ -8,6 +8,10 @@ class Directory::ImportCanadianJobTest < ActiveSupport::TestCase
   STOCK_ROWS = [
     { "symbol" => "ABX", "name" => "Barrick Mining Corp", "exchange" => "TSX",
       "mic_code" => "XTSE", "currency" => "CAD", "type" => "Common Stock" },
+    # A REAL row whose symbol already ends in a dot. It is kept in the default
+    # fixture on purpose: suffixing it used to produce `AAAJ.PR..V`, and this file
+    # used to ASSERT that shape as stored output — enshrining the defect #66's
+    # gate later filed as Finding 5. It must now be dropped, everywhere.
     { "symbol" => "AAAJ.PR.", "name" => "AAJ Capital 3 Corp.", "exchange" => "TSXV",
       "mic_code" => "XTSX", "currency" => "CAD", "type" => "Common Stock" }
   ].freeze
@@ -49,7 +53,7 @@ class Directory::ImportCanadianJobTest < ActiveSupport::TestCase
   test "stores symbols VENUE-SUFFIXED so a Canadian ticker cannot alias a US one" do
     run_job
 
-    assert_equal %w[AAAJ.PR..V ABX.TO FINN.NE ZEQT.TO].sort,
+    assert_equal %w[ABX.TO FINN.NE ZEQT.TO].sort,
                  ListedInstrument.order(:symbol).pluck(:symbol).sort
   end
 
@@ -104,6 +108,32 @@ class Directory::ImportCanadianJobTest < ActiveSupport::TestCase
 
     assert_equal 0, ListedInstrument.where("symbol LIKE '%% %%'").count
     assert_equal 0, ListedInstrument.count
+  end
+
+  # 151 real Twelve Data rows carry a symbol that already ENDS in a dot
+  # (`AAAJ.PR.`), and suffixing one produces `AAAJ.PR..V` — a shape SYMBOL_FORMAT
+  # happily admits and no venue ever issued (#66's gate, Finding 5).
+  test "a symbol with an empty dot-separated segment is skipped" do
+    run_job(stocks: [ { "symbol" => "AAAJ.PR.", "name" => "Trailing Dot Pref", "exchange" => "TSXV",
+                        "mic_code" => "XTSX", "currency" => "CAD", "type" => "Preferred Stock" },
+                      { "symbol" => ".LEAD", "name" => "Leading Dot", "exchange" => "TSXV",
+                        "mic_code" => "XTSX", "currency" => "CAD", "type" => "Common Stock" } ],
+            etf: [])
+
+    assert_equal 0, ListedInstrument.count
+    assert_equal 0, ListedInstrument.where("symbol LIKE '%..%'").count
+  end
+
+  # The other 913 multi-dot rows name REAL securities and must survive: the
+  # dot-versus-dash spelling is a separate, coordinated change (it touches #68's
+  # instrument identity), so this guard must not quietly take them out with the
+  # malformed ones.
+  test "a legitimate class or series symbol is still imported" do
+    run_job(stocks: [ { "symbol" => "ACO.X", "name" => "Atco Class I", "exchange" => "TSX",
+                        "mic_code" => "XTSE", "currency" => "CAD", "type" => "Common Stock" } ],
+            etf: [])
+
+    assert_equal [ "ACO.X.TO" ], ListedInstrument.pluck(:symbol)
   end
 
   test "every imported symbol satisfies the price adapters' symbol format" do
