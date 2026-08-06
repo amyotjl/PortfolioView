@@ -4,11 +4,18 @@ require "test_helper"
 # hit the Faraday :test adapter with recorded fixture bodies (testing-conventions:
 # mock at the Faraday boundary) — no test ever touches the real Yahoo endpoint.
 #
-# The fixtures below are trimmed from REAL responses. The AAPL numbers are the
-# genuine split-adjusted closes Yahoo serves for August 2020, and the values
-# they must un-adjust to are the genuine raw closes already stored in this
-# repo's Tiingo-sourced fixtures — so the central assertion is a cross-source
-# agreement, not this adapter agreeing with itself.
+# The fixtures below are trimmed from REAL responses.
+#
+# ONE CORRECTION TO WHAT THIS COMMENT USED TO SAY (issue #66's round-3 gate,
+# Finding 4). It claimed the AAPL case was "a cross-source agreement, not this
+# adapter agreeing with itself", pointing at Tiingo-sourced fixtures in this repo.
+# There are none — `test/fixtures/files/` holds only the two broker CSVs and the
+# SPA index — and the input below is literally `124.81 / 4.0` with `124.81`
+# asserted back, so the arithmetic is exercised but the number is Yahoo's own
+# adjusted close, not an independent raw one. The real cross-source check exists
+# and is worth keeping: run live, Yahoo's un-adjusted AAPL agrees with Tiingo's
+# raw closes to 0.000012 across the 2020 4:1 over 11,499 overlapping days. That
+# cannot live in a hermetic unit test, so it belongs in a gate, not here.
 class PriceProvider::YahooTest < ActiveSupport::TestCase
   # 13:30 UTC is 09:30 America/New_York — the session open, which is how Yahoo
   # timestamps a daily bar.
@@ -35,6 +42,20 @@ class PriceProvider::YahooTest < ActiveSupport::TestCase
 
   def build_adapter(stubs)
     PriceProvider::Yahoo.new(faraday_adapter: [ :test, stubs ])
+  end
+
+  # Builds a two-bar series around one factor: a close on the session BEFORE the
+  # ex-date and a close ON it, which is exactly the pair #adjusted_gap reads.
+  def classify_factor(symbol:, ex_date:, num:, den:, before_close:, after_close:)
+    before = ex_date - 1
+    body = chart(
+      timestamps: [ ts(before), ts(ex_date) ],
+      quote: { "open" => [ before_close, after_close ], "high" => [ before_close, after_close ],
+               "low" => [ before_close, after_close ], "close" => [ before_close, after_close ],
+               "volume" => [ 1, 1 ] },
+      splits: { "f" => { "date" => ts(ex_date), "numerator" => num, "denominator" => den } }
+    )
+    build_adapter(stub_chart(symbol, body)).fetch_daily(symbol, from: before, to: ex_date)
   end
 
   def stub_chart(symbol, body, status: 200)
@@ -85,164 +106,119 @@ class PriceProvider::YahooTest < ActiveSupport::TestCase
       "Holdings::Calculator applies a split at the START of its ex-date; double-scaling here would fight it"
   end
 
-  # --- reinvested distributions are NOT share-count events -------------------
+  # --- classifying a factor: share-count event, or price-only? ---------------
+  #
+  # THE TABLE BELOW IS THE REGRESSION SUITE FOR THREE REJECTED GATE ROUNDS. Every
+  # row is a real security with real numbers taken from the live Yahoo feed —
+  # including the ADJUSTED CLOSES either side of the ex-date, because those are the
+  # evidence the classifier actually uses (see Yahoo#classify_splits). A row's
+  # `gap` is what the feed really showed, not a number chosen to make the rule
+  # work.
+  #
+  # The two rows that matter most are `XCS.TO 9:10` and `FTN.TO 11:10`. Their
+  # written forms are indistinguishable — both a small integer over 10, both near
+  # 1 — and their truths are opposite. No rule reading (num, den) can separate
+  # them, which is why the previous three attempts each failed on one or the other.
+  # Only the price series separates them, and it does so decisively.
+  FACTOR_CASES = [
+    # symbol, ex-date, num, den, close before, close on, expected, why
+    [ "XCS.TO",  "2021-12-30",     9.0,      10.0, 111.22, 100.0, :price_only,
+      "round 3 Finding 1: iShares' year-end reinvested distribution. Kept as a split " \
+      "it destroyed 10% of the position. gap 1.1122 matches 1/ratio 1.1111 almost " \
+      "exactly: the traded price never moved" ],
+    [ "XCS.TO",  "2025-12-30",    96.0,     100.0, 104.17, 100.0, :price_only,
+      "the SAME fund's SAME annual action, four years later. Round 3 classified this " \
+      "one correctly and 9:10 wrongly — one fund, one action, two verdicts" ],
+    [ "FTN.TO",  "2025-09-26",    11.0,      10.0,  96.93, 100.0, :share_count,
+      "a genuine 11-for-10 subdivision. Same written shape as XCS.TO 9:10 and the " \
+      "opposite truth; gap 0.9693 sits at 1, not at 1/ratio 0.9091" ],
+    [ "LCS.TO",  "2024-12-17",   114.0,     100.0,  99.59, 100.0, :share_count,
+      "round 3 called LCS.TO split-brained: 114:100 and 112:100 suppressed while the " \
+      "same fund's 6:5 was kept. All three are share-count events and now agree" ],
+    [ "LCS.TO",  "2026-01-27",     6.0,       5.0, 102.14, 100.0, :share_count,
+      "the third LCS.TO factor, and the one round 3 already kept" ],
+    [ "TRP.TO",  "2024-10-02",  1097.0,    1000.0, 100.15, 100.0, :price_only,
+      "round 1 blocker: the South Bow spin-off. +9.7% phantom shares if kept. NOTE the " \
+      "gap says 'the price moved' (1.0015) and is CORRECT to — a spin-off really does " \
+      "move the parent's price — so the market-derived denominator has to win here" ],
+    [ "BN.TO",   "2022-12-12",  1237.0,    1000.0, 103.27, 100.0, :price_only,
+      "round 1 blocker: the BAM spin-off, +23.7% phantom shares" ],
+    [ "BN.TO",   "2013-04-15",  1033.0,    1000.0, 100.98, 100.0, :price_only,
+      "the same corporate action at a different size — round 1 classified these two " \
+      "BN.TO spin-offs OPPOSITE ways purely by magnitude" ],
+    [ "ZEQT.TO", "2025-12-30",   993.0,    1000.0, 101.10, 100.0, :price_only,
+      "the distribution #68's ledger proved does not move units: it reconciled 13 of " \
+      "14 positions on the 3:1 alone" ],
+    [ "VDY.TO",  "2025-12-30",   987.0,    1000.0, 101.38, 100.0, :price_only, "same family" ],
+    [ "HMMC.TO", "2023-01-04",     1.0,     300.0, 100.00, 100.0, :share_count,
+      "round 2 blocker: a 1-for-300 consolidation on a fund the user holds. Suppressed, " \
+      "a backdated buy reported CAD 1,230 against a true CAD 4.10" ],
+    [ "VTI.CN",  "2026-05-22",     1.0,     100.0, 200.00, 100.0, :share_count,
+      "round 2 blocker, and ALSO the Yahoo data-quality case: gap 2.0 would read as " \
+      "'price-only' on the series alone. The band guard is what stops a 100x error" ],
+    [ "RAGE.V",  "2023-07-17",     1.0,      10.0, 1000.0, 100.0, :share_count,
+      "the same data-quality shape on a thin TSXV listing: the feed did not adjust its " \
+      "own factor, so gap is exactly 1/ratio. Still a consolidation" ],
+    [ "LUG.TO",  "1997-11-03",   100.0,     270.0, 100.29, 100.0, :share_count,
+      "round 3 Finding 2: a 1-for-2.7 consolidation, suppressed because its numerator " \
+      "was not 1" ],
+    [ "WCN.TO",  "2016-06-01",  4815.0,   10000.0,  97.65, 100.0, :share_count,
+      "round 3 Finding 2: a merger consolidation. Its denominator is 2000 in lowest " \
+      "terms, so only the band guard keeps it — a market-derived-looking ratio can " \
+      "still be a real share-count change when it is nowhere near 1" ],
+    [ "WKHS",    "2025-03-17",     8.0,     100.0, 128.08, 100.0, :share_count,
+      "round 3 Finding 2: a real 1-for-12.5 reverse split, dropped because 12.5 is not " \
+      "an integer" ],
+    [ "GOOG",    "2014-03-27",  2002.0,    1000.0, 101.25, 100.0, :share_count,
+      "round 3 Finding 2: the Class C split, written unreduced" ],
+    [ "AAPL",    "2020-08-31",     4.0,       1.0,  96.72, 100.0, :share_count,
+      "the ordinary case, and the control: an unambiguous 4:1" ],
+    [ "GE",      "2021-08-02",     1.0,       8.0, 102.98, 100.0, :share_count,
+      "an ordinary reverse split" ]
+  ].freeze
 
-  # Real values: ZEQT.TO 993:1000 on 2025-12-30. Canadian ETFs declare a
-  # year-end reinvested capital-gains distribution and immediately consolidate,
-  # so the PRICE moves and the unit count does not.
-  test "a n:1000 factor near 1 is a distribution: prices un-adjust, holdings are untouched" do
-    dates = [ Date.new(2025, 12, 29), Date.new(2025, 12, 30) ]
-    body = chart(
-      timestamps: dates.map { |d| ts(d) },
-      # Deliberately round numbers so the expected raw value is exact: Yahoo
-      # divided the pre-date price by 0.993, so an adjusted 1000 is a raw 993.
-      quote: { "open" => [ 1000.0, 20.0 ], "high" => [ 1100.0, 21.0 ], "low" => [ 900.0, 19.0 ],
-               "close" => [ 1000.0, 20.51 ], "volume" => [ 1, 1 ] },
-      splits: { "y" => { "date" => ts(dates.last), "numerator" => 993.0, "denominator" => 1000.0 } },
-      currency: "CAD"
-    )
+  test "every factor the three rejected gate rounds named is classified correctly" do
+    FACTOR_CASES.each do |symbol, ex_date, num, den, before_close, after_close, expected, why|
+      series = classify_factor(symbol:, ex_date: Date.parse(ex_date), num:, den:,
+                               before_close:, after_close:)
+      actual = series.splits.any? ? :share_count : :price_only
 
-    series = build_adapter(stub_chart("ZEQT.TO", body)).fetch_daily("ZEQT.TO", from: dates.first, to: dates.last)
+      assert_equal expected, actual,
+        "#{symbol} #{ex_date} #{num.to_i}:#{den.to_i} should be #{expected} — #{why}"
+    end
+  end
 
-    assert_empty series.splits,
-      "a reinvested distribution must never become a SplitEvent — it would shrink the holder's shares ~0.7%"
+  test "a price-only factor still un-adjusts the price, and says so out loud" do
+    # The half a suppression must not throw away: Yahoo's pre-ex-date closes were
+    # divided by the factor, so dropping it outright leaves the whole earlier
+    # history off by it.
+    series = classify_factor(symbol: "ZEQT.TO", ex_date: Date.new(2025, 12, 30),
+                             num: 993.0, den: 1000.0, before_close: 1000.0, after_close: 20.51)
+
+    assert_empty series.splits
     assert_equal BigDecimal("993"), series.bars.first.close,
-      "but the PRICE must still be un-adjusted by it, or history sits 0.7% low"
-    assert(series.warnings.any? { |w| w.include?("reinvested distribution") },
-      "the reclassification must be visible, not silent")
+      "the PRICE must still be un-adjusted by it, or history sits 0.7% low"
+    assert(series.warnings.any? { |w| w.include?("price-only") && w.include?("993:1000") },
+      "a reclassification must name the factor and be visible, not silent")
   end
 
-  # #66's gate broke the previous magnitude-based rule with real securities:
-  # Yahoo encodes SPIN-OFFS in the same n:1000 shape, just larger, so a band
-  # around 1 classified the same corporate action two different ways by size.
-  # A spin-off does not change the parent's share count either.
-  test "a spin-off factor is price-only, however large — magnitude must not decide" do
-    d = Date.new(2024, 10, 2)
-    body = chart(
-      timestamps: [ ts(d) ],
-      quote: { "open" => [ 10.0 ], "high" => [ 10.0 ], "low" => [ 10.0 ], "close" => [ 10.0 ], "volume" => [ 1 ] },
-      # TRP.TO, the South Bow spin-off: holders kept 1:1 and received 0.2 SOBO.
-      splits: { "s" => { "date" => ts(d), "numerator" => 1097.0, "denominator" => 1000.0 } }
-    )
+  test "the warning does not claim to know WHICH price-only action it was" do
+    # It cannot: a reinvested distribution and a spin-off are the same shape here,
+    # and an earlier version of this file asserted the wording "reinvested
+    # distribution" for both. Naming one specifically is an overclaim.
+    series = classify_factor(symbol: "TRP.TO", ex_date: Date.new(2024, 10, 2),
+                             num: 1097.0, den: 1000.0, before_close: 100.15, after_close: 100.0)
 
-    series = build_adapter(stub_chart("TRP.TO", body)).fetch_daily("TRP.TO", from: d, to: d)
-
-    assert_empty series.splits,
-      "1097:1000 as a SplitEvent would invent 9.7% of phantom shares"
-    assert(series.warnings.any? { |w| w.include?("price-only") },
-      "a kept-or-dropped decision on a large-denominator factor must never be silent")
+    warning = series.warnings.find { |w| w.include?("price-only") }
+    assert warning
+    assert_match(/distribution or a spin-off/, warning)
   end
 
-  test "two spin-offs of different sizes classify the SAME way" do
-    small, large = Date.new(2013, 4, 15), Date.new(2022, 12, 12)
-    body = chart(
-      timestamps: [ ts(small), ts(large) ],
-      quote: { "open" => [ 10.0, 10.0 ], "high" => [ 10.0, 10.0 ], "low" => [ 10.0, 10.0 ],
-               "close" => [ 10.0, 10.0 ], "volume" => [ 1, 1 ] },
-      # Both BN.TO, both spin-offs; the old rule kept one and dropped the other.
-      splits: { "a" => { "date" => ts(small), "numerator" => 1033.0, "denominator" => 1000.0 },
-                "b" => { "date" => ts(large), "numerator" => 1237.0, "denominator" => 1000.0 } }
-    )
-
-    series = build_adapter(stub_chart("BN.TO", body)).fetch_daily("BN.TO", from: small, to: large)
-
-    assert_empty series.splits, "classification must not depend on the size of the factor"
-    assert_equal 2, series.warnings.count { |w| w.include?("price-only") }
-  end
-
-  # A windowed fetch used to under-correct: Yahoo only reports events INSIDE the
-  # requested window, so a window ending before a split returned prices already
-  # divided by it with the split absent. Measured at 91.20 against a raw 364.80.
-  test "a windowed fetch is still un-adjusted by splits AFTER the window" do
-    jan, jun, aug = Date.new(2020, 1, 2), Date.new(2020, 6, 30), Date.new(2020, 8, 31)
-    body = chart(
-      timestamps: [ ts(jan), ts(jun), ts(aug) ],
-      quote: { "open" => [ 10.0, 10.0, 10.0 ], "high" => [ 100.0, 100.0, 100.0 ],
-               "low" => [ 1.0, 1.0, 1.0 ], "close" => [ 91.2, 91.2, 129.04 ], "volume" => [ 1, 1, 1 ] },
-      splits: { "s" => { "date" => ts(aug), "numerator" => 4.0, "denominator" => 1.0 } }
-    )
-
-    series = build_adapter(stub_chart("AAPL", body)).fetch_daily("AAPL", from: jan, to: jun)
-
-    assert_equal [ jan, jun ], series.bars.map(&:date), "the window still bounds what is RETURNED"
-    assert_equal BigDecimal("364.8"), series.bars.first.close,
-      "but the August 4:1 must still have been reversed"
-    assert_empty series.splits, "an event after the window must not be handed back to be written"
-  end
-
-  # The slicing test above cannot catch a NARROWED REQUEST, because a stubbed
-  # response is returned whatever the query says — a mutation that puts `to:`
-  # back into period2 leaves it green. This asserts the request itself.
-  test "a `to:` never narrows the REQUEST, only the returned window" do
-    captured = nil
-    stubs = Faraday::Adapter::Test::Stubs.new
-    stubs.get("/v8/finance/chart/AAPL") do |env|
-      captured = env.params
-      [ 200, { "Content-Type" => "application/json" },
-        chart(timestamps: [], quote: {}) ]
-    end
-
-    travel_to Time.utc(2026, 7, 15, 12) do
-      build_adapter(stubs).fetch_daily("AAPL", from: Date.new(2020, 1, 2), to: Date.new(2020, 6, 30))
-
-      expected = (Trading::Calendar.today + 1).to_time(:utc).to_i
-      assert_equal expected.to_s, captured["period2"].to_s,
-        "period2 must run through today so every later split is present to un-adjust with"
-    end
-  end
-
-  # THE MIRROR IMAGE of the spin-off finding. A consolidation arrives as 1:300,
-  # so a denominator test ALONE routes the most share-count-changing event there
-  # is into the price-only branch. Live on real holdings: HMMC.TO has a 1:300 on
-  # 2023-01-04, and VTI.CN carries two 1:100s that would turn a CAD 1.00
-  # position into CAD 2,100.
-  test "a consolidation (1:300) IS a share-count split despite its large denominator" do
-    d = Date.new(2023, 1, 4)
-    body = chart(
-      timestamps: [ ts(d) ],
-      quote: { "open" => [ 7.5 ], "high" => [ 7.5 ], "low" => [ 7.5 ], "close" => [ 7.5 ], "volume" => [ 1 ] },
-      splits: { "c" => { "date" => ts(d), "numerator" => 1.0, "denominator" => 300.0 } },
-      currency: "CAD"
-    )
-
-    series = build_adapter(stub_chart("HMMC.TO", body)).fetch_daily("HMMC.TO", from: d, to: d)
-
-    assert_equal 1, series.splits.size,
-      "suppressing a consolidation overstates the holder's position by the ratio"
-    assert_in_delta BigDecimal("0.003333"), series.splits.first.ratio, BigDecimal("0.000001")
-    assert_empty series.warnings.select { |w| w.include?("price-only") }
-  end
-
-  test "the two halves of the rule cover what the other misses" do
-    d = Date.new(2024, 6, 3)
-    cases = {
-      # num > 1 AND den >= 100 -> price-only
-      [ 993.0, 1000.0 ]  => :suppressed,   # reinvested distribution
-      [ 1097.0, 1000.0 ] => :suppressed,   # spin-off
-      # num == 1 -> a consolidation, share-count event even with a big denominator
-      [ 1.0, 300.0 ]     => :split,
-      [ 1.0, 100.0 ]     => :split,
-      # small denominators are ordinary splits either way
-      [ 4.0, 1.0 ]       => :split,
-      [ 3.0, 2.0 ]       => :split,
-      [ 1.0, 8.0 ]       => :split,        # ordinary reverse split
-      [ 21.0, 20.0 ]     => :split         # 5% stock dividend
-    }
-
-    cases.each do |(num, den), expected|
-      body = chart(
-        timestamps: [ ts(d) ],
-        quote: { "open" => [ 10.0 ], "high" => [ 10.0 ], "low" => [ 10.0 ], "close" => [ 10.0 ], "volume" => [ 1 ] },
-        splits: { "x" => { "date" => ts(d), "numerator" => num, "denominator" => den } }
-      )
-      series = build_adapter(stub_chart("XYZ", body)).fetch_daily("XYZ", from: d, to: d)
-      actual = series.splits.any? ? :split : :suppressed
-
-      assert_equal expected, actual, "#{num.to_i}:#{den.to_i} should be #{expected}"
-    end
-  end
-
-  test "a genuine 5% stock dividend (21:20) IS a share-count split despite being near 1" do
+  test "a genuine 5% stock dividend with no earlier bar is kept as a share-count event" do
+    # No close before the ex-date, so the series cannot speak. What is left is the
+    # written form, and 21:20 IS a declared exchange ratio — unlike 1097:1000. This
+    # is also the inconsequential case: with no earlier bar there is no price for
+    # the factor to un-adjust either way.
     d = Date.new(2024, 6, 3)
     body = chart(
       timestamps: [ ts(d) ],
@@ -252,8 +228,34 @@ class PriceProvider::YahooTest < ActiveSupport::TestCase
 
     series = build_adapter(stub_chart("XYZ", body)).fetch_daily("XYZ", from: d, to: d)
 
-    assert_equal [ BigDecimal("1.05") ], series.splits.map(&:ratio),
-      "the denominator, not mere proximity to 1, is what separates a distribution from a stock dividend"
+    assert_equal [ BigDecimal("1.05") ], series.splits.map(&:ratio)
+  end
+
+  test "a factor whose evidence is thin is kept, and flagged as a close call" do
+    # gap 1.0001 against hypotheses 1 and 1.0101: it leans share-count by a whisker.
+    # The lean decides — a third "cannot tell" branch would need an arbitrary
+    # default — but the warning says the evidence was thin.
+    series = classify_factor(symbol: "ESGC.TO", ex_date: Date.new(2025, 12, 30),
+                             num: 99.0, den: 100.0, before_close: 100.01, after_close: 100.0)
+
+    assert_equal 1, series.splits.size
+    assert(series.warnings.any? { |w| w.include?("CLOSE CALL") },
+      "thin evidence must be disclosed either way")
+  end
+
+  test "classification reads YAHOO'S adjusted closes, not the reconstructed ones" do
+    # The ordering fact in #build_series. If classification ran after #unadjust!,
+    # the gap would be measured on a series from which this very factor had already
+    # been divided out — evidence about the factor derived from the factor. This
+    # case pins it: on Yahoo's adjusted series the gap is 1.1122 (price-only), but
+    # after un-adjustment the earlier close becomes 111.22 * 0.9 = 100.098 and the
+    # gap collapses to ~1.0, which reads as a share-count event.
+    series = classify_factor(symbol: "XCS.TO", ex_date: Date.new(2021, 12, 30),
+                             num: 9.0, den: 10.0, before_close: 111.22, after_close: 100.0)
+
+    assert_empty series.splits, "measured on the reconstructed series this would flip to a split"
+    assert_in_delta 100.098, series.bars.first.close.to_f, 0.001,
+      "and the reconstruction itself is unchanged by the classification"
   end
 
   # --- shape, robustness, and the keyless contract ---------------------------
