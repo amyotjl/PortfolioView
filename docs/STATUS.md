@@ -1,6 +1,171 @@
 # Status (living document)
 
-Last verified: 2026-07-30. **#68** (Wealthsimple *activity ledger* import, the third format)
+Last verified: **2026-08-05**. **All six issues that were open now have a finished branch
+awaiting a gate** — see "M10: six issues, five branches" immediately below, which is the
+section to read first. Nothing has been merged: the merge gate requires an independent tester
+verdict and none of these has one. One NEW issue came out of that work and is **not** started:
+[#79](https://github.com/amyotjl/PortfolioView/issues/79).
+
+## M10: six issues, five branches, none gated (2026-08-05)
+
+Not milestoned — these are the six issues open on 2026-08-05, worked in one session (#69 and
+#70 share a branch: same file, same defect family). Each branch is off `7eda07d` (`main`)
+except `m10/066-canadian-directory`, which continues the existing #66 work.
+**None is merged and none has an independent verdict** — the gate counts below are the
+author's own runs, which is exactly what the merge gate says not to trust.
+
+| Branch | Issues | Gates run by the author |
+|---|---|---|
+| `m10/073-signout-clears-cache` | #73 | Vitest 313/313, `vue-tsc` clean, new e2e spec green; fix reverted → 4 unit specs and the e2e both fail for the right reason |
+| `m10/069-070-pt-aria` | #69, #70 | Vitest 319/319, `vue-tsc` clean, e2e green; before/after measured in a real browser; 3 probes each failing only their own tests |
+| `m10/075-internal-token-diagnostics` | #75 | Rails 807/807, RuboCop clean; boot line and 401 log verified live; 3 probes |
+| `m10/074-unmount-actioncable` | #74 | Rails 802/802, RuboCop clean; `/cable` re-measured on a **full production build** in an isolated stack; 4 probes |
+| `m10/066-canadian-directory` | #66 | Rails 851/851, RuboCop clean; classifier scored **35/35** against known truth over **789 real factors on 423 symbols**; 7 probes |
+
+**Read the per-issue notes below before gating any of them** — several correct claims that
+earlier issues or comments made incorrectly, and a gate that re-checks the original wording
+rather than the corrected wording will disagree with the code for the wrong reason.
+
+### #73 — the sign-out cache leak
+`useQueryCache().clear()` **does not exist** in @pinia/colada 1.4.2; the issue assumed it.
+`getEntries()` + `remove()` is the documented surface. Emptying happens inside
+`authStore.clear()`, so the Sign-out button and `main.ts`'s 401 handler are both covered by
+construction. `cancelQueries()` is kept but **no test pins it** (measured: deleting it leaves
+all four specs green) — the comment says so; don't promote it to "load-bearing".
+Keying caches by user id was considered and rejected.
+
+### #69 / #70 — the PrimeVue ARIA family
+Both measured before and after in a browser, since #69 shipped as source-reading only:
+`group[name="Side"]` and `{name: "Invest by"}` were **0 → 1**, and `input-id="v-1-7"` was
+leaking onto the `<div role="group">` as an invalid attribute (now suppressed). The Ticker
+combobox's accessible description was `""` → now the hint, and the error after a failed
+submit. **`DatePicker` had the same defect and it was measured, not assumed** — but only the
+recurring drawer's "Ends on" can show it, because the transaction drawer's Date field has no
+hint and a pre-filled date, so an absent describedby there is *correct*. A first measurement
+attempt therefore looked like a clean bill of health.
+Also: `fieldIds.spec.ts`'s docstring claimed to lock the `FormField` ↔ `pt.ts` contract; it
+locks the pure functions only, and now says so. `smoke.spec.js`'s `Ticker`/`Date` lookups are
+now `exact: true`, with a pin in `select-a11y.spec.js` that the exact form still resolves.
+
+### #74 — Action Cable, decided: **don't mount it**
+Option 1 of the three the issue lists, implemented as
+`config.action_cable.mount_path = nil` rather than by unpicking `require "rails/all"`.
+Nothing uses cable: `app/channels` holds only the generated connection, nothing broadcasts,
+and the frontend has no `@rails/actioncable` dependency. Measured, with a real upgrade
+handshake rather than a plain GET:
+
+| | before | after |
+|---|---|---|
+| dev `GET /cable` | 404 text/plain | 404 (no route) |
+| dev WS upgrade | **101 Switching Protocols** | **404 Not Found** |
+| prod WS upgrade | — | **404 Not Found** |
+| prod `/cable` body | — | not the shell (0 × `id="app"`) |
+| prod `/portfolios/1` | — | 200, shell (1 × `id="app"`) |
+| prod `db:prepare` from an empty volume | `app_production{,_cache,_queue,_cable}` | `app_production{,_cache,_queue}` |
+
+Three traps for whoever gates it:
+- **`"/cable"` had to join the SPA catch-all constraint.** While cable was mounted its own
+  middleware answered a plain GET with 404 and the glob never saw the path; unmounted, the
+  glob would answer `/cable` **200 with the Vue shell**. Removing that constraint entry
+  regresses the exact property #58 measured.
+- **`cable.yml` production is now `async`, not `solid_cable`.** `solid_cable` needs
+  `db/cable_schema.rb`, which does not exist; declaring it without generating the schema
+  recreates the empty-database half of this issue.
+- **One correction to the issue:** it implies an unauthenticated client could connect.
+  `ApplicationCable::Connection` *does* authenticate, and the before-measurement shows the
+  101 followed immediately by `{"type":"disconnect","reason":"unauthorized"}`. The endpoint
+  accepted the **upgrade** and then closed the **connection**. Lower severity than described;
+  the contradiction (a broadcast reaching for a nonexistent Redis) still stood.
+
+### #75 — the silent blank token
+Two log-only signals: a boot line naming the state in **both** directions, and an INFO line
+on the 401 path **only** when the token is blank. The 401 **response** is unchanged and a
+test compares the blank-token and wrong-token responses byte for byte, headers included, with
+only the four per-request headers excluded (`x-request-id`, `x-runtime`, `etag`, `date`) —
+`content-length` deliberately compared. Enforcement was not attempted; #58 already settled
+that with evidence (`${VAR}` and `${VAR:-}` both boot; `${VAR:?}` is ruled out by
+docker-compose.yml's own header; unset is a legitimate choice).
+The initializer gates on `Boot::Eligibility.process_kind`, **not** `.eligible?`, so an
+operator who sets `DISABLE_BOOT_CATCH_UP` does not also lose this diagnostic.
+Log strings are **ASCII on purpose** — an em dash mojibakes when the log is read with a
+Windows ANSI codepage, observed live.
+
+### #66 — the split classifier, rewritten (this is the important one)
+**Three gate rounds rejected three rules, all thresholds on `(num, den)`.** The round-3
+gate's diagnosis is the reason for the rewrite: *"(num, den) encodes the WRITTEN FORM of the
+fraction, and Yahoo's written form is not a function of the event class."*
+
+The rule now asks **the price series** instead. Yahoo divides every pre-ex-date close by the
+factor, so its own series says whether the traded price actually moved: a genuine
+split/consolidation leaves the adjusted series **continuous** (gap ≈ 1), while a reinvested
+distribution — where units are issued and immediately consolidated, so neither the count nor
+the price moves — leaves a step of **exactly the factor** (gap ≈ 1/ratio). That is physics,
+not a threshold, and it is what separates `XCS.TO 9:10` (gap 1.1122 vs 1/ratio 1.1111 →
+price-only) from `FTN.TO 11:10` (gap 0.9693 vs 0.9091 → a real subdivision) — two written
+forms no rule on the pair can tell apart, whose truths are opposite.
+
+**Where the evidence runs out: spin-offs.** A spin-off doesn't change the parent's share
+count but *does* move its price, so its series is continuous too (`TRP.TO` gap 1.0015, as
+continuous as AAPL's 4:1). **No price test can ever exonerate a spin-off.** What separates it
+is the written form after all, but the other half of it: a *declared* split is a small-integer
+exchange ratio (4:1, 11:10, 114:100 → 57/50) while a spin-off factor is *derived from market
+prices* — an arbitrary decimal over a power of ten (1097:1000, 10000:9607). Hence
+`MAX_DECLARED_DENOMINATOR`, applied **in lowest terms**.
+
+Order, and every step is load-bearing:
+1. ratio outside `NEAR_ONE_BAND` → **share-count, unconditionally.** No distribution or
+   spin-off is worth 30% of a security, let alone the 100x of a `1:100`. This is what makes
+   rounds 2 and 3 unrepeatable. It also absorbs a real Yahoo data-quality wrinkle: on thin
+   TSXV/CSE listings the feed sometimes has **not** adjusted for its own factor
+   (`RAGE.V 1:2` gap 2.0000, `VVTM.V 1:100` gap 99.9999), which the series test alone would
+   read as price-only and turn into a 2x–100x share error.
+2. denominator in lowest terms > 100 → price-only (market-derived decimal).
+3. otherwise the series decides; **the nearer hypothesis wins.**
+4. no bar on one side → share-count (what reaches here is a declared ratio, and with no
+   earlier close there is no price to un-adjust either way).
+
+There is deliberately **no "too close to tell" branch** — it would need an arbitrary default.
+`GAP_MARGIN` only decides whether a call is *disclosed* as a close one.
+
+**`classify_splits` runs BEFORE `unadjust!` and that ordering is the whole method.** Measured
+after un-adjustment, the gap is a function of the factor being tested rather than evidence
+about it, and `XCS.TO 9:10` flips to a split. A test pins the order.
+
+**The evidence is reproducible** — `bin/rails yahoo:collect_factors` then
+`yahoo:score_factors`, checked in precisely because round 3's Finding 3 was about
+unverifiable sampling. A deterministic sweep (1,797 symbols → **789 distinct factors on 423
+symbols**, against the gate's own 482 on 209) scored by driving the *shipped* method:
+
+| | correct | wrong |
+|---|---|---|
+| this rule | **35** | 0 |
+| round-3 shipped rule | 28 | 7 |
+
+with 3 close calls in 789 and **0 factors outside the band suppressed**. Every case all three
+rounds named is now correct.
+
+Two known imperfections, in the source rather than papered over: `VOD 7:8` (a capital return
+*and* a consolidation in one action; US-routed so Yahoo is never asked) and `GURU.TO 11:1000`
+(no bar either side, so nothing observable supports either reading).
+
+Also fixed here: **151 Canadian rows no venue ever issued** (`AAAJ.PR..V`, from a base symbol
+already ending in a dot) are now dropped at the importer door — this file's own test had
+*asserted* that shape as stored output. And the adapter test's header claimed the AAPL fixture
+was "a cross-source agreement" pointing at Tiingo fixtures **that do not exist in this repo**;
+the input is literally `124.81 / 4.0` with `124.81` asserted back. Reworded.
+
+**Deliberately not fixed, now [#79](https://github.com/amyotjl/PortfolioView/issues/79):** the
+other 913 multi-dot rows (`ACO.X.TO`) name real securities and fetch nothing because Yahoo
+spells a class with a **dash**. Fixing it means changing `SymbolQualifier`, which is also
+#68's identity source, so a user who already imported `ACO.X.TO` would get a **second**
+instrument for `ACO-X.TO` — the exact failure `venue_sibling_for` exists to prevent. #79 also
+carries the `DEFAULT_NON_US_SUFFIX` finding: **5,995 of 8,627 CAD listings (69%) are not on
+the TSX**, so the `.TO` default is wrong for the majority (`FINN` → `FINN.TO` 404s;
+`FINN.NE` is real).
+
+---
+
+Last verified before this session: 2026-07-30. **#68** (Wealthsimple *activity ledger* import, the third format)
 and **#65** (Select a11y) both passed independent tester gates and **merged 2026-07-29** —
 see "#68 as built", "#68 merge gate" and "#65 as built" below. **#63** (null instrument names
 + search relevance) **also passed its gate and merged**, as did its follow-up
@@ -168,10 +333,20 @@ defects no assertion did.
 
 ## Open tracked defects & enhancements (outside the milestone they surfaced in)
 
+**All six issues in this table now have a finished, ungated branch** — see "M10: five
+branches ready to gate" at the top of this file, which supersedes the per-row status text
+below wherever the two disagree. The rows are kept for the diagnosis each records.
+
 | Issue | Milestone | What | Status |
 |---|---|---|---|
+| [#69](https://github.com/amyotjl/PortfolioView/issues/69) | — | `SelectButton` has no accessible name, and leaks `input-id` as an invalid DOM attribute | Branch `m10/069-070-pt-aria`. **Measured 0 → 1** for both instances; the issue shipped as source-reading only |
+| [#70](https://github.com/amyotjl/PortfolioView/issues/70) | — | `AutoComplete`'s hint and validation error are never announced | Same branch. `DatePicker` had it too and was **measured**, not assumed |
+| [#73](https://github.com/amyotjl/PortfolioView/issues/73) | M5 | Sign-out leaves the previous user's data on screen for the next user in the same tab | Branch `m10/073-signout-clears-cache`. Note `queryCache.clear()` does not exist in colada 1.4.2 |
+| [#74](https://github.com/amyotjl/PortfolioView/issues/74) | — | ActionCable upgradeable in production while `cable.yml` declares a Redis that does not exist | Branch `m10/074-unmount-actioncable`. **Decided: don't mount it.** Re-measured on a full production build |
+| [#75](https://github.com/amyotjl/PortfolioView/issues/75) | — | A blank `INTERNAL_API_TOKEN` is diagnostically silent | Branch `m10/075-internal-token-diagnostics`. Log-only; the 401 stays byte-identical and a test asserts it |
+| [#79](https://github.com/amyotjl/PortfolioView/issues/79) | — | `SymbolQualifier`'s dot-versus-dash and `.TO`-default conventions leave ~913 CAD listings and every venue-less broker row fetching nothing | **Open, not started.** Split out of #66 because every fix changes instrument identity and could split one security across two instruments |
 | [#63](https://github.com/amyotjl/PortfolioView/issues/63) | M7 | ✅ **MERGED and closed 2026-07-29** (see "#63 as built"), with follow-up #71 also merged. Was: `listed_instruments.name` is `null` on 100% of rows — Tiingo's bulk ticker file has no name column (by design in `Directory::ImportJob`); search/autocomplete can only ever match on symbol until enriched | Open, deliberately deferred out of M7 (the autocomplete ships symbol-only and already handles the null). Candidate fix: backfill from `instruments.name` (already fetched via FMP for any symbol the user has touched) without a real-time enrichment call. **Also worth fixing the relevance ordering while there:** results cap at 20 and prefix matches are alphabetical, so searching `MSF` returns `MSF, MSFAX, MSFBX … MSFN` and **MSFT never makes the list** — verified live |
-| [#66](https://github.com/amyotjl/PortfolioView/issues/66) | none | Support Canadian-listed securities (TSX / TSX-V / CBOE Canada). Surfaced by #64: the user's real Wealthsimple report is entirely CAD | **Still open, now blocked on ONE thing instead of two.** *Currency model — DECIDED 2026-07-30 by the project owner:* "assume everything is CAD; the fx rate and everything related to that will be for a later revision". So CAD is the reporting currency, no FX is built, and the question is **closed rather than solved** — don't re-litigate it. USD-priced holdings are deliberately NOT relabelled as CAD (the accounts hold both, and multiplying a USD close by a CAD share count and printing it as CAD would silently misstate a money figure). *Data source — STILL BLOCKING:* probed live 2026-07-25, **no configured provider serves Canadian daily history on its current tier** — Tiingo 404s with zero CAD rows, FMP returns 402 Premium for `.TO`, Twelve Data needs Grow+. History is what backfill/candles/valuation/summary/benchmarks are all built on, so TSX holdings still report market value as zero; cost basis is exact and the UI says so. Two things "assume CAD" does NOT reach: typed entry still can't find Canadian securities (the Tiingo directory has **zero** Canadian rows, so autocomplete cannot offer them — import is the working path), and `instruments` is still UNIQUE on `upper(symbol)` alone, so TSX `META` and NASDAQ `META` cannot coexist. **What unblocks this: a data source.** |
+| [#66](https://github.com/amyotjl/PortfolioView/issues/66) | none | Support Canadian-listed securities (TSX / TSX-V / CBOE Canada). Surfaced by #64: the user's real Wealthsimple report is entirely CAD | **NO LONGER BLOCKED — the branch `m10/066-canadian-directory` is finished and ungated.** A Yahoo EOD adapter is the data source the row below said was missing, the directory now carries 8,651 CAD rows, and the split classifier that failed three gates has been rewritten and scores 35/35 over 789 real factors. Read the #66 section at the top of this file. The rest of this row is the pre-2026-08-04 diagnosis, kept for the reasoning: **was blocked on ONE thing instead of two.** *Currency model — DECIDED 2026-07-30 by the project owner:* "assume everything is CAD; the fx rate and everything related to that will be for a later revision". So CAD is the reporting currency, no FX is built, and the question is **closed rather than solved** — don't re-litigate it. USD-priced holdings are deliberately NOT relabelled as CAD (the accounts hold both, and multiplying a USD close by a CAD share count and printing it as CAD would silently misstate a money figure). *Data source — STILL BLOCKING:* probed live 2026-07-25, **no configured provider serves Canadian daily history on its current tier** — Tiingo 404s with zero CAD rows, FMP returns 402 Premium for `.TO`, Twelve Data needs Grow+. History is what backfill/candles/valuation/summary/benchmarks are all built on, so TSX holdings still report market value as zero; cost basis is exact and the UI says so. Two things "assume CAD" does NOT reach: typed entry still can't find Canadian securities (the Tiingo directory has **zero** Canadian rows, so autocomplete cannot offer them — import is the working path), and `instruments` is still UNIQUE on `upper(symbol)` alone, so TSX `META` and NASDAQ `META` cannot coexist. **What unblocks this: a data source.** |
 
 | [#68](https://github.com/amyotjl/PortfolioView/issues/68) | M8 | Import the Wealthsimple **activity ledger** (a real transaction history), the third import format alongside the native envelope and the holdings snapshot | ✅ **Merged 2026-07-29** after an independent tester PASS. Verified against the user's real 372-row export: 225 transactions, 3 portfolios, and a derived 3:1 split that makes the share counts reconcile with the independent holdings report. See "#68 as built" and "#68 merge gate" below |
 
