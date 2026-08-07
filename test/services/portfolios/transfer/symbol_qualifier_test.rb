@@ -72,6 +72,80 @@ module Portfolios
       test "a CAD row with no venue at all is not assumed to be US" do
         assert_equal "ABC", qualify(symbol: "ABC", currency: "CAD")
       end
+      # --- #79: the venue-less path resolves against the directory -------------
+
+      # A stub lookup keeps the ambiguous and unknown cases testable without
+      # needing directory rows, and proves the lookup is INJECTED rather than
+      # called inline.
+      def lookup_returning(*suffixes) = ->(_base) { suffixes }
+
+      test "a venue-less non-US symbol takes the venue the directory knows" do
+        result = SymbolQualifier.resolve(symbol: "FINN", assume_non_us: true,
+                                        venue_lookup: lookup_returning(".NE"))
+
+        assert_equal "FINN.NE", result.symbol
+        assert_equal :directory, result.suffix_source
+        assert_not result.guessed?, "a directory hit is not a guess"
+      end
+
+      test "resolving against the REAL directory finds the venue, not the TSX" do
+        # The worked example from #79. Before this, FINN became FINN.TO, which
+        # 404s at every provider, while the real listing is FINN.NE on Cboe
+        # Canada. #66 is what made this fixable: before it there was no such row.
+        ListedInstrument.create!(symbol: "FINN.NE", exchange: "NEO", asset_type: "ETF",
+                                 currency: "CAD")
+
+        assert_equal "FINN.NE", SymbolQualifier.call(symbol: "FINN", assume_non_us: true)
+      end
+
+      test "an AMBIGUOUS base symbol is not resolved by picking a venue" do
+        # The same base trading on two Canadian venues. Choosing one would bind
+        # the holding to the wrong security half the time — the exact corruption
+        # a venue suffix exists to prevent — so it falls back and says so.
+        result = SymbolQualifier.resolve(symbol: "ACO", assume_non_us: true,
+                                        venue_lookup: lookup_returning(".TO", ".NE"))
+
+        assert_equal "ACO.TO", result.symbol
+        assert result.guessed?, "two candidate venues is a guess, not an answer"
+      end
+
+      test "a symbol the directory does not list falls back to the TSX, as a GUESS" do
+        # Load-bearing that this is not an error: 7 of the 9 symbols in the real
+        # Wealthsimple report are absent from the directory under any spelling,
+        # and rejecting them would turn a working import into a failing one.
+        result = SymbolQualifier.resolve(symbol: "NOTLISTED", assume_non_us: true,
+                                        venue_lookup: lookup_returning)
+
+        assert_equal "NOTLISTED.TO", result.symbol
+        assert_equal :default_guess, result.suffix_source
+      end
+
+      test "the directory is NOT consulted when the file names the venue" do
+        # SymbolQualifier stays a pure value object on every path but the
+        # venue-less one; a MIC-bearing row must not touch the database.
+        exploding = ->(_base) { raise "the venue lookup must not be called" }
+
+        assert_equal "FINN.NE", SymbolQualifier.call(symbol: "FINN", mic: "NEOE",
+                                                    currency: "CAD", venue_lookup: exploding)
+        assert_equal "AAPL", SymbolQualifier.call(symbol: "AAPL", mic: "XNAS",
+                                                 currency: "USD", venue_lookup: exploding)
+        assert_equal "ZEQT.TO", SymbolQualifier.call(symbol: "ZEQT.TO", assume_non_us: true,
+                                                    venue_lookup: exploding)
+      end
+
+      test "suffix_source distinguishes every path" do
+        assert_equal :none, SymbolQualifier.resolve(symbol: "").suffix_source
+        assert_equal :none, SymbolQualifier.resolve(symbol: "AAPL", mic: "XNAS").suffix_source
+        assert_equal :none, SymbolQualifier.resolve(symbol: "ZEQT.TO").suffix_source
+        assert_equal :mic, SymbolQualifier.resolve(symbol: "META", mic: "XTSE").suffix_source
+        assert_equal :exchange,
+                     SymbolQualifier.resolve(symbol: "META", exchange: "TSX",
+                                             currency: "CAD").suffix_source
+      end
+
+      test ".call still returns a bare String, so existing callers are untouched" do
+        assert_instance_of String, SymbolQualifier.call(symbol: "META", mic: "XTSE")
+      end
     end
   end
 end
