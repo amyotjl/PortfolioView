@@ -1,47 +1,51 @@
 # Status (living document)
 
-Last verified: **2026-08-06**. **All six issues that were open now have a finished branch** —
-see "M10: six issues, five branches" immediately below, which is the section to read first.
-**Not one of them has an independent tester verdict**, so if a row in that section's table says
-it merged, it merged *ungated* — read the row, not the fact of the merge. One NEW issue came
-out of that work and is **not** started:
-[#79](https://github.com/amyotjl/PortfolioView/issues/79).
+Last verified: **2026-08-07**. **All seven M10 branches are MERGED into `main`, and not one of
+them was independently gated** — read the section immediately below before trusting any of it.
+This is the file's most important fact right now: `main` contains seven branches whose only
+verification is the author's own, merged on the project owner's explicit instruction. Do not
+cite these merges as precedent for skipping the merge gate.
 
-## M10: six issues, five branches, none gated (2026-08-05, merge status 2026-08-06)
+## M10: seven branches, merged 2026-08-07, NONE INDEPENDENTLY GATED
 
-Not milestoned — these are the six issues open on 2026-08-05, worked in one session (#69 and
-#70 share a branch: same file, same defect family). Each branch is off `7eda07d` (`main`)
-except `m10/066-canadian-directory`, which continues the existing #66 work. All six are pushed
-to `origin`.
+Not milestoned — the six issues open on 2026-08-05 plus #79, which came out of that work (#69
+and #70 share a branch: same file, same defect family). Merged as seven `--no-ff` merge commits
+on top of `7eda07d`, in the order below; `m10/079` is branched off `m10/066` and so was merged
+after it.
 
-**NONE OF THESE HAS AN INDEPENDENT VERDICT.** The gate columns below are the *author's own*
-runs, which is exactly what the merge gate says not to trust at face value. Two branches were
-deliberately withheld from merge on that basis (`m10/066`, `m10/074`); see the Merged column.
+**NONE OF THESE HAS AN INDEPENDENT VERDICT.** The gate column is the *author's own* runs, which
+is exactly what the merge gate says not to trust at face value. Two branches (`m10/066`,
+`m10/074`) were withheld for two days on that basis and then merged on instruction; the
+reasoning for the hold is kept below because it describes where the residual risk actually is.
 
 | Branch | Issues | Merged | Gates run by the author |
 |---|---|---|---|
-| `m10/073-signout-clears-cache` | #73 | see note ▼ | Vitest 313/313, `vue-tsc` clean, new e2e spec green; fix reverted → 4 unit specs and the e2e both fail for the right reason |
-| `m10/069-070-pt-aria` | #69, #70 | see note ▼ | Vitest 319/319, `vue-tsc` clean, e2e green; before/after measured in a real browser; 3 probes each failing only their own tests |
-| `m10/075-internal-token-diagnostics` | #75 | see note ▼ | Rails 807/807, RuboCop clean; boot line and 401 log verified live; 3 probes |
-| `m10/074-unmount-actioncable` | #74 | **held** | Rails 802/802, RuboCop clean; `/cable` re-measured on a **full production build** in an isolated stack; 4 probes |
-| `m10/066-canadian-directory` | #66 | **held** | Rails 851/851, RuboCop clean; classifier scored **35/35** against known truth over **789 real factors on 423 symbols**; 7 probes |
+| `m10/073-signout-clears-cache` | #73 | **ungated 2026-08-07** | Vitest 313/313, `vue-tsc` clean, new e2e spec green; fix reverted → 4 unit specs and the e2e both fail for the right reason |
+| `m10/069-070-pt-aria` | #69, #70 | **ungated 2026-08-07** | Vitest 319/319, `vue-tsc` clean, e2e green; before/after measured in a real browser; 3 probes each failing only their own tests |
+| `m10/075-internal-token-diagnostics` | #75 | **ungated 2026-08-07** | Rails 807/807, RuboCop clean; boot line and 401 log verified live; 3 probes |
+| `m10/074-unmount-actioncable` | #74 | **ungated 2026-08-07** | Rails 802/802, RuboCop clean; `/cable` re-measured on a **full production build** in an isolated stack; 4 probes |
+| `m10/066-canadian-directory` | #66 | **ungated 2026-08-07** | Rails 851/851, RuboCop clean; classifier scored **35/35** against known truth over **789 real factors on 423 symbols**; 7 probes |
+| `m10/079-symbol-conventions` | #79 (half) | **ungated 2026-08-07** | Rails 855/855, RuboCop clean; live Yahoo with a control; 1 probe (3 of 4 new tests fail, one on the request URL) |
+| `m10/docs-status` | — | **ungated 2026-08-07** | docs only |
 
-**▼ Merge status, and the one thing to update when it changes.** As of 2026-08-06 nothing had
-merged: `main` was still `7eda07d`. The first three rows were *approved* for merge by the
-project owner on 2026-08-06 and the merge itself was left to them, so whether it happened is
-not knowable from here — **check `git log main`, not this line.** Whoever merges replaces the
-Merged cell with `ungated <date>` (or `PASS <date>` if a real gate was obtained first) in the
-same session, per the rule at the top of this file. That distinction is the whole point of the
-column: a future session must not read "merged" as "gated" and cite it as precedent.
+**The assembled tree was verified after all seven merges**, which is the one check no per-branch
+run could make (M9's #58 defect lived in the seam between two individually-gated issues):
+Rails **874 runs / 3850 assertions / 0 failures**, Vitest **323/323 across 28 files**,
+`vue-tsc` exit 0. RuboCop reports **38 offenses, all pre-existing** — one cop
+(`Layout/SpaceInsideArrayLiteralBrackets`) across 6 migrations and 3 model tests, none of them a
+file any M10 branch touched. That count and that breakdown match what #66's round-3 gate
+independently measured on `main` before any of this, so it is a baseline, not a regression.
 
-`m10/074` and `m10/066` are **held on purpose**, not forgotten:
+**Where the residual risk is**, i.e. what an independent gate would still be worth doing for:
 - **#66** has already failed three independent gates, and part of its 35/35 score is measured
   against a truth table **the author assembled**. Nobody else has checked those labels. It is
-  the single branch where an independent gate is worth most.
-- **#74** changes boot configuration for every environment and drops a production database
-  declaration. Its evidence is the strongest of the six (a real production build from an empty
-  volume), but its failure mode is "production doesn't boot" rather than "a feature is wrong",
-  and nothing in the app uses Action Cable — so waiting costs nothing.
+  the single merged branch where an independent gate is worth most.
+- **#74** changed boot configuration for every environment and dropped a production database
+  declaration. Its evidence is the strongest of the seven (a real production build from an empty
+  volume), but its failure mode is "production doesn't boot" rather than "a feature is wrong".
+  **A production-profile boot is the check to run first if anything looks wrong after this.**
+- **#79 is only half done.** The `DEFAULT_NON_US_SUFFIX` half is untouched and the issue is
+  still open; see its own section below.
 
 **Read the per-issue notes below before gating any of them** — several correct claims that
 earlier issues or comments made incorrectly, and a gate that re-checks the original wording
@@ -171,9 +175,47 @@ Two known imperfections, in the source rather than papered over: `VOD 7:8` (a ca
 
 Also fixed here: **151 Canadian rows no venue ever issued** (`AAAJ.PR..V`, from a base symbol
 already ending in a dot) are now dropped at the importer door — this file's own test had
-*asserted* that shape as stored output. And the adapter test's header claimed the AAPL fixture
-was "a cross-source agreement" pointing at Tiingo fixtures **that do not exist in this repo**;
-the input is literally `124.81 / 4.0` with `124.81` asserted back. Reworded.
+*asserted* that shape as stored output. **Dropped AT IMPORT, which is not the same as gone:**
+measured 2026-08-07, all 151 are still in the dev database (a directory imported before the fix
+keeps them), all `tradeable`, and they 404 under either spelling. Purging existing rows is a
+destructive change nobody has asked for; it probably wants its own issue. And the adapter test's
+header claimed the AAPL fixture was "a cross-source agreement" pointing at Tiingo fixtures
+**that do not exist in this repo**; the input is literally `124.81 / 4.0` with `124.81` asserted
+back. Reworded.
+
+### #79 — HALF done, and the issue is still open
+
+`m10/079-symbol-conventions` is merged but closes only the **dot/dash** half. The commits say
+`Refs #79`, not `Closes`, deliberately.
+
+**Done — and the decision worth not re-litigating:** Twelve Data spells a class share with a dot
+(`ACO.X`), Yahoo with a dash. The translation lives in `PriceProvider::Yahoo#provider_symbol`,
+at **request time only**, so the app's spelling stays instrument identity. Restyling the
+directory or changing what `SymbolQualifier` mints would both move identity, and `instruments`
+is UNIQUE on `upper(symbol)` alone — an already-imported `ACO.X.TO` would gain a sibling
+`ACO-X.TO`, which `venue_sibling_for` *cannot* catch because the two spellings have different
+base symbols under its match rule. A request-time translation cannot create a duplicate and
+needs no migration. A welcome consequence: **`HPS.A.TO` stays `HPS.A.TO`**; #68's gate flagged it
+as "not Yahoo's convention" and it no longer needs to be.
+
+Live, with a control: `ACO.X.TO` → `ACO-X.TO` returns **653 bars where the dotted spelling
+404s**; same for `HPS.A.TO`; `ZEQT.TO` and `FINN.NE` untouched at 653.
+
+**Two corrections to the issue's own figures**, both measured: the population is **1,064** CAD
+rows with more than one dot, not 913 (913 well-formed + the 151 above). And it is **necessary,
+not sufficient** — `AQN.PR.A.TO` 404s as `AQN-PR-A.TO` too (absent from Yahoo under any
+spelling), and thinly traded venue duplicates like `ACO.X.NE` return a single bar.
+
+**NOT done:** `DEFAULT_NON_US_SUFFIX` still assumes `.TO` for a venue-less broker row, wrong for
+**69%** of CAD listings (`FINN` → `FINN.TO`, which 404s; the real listing is `FINN.NE`). The
+design to take: keep `SymbolQualifier` a pure value object and give it an **injectable** venue
+lookup used only on the `assume_non_us` path; a directory hit gives the real venue, and ambiguity
+or absence keeps `.TO` **with a warning** rather than rejecting — rejecting would regress #68's
+import badly, since 7 of the 9 symbols in the real Wealthsimple report are not in the directory
+under any spelling. One thing already verified in favour of it: `venue_sibling_for` **does**
+collapse `FINN.TO`/`FINN.NE` (same base, same currency, both venue-suffixed), so the
+no-duplicate-instrument criterion has existing machinery behind it — but it still needs a test
+against a database that already holds the old spelling.
 
 **Deliberately not fixed, now [#79](https://github.com/amyotjl/PortfolioView/issues/79):** the
 other 913 multi-dot rows (`ACO.X.TO`) name real securities and fetch nothing because Yahoo
@@ -217,22 +259,22 @@ height** since M6 and that **`/register` was unreachable by URL**. Run it after 
 change to the dashboard, the shell, or auth routing — those two classes of bug are
 invisible to Vitest and to the Rails suite.
 
-**Three** specs on `main`, each registering **exactly one** user per run (registration is
-rate-limited to 10 per 3 minutes, so keep new specs API-driven — a full run spends 3 of
-that budget): `smoke.spec.js`, `transfer.spec.js` (#64's export download + multipart import,
-plus #68's activity-ledger upload — a blob download and a multipart upload are both invisible
-to Vitest and to fixture-based Rails tests), and `select-a11y.spec.js` (#65's accessible-name
-assertions across three separate forms, extended in #69/#70; needs no provider keys and no
-populated directory). Set `E2E_SCREENSHOTS=1` to have `transfer.spec.js` write
-`e2e/screenshots/*.png` for the "render it and look at it" check below; a normal run leaves
-nothing behind.
+**Four** specs, and a full run spends **5** of the 10-per-3-minutes registration budget
+(registration is rate-limited, so keep new specs API-driven):
+- `smoke.spec.js` — 1 registration. Needs provider keys *and* a finished backfill (see below).
+- `transfer.spec.js` — 1. #64's export download + multipart import, plus #68's activity-ledger
+  upload; a blob download and a multipart upload are both invisible to Vitest and to
+  fixture-based Rails tests.
+- `select-a11y.spec.js` — 1. #65's accessible-name assertions across three forms, extended by
+  #69 (`SelectButton`'s `role=group` name) and #70 (`AutoComplete`'s announced description).
+  Needs no provider keys and no populated directory.
+- `session-isolation.spec.js` — **2**, the only spec needing two accounts. Proves user B never
+  sees user A's cached data (#73). **It asserts `pageLoads === 1`**, because a full document load
+  empties the caches under test and would make the whole spec vacuous — so it is the one spec
+  you must never "fix" by adding a `page.goto` or a `page.reload()`.
 
-**A FOURTH spec arrives with `m10/073-signout-clears-cache`** and is the first to need **two**
-accounts, taking a full run from 3 registrations to **5**: `session-isolation.spec.js` proves
-user B never sees user A's cached data (#73). It asserts `pageLoads === 1`, because a full
-document load empties the caches under test and would make the whole spec vacuous — so it is
-also the one spec you must not "fix" by adding a `page.goto`. Update this paragraph's counts
-when that branch merges.
+Set `E2E_SCREENSHOTS=1` to have `transfer.spec.js` write `e2e/screenshots/*.png` for the
+"render it and look at it" check below; a normal run leaves nothing behind.
 
 **If e2e fails at registration with "Bad Gateway", the `web` container is still booting** —
 `docker compose restart vite` can take its dependency chain with it, and `bundle install` +
