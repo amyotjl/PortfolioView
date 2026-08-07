@@ -46,6 +46,52 @@ module PriceProvider
     # purely about not being fingerprinted as a bot on a keyless endpoint.
     USER_AGENT = "Mozilla/5.0 (compatible; PortfolioView/1.0)".freeze
 
+    # Yahoo spells a class or series share with a DASH — `ACO-X.TO`,
+    # `AQN-PR-A.TO`, `HPS-A.TO`. Every other source this app touches spells it
+    # with a dot, including the Twelve Data directory feed that populates
+    # `listed_instruments` and therefore the symbol a user picks out of the
+    # autocomplete. Measured on the live directory: **1,064** CAD rows carry more
+    # than one dot — 913 well-formed plus the 151 malformed `..` rows #66 now
+    # drops AT IMPORT (so a directory imported before that fix still holds them;
+    # they 404 under either spelling and are not what this translation is for).
+    # All 1,064 are `tradeable` and resolvable, so before this they
+    # autocompleted, resolved, and then priced to zero (#79).
+    #
+    # Necessary, not sufficient: some rows are absent from Yahoo under any
+    # spelling (AQN.PR.A.TO 404s as AQN-PR-A.TO too — a redeemed preferred), and
+    # thinly traded venue duplicates such as ACO.X.NE return a single bar.
+    #
+    # THE TRANSLATION LIVES HERE, IN THE ADAPTER, AND THAT IS THE WHOLE POINT.
+    # The alternatives — restyling the directory at import, or changing what
+    # SymbolQualifier mints — both change INSTRUMENT IDENTITY, and `instruments`
+    # is UNIQUE on upper(symbol) alone. A user who already imported `ACO.X.TO`
+    # would get a second instrument for `ACO-X.TO`: the exact failure
+    # `InstrumentResolver#venue_sibling_for` exists to prevent, and one it cannot
+    # catch here because the two spellings have different BASE symbols under its
+    # match rule. A request-time translation cannot create a duplicate, needs no
+    # migration for rows already stored, and fixes every already-imported holding
+    # the moment it ships.
+    #
+    # So the app's spelling stays the app's spelling: `sym` remains what
+    # `DailySeries#symbol` and every warning reports, and only the URL differs.
+    # `#68`'s `HPS.A.TO` expectation is therefore deliberately UNCHANGED — its
+    # gate noted the symbol "is not Yahoo's HPS-A.TO convention", and it no
+    # longer needs to be.
+    #
+    # The venue suffix is stripped before the dots are dashed and re-appended
+    # afterwards, because the suffix's own dot is the one dot Yahoo does want.
+    # KNOWN_SUFFIXES is reused rather than redefined for the same reason
+    # ProviderRouter reuses it: "what counts as a venue suffix" gets exactly one
+    # definition, or the importer and the price path drift apart.
+    CLASS_SHARE_SEPARATOR = "-".freeze
+
+    def provider_symbol(symbol)
+      sym = symbol.to_s.strip.upcase
+      base, suffix = split_venue_suffix(sym)
+
+      "#{base.tr('.', CLASS_SHARE_SEPARATOR)}#{suffix}"
+    end
+
     # `to:` filters the RETURNED bars but deliberately does NOT narrow the
     # request. Un-adjusting needs every split AFTER a bar's date, and Yahoo only
     # reports events that fall inside the requested window — so asking for
@@ -57,6 +103,7 @@ module PriceProvider
     # while it was still latent, because the only live caller passes no `to:`.
     def fetch_daily(symbol, from:, to: nil)
       sym = normalize_symbol(symbol)
+      requested = provider_symbol(sym)
       cutoff = to&.to_date
       # period2 is exclusive of the bar's open instant, so today needs +1 or
       # today's bar is dropped.
@@ -69,7 +116,8 @@ module PriceProvider
         # it only enlarges the response.
         includeAdjustedClose: "false"
       }
-      series = build_series(sym, get_json("/v8/finance/chart/#{sym}", params))
+      series = build_series(sym, get_json("/v8/finance/chart/#{requested}", params),
+                            requested: requested)
       cutoff ? slice_to(series, cutoff) : series
     end
 
@@ -95,8 +143,23 @@ module PriceProvider
 
     def epoch_for(date) = [ date.to_time(:utc).to_i, 0 ].max
 
-    def build_series(sym, body)
-      result = extract_result!(sym, body)
+    # Longest match wins, so `.TO` is never mistaken for Tokyo's `.T`.
+    def split_venue_suffix(sym)
+      suffix = Portfolios::Transfer::SymbolQualifier::KNOWN_SUFFIXES
+               .select { |s| sym.end_with?(s) }
+               .max_by(&:length)
+
+      suffix ? [ sym.delete_suffix(suffix), suffix ] : [ sym, "" ]
+    end
+
+    # Both spellings when they differ: a "not found" naming only one of them
+    # sends whoever reads the log looking in the wrong place.
+    def symbol_label(sym, requested)
+      sym == requested ? sym : "#{sym} (requested as #{requested})"
+    end
+
+    def build_series(sym, body, requested: sym)
+      result = extract_result!(symbol_label(sym, requested), body)
       meta = result["meta"] || {}
       # Bars are keyed by the EXCHANGE's calendar date, not UTC. Yahoo's
       # timestamps are the session's opening instant in UTC epoch, so a TSX bar
