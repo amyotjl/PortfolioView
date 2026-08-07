@@ -17,8 +17,8 @@ class SplitEventTest < ActiveSupport::TestCase
   test "upsert_all against UNIQUE (instrument_id, ex_date) is conflict-safe" do
     row = { instrument_id: @instrument.id, ex_date: Date.new(2020, 8, 31), ratio: 4 }
 
-    SplitEvent.upsert_all([row], unique_by: [:instrument_id, :ex_date])
-    SplitEvent.upsert_all([row], unique_by: [:instrument_id, :ex_date])
+    SplitEvent.upsert_all([ row ], unique_by: [ :instrument_id, :ex_date ])
+    SplitEvent.upsert_all([ row ], unique_by: [ :instrument_id, :ex_date ])
 
     assert_equal 1, SplitEvent.where(instrument_id: @instrument.id).count
   end

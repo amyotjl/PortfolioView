@@ -14,6 +14,6 @@ class CreateDividendEvents < ActiveRecord::Migration[8.1]
                          name: "dividend_events_cash_per_share_positive"
     end
 
-    add_index :dividend_events, [:instrument_id, :ex_date], unique: true
+    add_index :dividend_events, [ :instrument_id, :ex_date ], unique: true
   end
 end

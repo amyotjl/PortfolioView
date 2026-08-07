@@ -34,12 +34,12 @@ class CreateTransactions < ActiveRecord::Migration[8.1]
     end
 
     # Valuation sweep hot path (PLAN.md: transactions by portfolio and date).
-    add_index :transactions, [:portfolio_id, :executed_on]
+    add_index :transactions, [ :portfolio_id, :executed_on ]
 
     # Recurring-materialization idempotency guard: one materialized
     # transaction per (rule, slot). Partial so manual transactions
     # (NULL rule) are unconstrained.
-    add_index :transactions, [:recurring_transaction_id, :scheduled_for],
+    add_index :transactions, [ :recurring_transaction_id, :scheduled_for ],
               unique: true,
               where: "recurring_transaction_id IS NOT NULL",
               name: "index_transactions_on_recurring_slot"

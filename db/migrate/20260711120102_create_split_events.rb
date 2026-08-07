@@ -15,6 +15,6 @@ class CreateSplitEvents < ActiveRecord::Migration[8.1]
       t.check_constraint "ratio > 0", name: "split_events_ratio_positive"
     end
 
-    add_index :split_events, [:instrument_id, :ex_date], unique: true
+    add_index :split_events, [ :instrument_id, :ex_date ], unique: true
   end
 end

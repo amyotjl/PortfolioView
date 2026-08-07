@@ -24,6 +24,6 @@ class CreateDailyPrices < ActiveRecord::Migration[8.1]
 
     # The workhorse index: upsert_all conflict target AND (instrument_id, date)
     # range scans for the valuation sweep.
-    add_index :daily_prices, [:instrument_id, :date], unique: true
+    add_index :daily_prices, [ :instrument_id, :date ], unique: true
   end
 end

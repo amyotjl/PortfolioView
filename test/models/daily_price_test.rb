@@ -16,8 +16,8 @@ class DailyPriceTest < ActiveSupport::TestCase
   end
 
   test "upsert_all against UNIQUE (instrument_id, date) is conflict-safe" do
-    DailyPrice.upsert_all([price_row], unique_by: [:instrument_id, :date])
-    DailyPrice.upsert_all([price_row(close: "102.5")], unique_by: [:instrument_id, :date])
+    DailyPrice.upsert_all([ price_row ], unique_by: [ :instrument_id, :date ])
+    DailyPrice.upsert_all([ price_row(close: "102.5") ], unique_by: [ :instrument_id, :date ])
 
     rows = DailyPrice.where(instrument_id: @instrument.id, date: Date.new(2026, 7, 10))
     assert_equal 1, rows.count, "upserting the same (instrument_id, date) twice must leave one row"

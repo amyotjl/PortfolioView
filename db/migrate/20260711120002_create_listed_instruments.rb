@@ -19,7 +19,7 @@ class CreateListedInstruments < ActiveRecord::Migration[8.1]
     # Conflict target for the weekly Tiingo CSV re-import (upsert_all).
     # NULLS NOT DISTINCT so a NULL exchange cannot smuggle duplicate
     # symbol rows past the unique index.
-    add_index :listed_instruments, [:symbol, :exchange],
+    add_index :listed_instruments, [ :symbol, :exchange ],
               unique: true, nulls_not_distinct: true,
               name: "index_listed_instruments_on_symbol_and_exchange"
   end
