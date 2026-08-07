@@ -123,6 +123,44 @@ module Api
         end
       end
 
+      # -- #75: the blank case is diagnosable, but ONLY in the log --------------
+
+      test "a blank-token 401 is byte-identical to a wrong-token 401" do
+        # The property #75 must not trade away for diagnosability. A response that
+        # admitted "this server has no token configured" would tell an
+        # unauthenticated caller about the deployment's state. Compared field by
+        # field AND byte for byte, because a difference anywhere is the leak.
+        ENV["INTERNAL_API_TOKEN"] = TOKEN
+        post PATH, headers: bearer("definitely-not-the-token")
+        wrong = capture_response
+
+        ENV["INTERNAL_API_TOKEN"] = ""
+        post PATH, headers: bearer(TOKEN)
+        blank = capture_response
+
+        assert_equal wrong, blank
+        assert_equal 401, blank[:status]
+        assert_equal UNAUTHORIZED_BODY, blank[:body]
+      end
+
+      test "a blank token logs WHY the request was rejected, naming the variable" do
+        ENV["INTERNAL_API_TOKEN"] = ""
+
+        log = capture_app_log { post PATH, headers: bearer(TOKEN) }
+
+        assert_match(/INTERNAL_API_TOKEN is not configured/, log)
+        assert_match(/NOT a token mismatch/, log)
+      end
+
+      test "a wrong token logs no such explanation — it was never the ambiguous case" do
+        ENV["INTERNAL_API_TOKEN"] = TOKEN
+
+        log = capture_app_log { post PATH, headers: bearer("definitely-not-the-token") }
+
+        assert_no_match(/is not configured/, log)
+        assert_not_includes log, TOKEN, "the configured token must never reach the log"
+      end
+
       test "a signed-in session buys nothing here — the token is the only credential" do
         sign_in_as users(:one)
 
@@ -200,6 +238,35 @@ module Api
         yield
       ensure
         ActionController::Base.allow_forgery_protection = original
+      end
+
+      # Everything about the response that a caller can observe. Headers are
+      # included because #75's whole risk is leaking the deployment's state, and
+      # a header is as observable as a body.
+      #
+      # Only PER-REQUEST headers are excluded, and they are named individually
+      # rather than filtered by pattern: each differs between any two requests
+      # (a fresh uuid, a fresh duration) and none of them carries deployment
+      # state. `content-length` is deliberately kept — a body that differed by
+      # even one byte would show up there. Header names arrive downcased.
+      VOLATILE_HEADERS = %w[x-request-id x-runtime etag date].freeze
+
+      def capture_response
+        { status: response.status, body: response.body, media_type: response.media_type,
+          headers: response.headers.to_h.except(*VOLATILE_HEADERS) }
+      end
+
+      # Rails.logger writes to a file in test, so tap it with a StringIO-backed
+      # logger for the duration of the block. Broadcasting is not used: the point
+      # is to read exactly what this request logged, with nothing else in it.
+      def capture_app_log
+        buffer = StringIO.new
+        original = Rails.logger
+        Rails.logger = ActiveSupport::Logger.new(buffer)
+        yield
+        buffer.string
+      ensure
+        Rails.logger = original
       end
     end
   end
