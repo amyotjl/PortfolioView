@@ -53,10 +53,12 @@ Search costs **~13 ms** on the real directory (Seq Scan; an index cannot serve a
     "benchmark": { "symbol": str, "values": [{ "t": ISO, "v": str }] } | null,   // LINE, never candles
     "flows":     [{ "t": ISO, "net": str, "items": [{ "ticker": str, "kind": "buy"|"sell", "amount": str }] }],
     "drawdown":  [{ "t": ISO, "v": str }],   // fraction, 8dp, from ALL-TIME peak
-    "meta": { "partial": bool, "filled_dates": ISO[], "benchmark_clamped": bool, "approximation": str } }
+    "cash":      [{ "t": ISO, "v": str }] | null,   // #80 — signed, END-OF-DAY; null ⇔ untracked
+    "meta": { "partial": bool, "filled_dates": ISO[], "benchmark_clamped": bool, "approximation": str,
+              "flow_basis": "cash"|"trades", "cash_negative": bool, "cash_negative_since": ISO|null } }
   ```
   Notes: flow `kind` is the trade side (DRIP is excluded from flows entirely); `benchmark_clamped` is the OR of over-withdrawal and short-history clamps; `net`/`amount` signed (buy +, sell −); `from`/`to` optional (inception → last trading day); malformed date → 422 on that field.
-- `GET .../summary` → `{"summary": {current_value: str, net_deposits: str, total_return: str, total_return_pct: str|null, benchmark_return_pct: str|null, vs_benchmark_edge_pct: str|null, max_drawdown_pct: str, as_of: ISO|null}}` (pcts are fractions, 6dp; null when net_deposits ≤ 0 / no benchmark).
+- `GET .../summary` → `{"summary": {current_value: str, net_deposits: str, total_return: str, total_return_pct: str|null, benchmark_return_pct: str|null, vs_benchmark_edge_pct: str|null, max_drawdown_pct: str, as_of: ISO|null, holdings_value: str, cash_balance: str|null, deposit_basis: "cash"|"trades", cash_negative: bool, cash_negative_since: ISO|null}}` (pcts are fractions, 6dp; null when net_deposits ≤ 0 / no benchmark).
 - `GET .../allocations` → `{"allocations": {as_of: ISO|null, total_value: str, by_instrument: [{instrument_id: number, symbol: str|null, sector: str, value: str, weight: str}], by_sector: [{sector: str, value: str, weight: str}]}}` — largest-first, weights sum to 1, sectorless instruments bucket under `"ETF / Fund"`. An instrument slice's `sector` is byte-identical to its `by_sector` label, so grouping `by_instrument` on it reproduces `by_sector` exactly — that join key is what makes the sector treemap's hierarchy derivable client-side (added in M8/#53; `by_sector` alone is a flat list and `instruments` isn't addressable from the frontend by id).
 
 ## Export / import (issue #64)
@@ -210,6 +212,91 @@ is the **pending sync's** claim time, not this request's — so a UI can say "a 
 13:42 is already running". Nothing releases the lease early; it just expires, so a dead job can
 never wedge the trigger. The nightly `config/recurring.yml` schedule enqueues `DailySyncJob`
 directly and bypasses the lease by design.
+
+## Cash transactions (issue #80) — verified live 2026-08-07
+
+`CRUD /api/v1/portfolios/:id/cash_transactions`. Wrapped, like `/transactions`. **There is no
+`show` route** (also matching `/transactions`) — `index`, `create`, `update`, `destroy` only.
+
+```jsonc
+{ "cash_transaction": { id: num, portfolio_id: num, kind: str, amount: str,
+                        occurred_on: ISO, notes: str|null, created_at: ISO, updated_at: ISO } }
+{ "cash_transactions": [ ... ], "meta": { page, per_page, total_count, total_pages } }   // newest-first
+```
+
+`kind` ∈ `deposit | withdrawal | interest | dividend_cash | tax | fee`. Model as `z.string()`, not
+an enum — the same call `import.status` already makes.
+
+**EVERY MONEY FIGURE ON THE WIRE IS SIGNED, in both directions** — `amount` here, `cash_balance`,
+`cash[].v`, and the pre-existing `flows[].net`/`amount`. `deposit` is always positive and
+`withdrawal` always negative (a DB CHECK plus a model validation, so a wrong sign is a **422 on
+`amount`**, not a coerced value). The other four kinds carry the **broker's** sign, because they are
+genuinely ±: a dividend reversal is a negative `dividend_cash` and a tax refund a positive `tax`.
+An unsigned-magnitude-plus-`kind` contract was designed first and **rejected** for exactly that
+reason — it cannot express a refund. The client's *form* is unsigned (the shared `DECIMAL` regex
+rejects a sign) and applies the sign at the composable boundary; that is a frontend concern only.
+
+`create`/`update` additionally carry
+`"meta": { cash_balance: str, cash_negative: bool, cash_negative_since: ISO|null }` so a toast can
+report the balance without waiting for a refetch. It is computed from the same ledger `/summary`
+uses, and a test pins that the two agree. **The entry is NEVER rejected for driving cash negative** —
+verified live: a $62,486.95 buy against a $21,495.05 balance returns **201**, and a further
+withdrawal on top of the resulting negative balance also returns 201. `DELETE` → 204, no body.
+
+Money strings follow the house `BigDecimal#to_s("F")` convention and therefore **drop trailing
+zeros** — `"-400.0"`, `"0.0"`, `"25000.0"`, not `"-400.00"`. Do not special-case cash to 2dp: the
+contract test suite already compares money strings across endpoints, and a 2dp field inside an
+otherwise-1dp object would break that class of check.
+
+### `cash_balance` is `str|null` and `null` is NOT zero
+
+`null` means **"this portfolio does not track cash"**; `"0.0"` means **"it tracks cash and is
+exactly flat"**. Both states are reachable and they mean different things. A single `?? 0` or
+`|| 0` anywhere in the chain turns every pre-#80 portfolio's dashboard into a lie, because the
+full-cash-account formula applied to a portfolio with no cash rows yields `−Σ buy costs`.
+
+`deposit_basis` / `meta.flow_basis` are modelled client-side as `z.enum(['cash','trades'])` — a
+deliberate departure from the `z.string()` rule used for `kind` and `import.status`, on the grounds
+that a third basis is unrenderable anyway and mislabelling the *denominator of every return
+percentage* is worse than failing loudly. So the server must emit exactly one of those two strings,
+never null, never absent.
+
+### Invariants a client may rely on (each has a contract test)
+
+- `current_value == holdings_value + cash_balance` when tracked; `== holdings_value` when not.
+  Verified live: `24514.2 == 65606.1 + (−41091.9)`.
+- `summary.deposit_basis == "cash"` ⇔ `candles.cash != null` ⇔ `summary.cash_balance != null`.
+- **`Σ flows[].net` over all time == `summary.net_deposits`, in both bases.**
+- `cash[]`'s last point == `summary.cash_balance`.
+- The basis is **window-independent**: a future-dated deposit cannot make one endpoint report
+  `"trades"` while another reports `"cash"`.
+
+### `flows` is EXCLUSIVE, and this is the part most likely to be "fixed" wrongly
+
+On the **cash** basis `flows` carries **only** deposits and withdrawals — **trades are absent**,
+`items[].ticker` is `null`, and `items[].kind` is the cash kind. Under a full cash account a trade
+is an internal transfer that does not move total value, so a trade bar in the "flows explain value
+jumps" pane would actively mislead. On the **trade** basis it is byte-identical to M4.
+
+Consequences: `items[].ticker` is now `str|null` and `items[].kind` is **no longer a `buy|sell`
+enum** — model both permissively. And if trade bars are ever wanted back they must go in a
+**separate `trade_flows` key**, never mixed into `flows`, because `Summary` sums `flows[].net` and a
+mixed array would silently corrupt `net_deposits`.
+
+### Deliberate divergence: `/allocations` vs `/summary`
+
+`/allocations`' `total_value` is **holdings only**, so for a cash-tracked portfolio it is **less
+than** `/summary`'s `current_value` by the cash balance. Not a bug. A "Cash" slice would change
+`total_value`, every `weight`, the `by_sector` label set, and would break the pinned invariant that
+`by_instrument[].sector` is byte-identical to its `by_sector` label — the join key the sector
+treemap's hierarchy depends on.
+
+### Caching
+
+`Candles::Cache::VERSION` moved **`v1` → `v2`** for this feature, and the bump is a requirement
+rather than insurance: `series_version` alone does not cover it, because an untracked portfolio's
+payload never changes and so its key never rotates, leaving warm `v1` entries that lack the new
+`meta` keys. A cash mutation bumps `series_version`.
 
 ## Known envelope inconsistency (deliberate, don't "fix" in zod)
 `/candles` is a bare object; `/summary` and `/allocations` are wrapped. Model exactly as-built.
