@@ -117,8 +117,14 @@ class CashBasisContractTest < ActionDispatch::IntegrationTest
     assert_equal "cash", result["deposit_basis"]
 
     # The window default follows the same inception, so the chart starts at the
-    # deposit rather than at the first trade.
-    assert_equal "2026-07-06", candles.fetch("candles").first["t"]
+    # deposit rather than at the first trade — and the deposit bar sits on the day
+    # the money actually arrived. (Taking inception from the first trade does not
+    # lose the dollar — the ledger buckets a pre-window movement forward onto the
+    # first swept day rather than dropping it — but it MIS-DATES the contribution
+    # and truncates the series, which is what these two assertions catch.)
+    payload = candles
+    assert_equal "2026-07-06", payload.fetch("candles").first["t"]
+    assert_equal [ "2026-07-06" ], payload.fetch("flows").map { |flow| flow["t"] }
   end
 
   # ---------------------------------------------------------------------------

@@ -211,16 +211,24 @@ class Benchmarks::SimulationTest < ActiveSupport::TestCase
     assert_equal bd("1200"), value_on(result, TUE), "still exactly the 20 deposit-bought shares"
   end
 
-  # Kills include_cash: true in the inner Valuation call: the shadow ETF's value
-  # line must be pure benchmark shares, never the user's cash balance.
-  test "the user's cash balance never enters the shadow ETF's value line" do
+  # The shadow ETF's VALUE LINE is structurally immune to a wrongly-wired
+  # include_cash, because Valuation emits holdings-only candles and Simulation
+  # reads only candles.close — worth knowing, and worth not relying on. What a
+  # leak DOES reach is the inner valuation's meta: an INTERNAL cash movement the
+  # trading calendar cannot place yet would flag the BENCHMARK partial, which is
+  # the user's cash contaminating a benchmark flag. (The interest row is not an
+  # EXTERNAL kind, so it is not matched and cannot set the simulation's own
+  # `dropped` flag — that is what makes this discriminate.)
+  test "the user's cash cannot leak into the shadow ETF, not even into its meta" do
+    beyond = Date.new(2026, 7, 13) # no SPY row
     cash!(@portfolio, kind: "deposit", amount: "1000.00", on: MON)
+    cash!(@portfolio, kind: "interest", amount: "5.00", on: beyond)
 
-    result = simulate
+    result = simulate(to: beyond)
 
-    # $1,000 sat as cash all week; the shadow line is 20 SPY shares priced daily.
-    # If the inner valuation inherited the cash, MON would read 2,000 and TUE 2,200.
-    assert_equal bd("1000"), value_on(result, MON)
+    assert_not result.meta[:partial],
+               "the shadow ETF must be computed with include_cash: false"
+    assert_equal bd("1000"), value_on(result, MON), "pure benchmark shares: 20 SPY @ \$50"
     assert_equal bd("1200"), value_on(result, TUE)
   end
 
