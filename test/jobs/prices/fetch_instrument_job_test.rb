@@ -123,4 +123,55 @@ class Prices::FetchInstrumentJobTest < ActiveSupport::TestCase
       { date: Date.new(2024, 1, 8), open: 106, high: 108, low: 105, close: 107, volume: 1 }
     ])
   end
+  # --- issue #66: the Yahoo path must NOT fall over to TwelveData -------------
+  #
+  # #66's gate found this uncovered: removing the `unless route.failover?` raise
+  # left the full suite green, so the branch's stated safety property had no
+  # test. TwelveData 403s Canadian symbols on the free tier and never returns
+  # events, so failing over would swap the only source that HAS the data for one
+  # that cannot serve it — and would write a different price basis under a
+  # source label that implies otherwise.
+
+  test "a failing Yahoo fetch does NOT fall over to TwelveData" do
+    canadian = create_instrument(symbol: "ZEQT.TO", currency: "CAD")
+    canadian.update_columns(prices_backfilled_at: Time.utc(2024, 1, 1),
+                            earliest_price_on: Date.new(2024, 1, 1),
+                            latest_price_on: Date.new(2024, 1, 5))
+    canadian.daily_prices.create!(date: Date.new(2024, 1, 5), open: 20, high: 21,
+                                  low: 19, close: 20, volume: 1, source: "yahoo")
+
+    failing = StubProvider.new(error: PriceProvider::ServerError.new("yahoo: 503"))
+    twelve = StubProvider.new(series: build_series(symbol: "ZEQT.TO",
+      bars: [ { date: Date.new(2024, 1, 8), open: 20, high: 21, low: 19, close: 20.5, volume: 1 } ]))
+
+    travel_to ET.local(2026, 7, 11, 20) do
+      stub_new(PriceProvider::Yahoo, failing) do
+        stub_new(PriceProvider::TwelveData, twelve) do
+          Prices::FetchInstrumentJob.perform_now(canadian.id)
+        end
+      end
+    end
+
+    assert_equal 0, twelve.call_count,
+      "TwelveData must never be consulted for a Canadian symbol — it cannot serve one"
+    assert_equal 1, canadian.daily_prices.count,
+      "a Yahoo failure is 'no new prices today', not a substituted price basis"
+  end
+
+  test "the US path still DOES fall over to TwelveData" do
+    failing = StubProvider.new(error: PriceProvider::ServerError.new("tiingo: 503"))
+    twelve = StubProvider.new(series: build_series(symbol: "AAPL",
+      bars: [ { date: Date.new(2024, 1, 8), open: 100, high: 101, low: 99, close: 100.5, volume: 1 } ]))
+
+    travel_to ET.local(2026, 7, 11, 20) do
+      stub_new(PriceProvider::Tiingo, failing) do
+        stub_new(PriceProvider::TwelveData, twelve) do
+          Prices::FetchInstrumentJob.perform_now(@instrument.id)
+        end
+      end
+    end
+
+    assert_equal 1, twelve.call_count, "the US failover is unchanged by #66"
+    assert_equal "twelve_data", @instrument.daily_prices.order(:date).last.source
+  end
 end

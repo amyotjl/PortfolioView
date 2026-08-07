@@ -1,14 +1,17 @@
 module Instruments
   # Resolves a user-supplied ticker SYMBOL into a tradeable Instrument row
-  # (docs/PLAN.md § API contract: "POST by symbol, validated vs directory,
-  # USD/US-exchange only in v1").
+  # (docs/PLAN.md § API contract: "POST by symbol, validated vs directory").
+  # US listings and, since issue #66, Canadian ones — the latter identified by
+  # their venue suffix (ZEQT.TO), which is how the directory stores them and how
+  # they stay distinct from the US ticker of the same name.
   #
   # An already-known instrument short-circuits: it was validated the first time
   # it was referenced, and re-checking it against a since-refreshed directory
   # could wrongly reject a symbol the user already holds. A brand-new symbol is
   # validated against the local listed_instruments directory (no provider HTTP —
-  # the directory import backs this) and must have at least one USD / US-exchange
-  # listing before an Instrument is find-or-created. Creating the Instrument fires
+  # the directory imports back this) and must have at least one TRADEABLE
+  # listing before an Instrument is find-or-created: USD on a US exchange, or
+  # CAD on a Canadian one (ListedInstrument::TRADEABLE_SQL owns that test). Creating the Instrument fires
   # its after_create_commit backfill + metadata jobs (Instrument model).
   #
   # Returns a frozen Result: on success #instrument is set and #error is nil; on
@@ -42,30 +45,38 @@ module Instruments
       existing = Instrument.where("upper(symbol) = ?", symbol).first
       return Result.new(instrument: existing, error: nil) if existing
 
-      listing = usd_us_listing_for(symbol)
+      listing = tradeable_listing_for(symbol)
       return failure(unresolvable_message) if listing.nil?
 
       instrument = Instrument.create!(
         symbol: symbol,
         name: listing.name,
         instrument_type: instrument_type_for(listing),
-        currency: "USD"
+        # From the LISTING, not hardcoded USD (issue #66). A Canadian row is
+        # CAD, and stamping it USD would make Prices::ProviderRouter's feed and
+        # the instrument's own currency disagree about what it is.
+        currency: listing.currency.to_s.strip.upcase.presence || "USD"
       )
       Result.new(instrument: instrument, error: nil)
     end
 
     private
 
-    # A symbol can be listed on several venues; accept it if ANY listing is a
-    # USD row on a recognized US exchange, and build the Instrument from it.
+    # A symbol can be listed on several venues; accept it if ANY listing is
+    # tradeable here — a USD row on a US exchange, or (since #66) a CAD row on a
+    # Canadian one — and build the Instrument from it.
     #
     # Delegates the predicate to ListedInstrument.tradeable rather than
     # re-stating it in Ruby (issue #71) — the same test also drives search
     # ranking, and two copies could drift apart silently. Ordered so the chosen
     # listing is deterministic: the previous `.find` walked rows in whatever
     # order Postgres returned them, so which venue named the Instrument was
-    # unspecified whenever a symbol had more than one US listing.
-    def usd_us_listing_for(symbol)
+    # unspecified whenever a symbol had more than one qualifying listing.
+    #
+    # Note the SYMBOL carries the venue for Canadian rows (`ZEQT.TO`), because
+    # Directory::ImportCanadianJob stores them suffixed — so this lookup is
+    # already unambiguous and cannot match the US ticker of the same name.
+    def tradeable_listing_for(symbol)
       ListedInstrument.where("upper(symbol) = ?", symbol).tradeable.order(:id).first
     end
 
@@ -81,7 +92,12 @@ module Instruments
         "can't be checked yet — the symbol directory is still downloading. " \
           "This is a one-time setup step; try again in a few minutes."
       else
-        "is not a recognized US-exchange symbol (unsupported in v1)"
+        # Wording covers both supported markets since #66. A Canadian listing
+        # must be typed with its venue suffix (ZEQT.TO, FINN.NE) — that is how
+        # the directory stores it, and how it stays distinct from the US ticker
+        # of the same name.
+        "is not a recognized US or Canadian exchange symbol " \
+          "(Canadian listings need their venue suffix, e.g. ZEQT.TO)"
       end
     end
 

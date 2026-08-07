@@ -66,6 +66,28 @@ module PriceProvider
   # stored as-is per the plan (no integer rationalizing of 10:9 oddities).
   Split = Data.define(:ex_date, :ratio)
 
+  # A price-ADJUSTMENT factor, which is not the same thing as a Split: only some
+  # factors also moved the share count (issue #66). Yahoo reports both kinds
+  # identically, so its adapter classifies them and keeps the numerator and
+  # denominator AS WRITTEN to do it — the written form is the only evidence that
+  # separates a declared exchange ratio (4:1, 114:100) from a market-derived
+  # decimal (1097:1000). See PriceProvider::Yahoo#classify_splits.
+  #
+  # Internal to the price pipeline: adapters emit Splits, never Factors.
+  Factor = Data.define(:ex_date, :ratio, :numerator, :denominator) do
+    # "1097:1000", as Yahoo wrote it, for the warning text. Integers because the
+    # values arrive as whole numbers in BigDecimal clothing.
+    def label = "#{numerator.to_i}:#{denominator.to_i}"
+
+    # Is the fraction, IN LOWEST TERMS, a plausible declared exchange ratio? A
+    # company declares 3-for-2 or 11-for-10; nobody declares 1097-for-1000.
+    # Reduced first so 114:100 (57/50) and 96:100 (24/25) count as declared while
+    # 1097:1000 and 10000:9607 do not.
+    def declared_ratio?(max_denominator)
+      Rational(numerator.to_i, denominator.to_i).denominator <= max_denominator
+    end
+  end
+
   # A cash dividend. Only emitted when cash_per_share > 0 (the DB CHECK on
   # dividend_events requires it; divCash == 0 rows are not events).
   Dividend = Data.define(:ex_date, :cash_per_share)

@@ -32,7 +32,10 @@ module PriceProvider
 
     DEFAULT_RETRY_AFTER = 60 # seconds, when the provider sends no hint
 
-    # v1 is US-listed/USD only; this also keeps symbols path-safe.
+    # Keeps symbols path-safe. Dots and dashes are allowed because a venue
+    # suffix (ZEQT.TO, FINN.NE) and a share class (BRK-B) are both legitimate
+    # symbols — the "US/USD only" restriction this comment used to state was
+    # lifted by issue #66.
     SYMBOL_FORMAT = /\A[A-Z0-9.\-]{1,12}\z/
 
     # faraday_adapter: pass `[:test, stubs]` in unit tests so requests hit
@@ -40,9 +43,14 @@ module PriceProvider
     # the Faraday adapter boundary).
     def initialize(api_key: nil, faraday_adapter: Faraday.default_adapter,
                    retry_options: RETRY_OPTIONS, logger: Rails.logger)
-      @api_key = api_key.presence || ENV[self.class::API_KEY_ENV].presence
-      if @api_key.nil?
-        raise ConfigurationError, "#{self.class::API_KEY_ENV} is not set (see .env.example)"
+      # API_KEY_ENV is nil for a KEYLESS provider (PriceProvider::Yahoo). Every
+      # keyed adapter still fails closed exactly as before: a nil key raises
+      # ConfigurationError before a single request is made, which is what keeps
+      # `TIINGO_API_KEY` unset from silently becoming an anonymous request.
+      key_env = self.class::API_KEY_ENV
+      if key_env
+        @api_key = api_key.presence || ENV[key_env].presence
+        raise ConfigurationError, "#{key_env} is not set (see .env.example)" if @api_key.nil?
       end
       @faraday_adapter = faraday_adapter
       @retry_options = retry_options
