@@ -82,7 +82,15 @@ Rails.application.routes.draw do
   #
   # GET-only on purpose: an unknown non-/api POST stays a routing 404 rather
   # than being handed an HTML page.
+  #
+  # "/cable" joins the list because #74 UNMOUNTED Action Cable
+  # (`config.action_cable.mount_path = nil`). While it was mounted, its own
+  # middleware answered a plain GET /cable with a 404 and the glob never saw the
+  # path; unmounted, /cable is just another unmatched path and this glob would
+  # answer it 200 with the Vue shell. That would be a regression in the exact
+  # property #58 verified and #74's acceptance criteria restate, so the constraint
+  # keeps /cable a 404 rather than a page.
   root to: "spa#show"
   get "*path", to: "spa#show", format: false,
-      constraints: ->(request) { !request.path.start_with?("/api", "/rails/") }
+      constraints: ->(request) { !request.path.start_with?("/api", "/rails/", "/cable") }
 end

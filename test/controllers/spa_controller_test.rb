@@ -111,6 +111,41 @@ class SpaControllerTest < ActionDispatch::IntegrationTest
     end
   end
 
+  # Issue #74. Action Cable is unmounted, so /cable is now just an unmatched path
+  # — and an unmatched path is precisely what this glob claims. While cable was
+  # mounted its own middleware answered a plain GET with 404 and the glob never
+  # saw it, so unmounting without extending the constraint would have turned a
+  # 404 into a 200 page: a regression in the property #58 measured.
+  #
+  # Asserted through the SHELL_MARKER rather than only the status, for the same
+  # reason the /rails/ test does: a 404 that still rendered the shell would be
+  # the same bug with a different number on it.
+  test "the catch-all does not swallow /cable now that Action Cable is unmounted" do
+    with_spa_build do
+      with_framework_exception_rendering do
+        [ "/cable", "/cable/", "/cable/anything" ].each do |path|
+          get path
+
+          assert_response :not_found, "#{path} must not be answered by the SPA glob"
+          assert_not_includes response.body, SHELL_MARKER,
+            "#{path} must not render the Vue shell"
+        end
+      end
+    end
+  end
+
+  test "no route is mounted at /cable at all" do
+    # The narrower, more direct statement of the same fact: the recognizer itself
+    # has nothing for /cable. Independent of what the SPA glob does, so a future
+    # change to that constraint cannot make this pass vacuously.
+    assert_nil Rails.application.config.action_cable.mount_path,
+      "Action Cable must stay unmounted (config/application.rb explains why)"
+
+    assert_raises ActionController::RoutingError do
+      Rails.application.routes.recognize_path("/cable", method: :get)
+    end
+  end
+
   test "the health check still answers itself, not the SPA shell" do
     with_spa_build do
       get "/up"
