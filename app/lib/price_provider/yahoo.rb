@@ -46,22 +46,20 @@ module PriceProvider
     # purely about not being fingerprinted as a bot on a keyless endpoint.
     USER_AGENT = "Mozilla/5.0 (compatible; PortfolioView/1.0)".freeze
 
-    # `to:` filters the RETURNED bars but deliberately does NOT narrow the
-    # request. Un-adjusting needs every split AFTER a bar's date, and Yahoo only
-    # reports events that fall inside the requested window — so asking for
-    # Jan–Jun 2020 returns prices already divided by AAPL's August 4:1 with the
-    # split itself absent, and the reconstruction silently under-corrects by
-    # exactly that factor (measured: close 91.20 against a true raw 364.80).
-    # Requesting through today and slicing afterwards makes that unreachable by
-    # construction rather than by the caller remembering. #66's gate found this
-    # while it was still latent, because the only live caller passes no `to:`.
     # Yahoo spells a class or series share with a DASH — `ACO-X.TO`,
     # `AQN-PR-A.TO`, `HPS-A.TO`. Every other source this app touches spells it
     # with a dot, including the Twelve Data directory feed that populates
     # `listed_instruments` and therefore the symbol a user picks out of the
-    # autocomplete. Measured on the live directory: 913 CAD rows carry more than
-    # one dot. All are `tradeable` and resolvable, so before this they
+    # autocomplete. Measured on the live directory: **1,064** CAD rows carry more
+    # than one dot — 913 well-formed plus the 151 malformed `..` rows #66 now
+    # drops AT IMPORT (so a directory imported before that fix still holds them;
+    # they 404 under either spelling and are not what this translation is for).
+    # All 1,064 are `tradeable` and resolvable, so before this they
     # autocompleted, resolved, and then priced to zero (#79).
+    #
+    # Necessary, not sufficient: some rows are absent from Yahoo under any
+    # spelling (AQN.PR.A.TO 404s as AQN-PR-A.TO too — a redeemed preferred), and
+    # thinly traded venue duplicates such as ACO.X.NE return a single bar.
     #
     # THE TRANSLATION LIVES HERE, IN THE ADAPTER, AND THAT IS THE WHOLE POINT.
     # The alternatives — restyling the directory at import, or changing what
@@ -94,6 +92,15 @@ module PriceProvider
       "#{base.tr('.', CLASS_SHARE_SEPARATOR)}#{suffix}"
     end
 
+    # `to:` filters the RETURNED bars but deliberately does NOT narrow the
+    # request. Un-adjusting needs every split AFTER a bar's date, and Yahoo only
+    # reports events that fall inside the requested window — so asking for
+    # Jan–Jun 2020 returns prices already divided by AAPL's August 4:1 with the
+    # split itself absent, and the reconstruction silently under-corrects by
+    # exactly that factor (measured: close 91.20 against a true raw 364.80).
+    # Requesting through today and slicing afterwards makes that unreachable by
+    # construction rather than by the caller remembering. #66's gate found this
+    # while it was still latent, because the only live caller passes no `to:`.
     def fetch_daily(symbol, from:, to: nil)
       sym = normalize_symbol(symbol)
       requested = provider_symbol(sym)
