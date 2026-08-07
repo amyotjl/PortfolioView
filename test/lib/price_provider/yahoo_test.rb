@@ -381,4 +381,70 @@ class PriceProvider::YahooTest < ActiveSupport::TestCase
     assert_equal [ d1, d2 ], divs.map(&:ex_date)
     assert_equal [ BigDecimal("0.2"), BigDecimal("0.25") ], divs.map(&:cash_per_share)
   end
+  # --- #79: Yahoo spells a class share with a DASH ---------------------------
+
+  # The 913 CAD directory rows carrying more than one dot resolved, then priced
+  # to zero, because the URL asked Yahoo for a symbol it does not use. The
+  # translation is request-time ONLY: the app's spelling is instrument identity
+  # and must not move, or an already-imported ACO.X.TO gains a sibling.
+  test "a class-share dot is requested as a dash, and the venue suffix keeps its dot" do
+    {
+      "ACO.X.TO" => "ACO-X.TO",
+      "AQN.PR.A.TO" => "AQN-PR-A.TO",
+      "HPS.A.TO" => "HPS-A.TO",
+      "AKH.H.V" => "AKH-H.V",
+      "AAB.CN" => "AAB.CN",
+      "ZEQT.TO" => "ZEQT.TO",
+      "FINN.NE" => "FINN.NE",
+      # No venue suffix at all: still dashed, because Yahoo's convention for a
+      # class share does not depend on the venue. (Bare symbols route to Tiingo,
+      # so this is defensive rather than reachable.)
+      "BRK.B" => "BRK-B"
+    }.each do |stored, expected|
+      assert_equal expected, build_adapter(stub_chart("x", "{}")).provider_symbol(stored),
+                   "#{stored} must be requested from Yahoo as #{expected}"
+    end
+  end
+
+  test "the request really uses the dashed spelling while the series keeps the app's" do
+    date = Date.new(2026, 7, 2)
+    body = chart(
+      timestamps: [ ts(date) ],
+      quote: { "open" => [ 10.0 ], "high" => [ 11.0 ], "low" => [ 9.0 ], "close" => [ 10.5 ],
+               "volume" => [ 1 ] },
+      currency: "CAD"
+    )
+
+    # The stub is registered for the DASHED path only, so a request using the
+    # stored spelling raises Faraday::Adapter::Test::Stubs::NotFound. That is the
+    # assertion: this test fails loudly if the translation is dropped.
+    series = build_adapter(stub_chart("ACO-X.TO", body))
+             .fetch_daily("ACO.X.TO", from: date)
+
+    assert_equal 1, series.bars.size
+    assert_equal "ACO.X.TO", series.symbol,
+                 "DailySeries must report the APP's symbol — it is instrument identity"
+  end
+
+  test "an unknown symbol names both spellings, so the log points somewhere useful" do
+    body = { "chart" => { "error" => { "code" => "Not Found" }, "result" => nil } }.to_json
+
+    error = assert_raises(PriceProvider::UnknownSymbol) do
+      build_adapter(stub_chart("ACO-X.TO", body)).fetch_daily("ACO.X.TO", from: Date.new(2026, 7, 1))
+    end
+
+    assert_includes error.message, "ACO.X.TO"
+    assert_includes error.message, "requested as ACO-X.TO"
+  end
+
+  test "a symbol needing no translation is not relabelled in its error" do
+    body = { "chart" => { "error" => { "code" => "Not Found" }, "result" => nil } }.to_json
+
+    error = assert_raises(PriceProvider::UnknownSymbol) do
+      build_adapter(stub_chart("ZEQT.TO", body)).fetch_daily("ZEQT.TO", from: Date.new(2026, 7, 1))
+    end
+
+    assert_includes error.message, "ZEQT.TO"
+    assert_not_includes error.message, "requested as"
+  end
 end
