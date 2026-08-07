@@ -95,6 +95,85 @@ function selectComboboxAria(
   return aria
 }
 
+/** Attrs bag as PrimeVue hands it to a pass-through callback. */
+type Attrs = Record<string, unknown> | undefined
+
+function attr(attrs: Attrs, ...names: string[]): string | undefined {
+  for (const name of names) {
+    const value = attrs?.[name]
+    if (typeof value === 'string' && value) return value
+  }
+  return undefined
+}
+
+/**
+ * ARIA for a control whose root is not a labelable element and which does not
+ * declare `inputId` — currently `SelectButton`, whose root is
+ * `<div role="group">` (#69).
+ *
+ * Same family as `selectComboboxAria`, one step worse. `SelectButton` declares
+ * no `inputId` prop at all, so `FormField`'s `:input-id="id"` does not reach a
+ * prop: it falls through into `$attrs`, gets swept into `ptmi('root')`, and is
+ * rendered on the `<div>` as a bare `input-id="v-1-7"` — an attribute that means
+ * nothing to anything. `<label for>` then points at an id that exists NOWHERE in
+ * the document, so the group had no accessible name at all. Measured before the
+ * fix: `getByRole('group', { name: 'Side', exact: true })` and `{ name: 'Invest
+ * by' }` both resolved to 0, with `input-id="v-1-7"` / `"v-1-9"` on the divs.
+ *
+ * `ariaLabelledby` IS declared and is bound on that same root, and PT wins the
+ * merge (`ptmi` is `mergeProps($attrs, ptm(key))`, so the PT section is applied
+ * last) — the same lever #65 used on `selectPt.label`.
+ *
+ * Two deliberate details:
+ *  - the leaked `input-id` is set back to `undefined`, which Vue omits from the
+ *    rendered attributes. Naming the group correctly while still emitting an
+ *    invalid attribute would only half-close the issue.
+ *  - an `aria-label` passed at a call site is left alone (the dashboard's range
+ *    presets use one, and are not inside a `FormField`). Nothing is derived
+ *    without an `input-id`, so that instance is untouched.
+ */
+function fieldGroupAria(
+  instance: { $attrs?: Record<string, unknown> } | undefined,
+): Record<string, string | undefined> {
+  const attrs = instance?.$attrs
+  const inputId = attr(attrs, 'input-id', 'inputId')
+  const labelledby = attr(attrs, 'aria-labelledby') ?? (inputId ? fieldLabelId(inputId) : undefined)
+
+  return {
+    ...(labelledby ? { 'aria-labelledby': labelledby } : {}),
+    // Vue renders nothing for an undefined attribute value.
+    'input-id': undefined,
+    inputId: undefined,
+  }
+}
+
+/**
+ * `aria-describedby` for a control that composes `InputText` and does not
+ * declare the attribute as a prop — `AutoComplete` (#70) and `DatePicker`.
+ *
+ * Both render the role-bearing element as an inner `<input role="combobox">` via
+ * a child `InputText`, and both forward `id`/`invalid` to it but NOT
+ * `aria-describedby`. So the call site's describedby was swept into the outer
+ * wrapper's `ptmi('root')` and landed on a plain `<div>` with no role — measured
+ * on the Ticker field: the wrapper carried `aria-describedby="v-1-11-hint"`
+ * while the `<input role="combobox">` carried none, giving the control a
+ * computed accessible description of `""`. The hint was displayed and never
+ * announced; after a failed submit the validation error was not announced
+ * either, even though `aria-invalid="true"` did reach the input.
+ *
+ * The callback runs while the CHILD `InputText` resolves its own `root`, so
+ * `params.parent.attrs` is the composing component's `$attrs` — that is where
+ * the describedby is. Reading `instance.$attrs` here would find nothing.
+ */
+function describedbyFromParent(parent: unknown): { 'aria-describedby'?: string } {
+  // PrimeVue's own `*SharedPassThroughMethodOptions` types omit `attrs` from
+  // `parent`, though `$params` (basecomponent) populates it at runtime — hence
+  // the narrowing cast rather than a typed parameter.
+  const attrs = (parent as { attrs?: Record<string, unknown> } | undefined)?.attrs
+  const describedby = attr(attrs, 'aria-describedby')
+  return describedby ? { 'aria-describedby': describedby } : {}
+}
+
 export const selectPt: SelectPassThroughOptions = {
   root: ({ props }) => ({
     class: [
@@ -153,7 +232,12 @@ const rangeToggleButtonPt: ToggleButtonPassThroughOptions = {
 }
 
 export const selectButtonPt: SelectButtonPassThroughOptions = {
-  root: 'inline-flex gap-0.5 rounded-md border border-line bg-panel p-0.5',
+  // The ARIA half is #69 — see fieldGroupAria. `:input-id` on a SelectButton is
+  // therefore load-bearing for its accessible name, exactly as it is for Select.
+  root: ({ instance }) => ({
+    class: 'inline-flex gap-0.5 rounded-md border border-line bg-panel p-0.5',
+    ...fieldGroupAria(instance),
+  }),
   pcToggleButton: rangeToggleButtonPt,
 }
 
@@ -202,11 +286,14 @@ export const textareaPt: TextareaPassThroughOptions = {
 export const autoCompletePt: AutoCompletePassThroughOptions = {
   root: 'relative w-full',
   pcInputText: {
-    root: ({ props }) => ({
+    // describedbyFromParent is #70: the hint and the validation error have to be
+    // announced on the inner `<input role="combobox">`, not on the wrapper div.
+    root: ({ props, parent }) => ({
       class: [
         'w-full rounded-md border bg-panel px-3 py-2 text-sm text-ink placeholder:text-ink-subtle outline-none transition-colors focus:ring-2 focus:ring-accent-soft',
         props.invalid ? 'border-down focus:border-down' : 'border-line focus:border-accent',
       ],
+      ...describedbyFromParent(parent),
     }),
   },
   overlay: 'z-50 mt-1 overflow-hidden rounded-md border border-line bg-panel shadow-lg',
@@ -230,11 +317,21 @@ export const autoCompletePt: AutoCompletePassThroughOptions = {
 export const datePickerPt: DatePickerPassThroughOptions = {
   root: 'w-full',
   pcInputText: {
-    root: ({ props }) => ({
+    // Same defect as AutoComplete's. #70 flagged DatePicker as PLAUSIBLE but
+    // explicitly unverified; it is now measured. The only DatePicker in the app
+    // that has anything to describe is the recurring drawer's "Ends on" (hint:
+    // "Optional — runs forever if empty."), and there the wrapper `<span>`
+    // carried `aria-describedby="v-1-22-hint"` while its
+    // `<input role="combobox">` carried none. The transaction drawer's Date
+    // field cannot show this either way — it has no hint and its date is
+    // pre-filled, so an absent describedby there is CORRECT, which is why a
+    // first measurement attempt looked like a clean bill of health.
+    root: ({ props, parent }) => ({
       class: [
         'w-full rounded-md border bg-panel px-3 py-2 text-sm text-ink placeholder:text-ink-subtle outline-none transition-colors focus:ring-2 focus:ring-accent-soft',
         props.invalid ? 'border-down focus:border-down' : 'border-line focus:border-accent',
       ],
+      ...describedbyFromParent(parent),
     }),
   },
   panel: 'z-50 mt-1 rounded-md border border-line bg-panel p-3 shadow-lg',

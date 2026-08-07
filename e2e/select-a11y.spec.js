@@ -43,9 +43,25 @@ const KIND_LABEL = 'Kind'
 const FREQUENCY_LABEL = 'Frequency'
 const BENCHMARK_LABEL = 'Benchmark'
 
+/** #69: the two SelectButtons, by the visible label each must announce. */
+const SIDE_LABEL = 'Side'
+const INVEST_BY_LABEL = 'Invest by'
+
+/** #70: the Ticker AutoComplete's hint, which must be ANNOUNCED, not just shown. */
+const TICKER_HINT = 'Search the local directory — no API quota is used.'
+const TICKER_ERROR = 'Pick a ticker from the list'
+
 /** Accessible-name lookup, always exact — see the note above. */
 function comboboxNamed(scope, name) {
   return scope.getByRole('combobox', { name, exact: true })
+}
+
+/**
+ * #69: SelectButton's root is `<div role="group">`. `exact: true` for the same
+ * reason as everywhere else in this file.
+ */
+function groupNamed(scope, name) {
+  return scope.getByRole('group', { name, exact: true })
 }
 
 test.describe('a11y: Selects are named by their field label (#65)', () => {
@@ -128,6 +144,53 @@ test.describe('a11y: Selects are named by their field label (#65)', () => {
     await expect(kind).toContainText('Dividend reinvestment')
     await expect(comboboxNamed(drawer, KIND_LABEL)).toHaveCount(1)
 
+    // --- 3a. Side, a SelectButton (#69) -------------------------------------
+    // SelectButton declares no `inputId` prop, so `:input-id="id"` fell through
+    // as a plain attribute onto its `<div role="group">` and FormField's
+    // `<label for>` pointed at an id that existed nowhere in the document.
+    // Measured before the fix: 0.
+    const side = groupNamed(drawer, SIDE_LABEL)
+    await expect(side, 'the Side SelectButton should be named by its label').toHaveCount(1)
+
+    // The same call site's `input-id` must not survive as an invalid DOM
+    // attribute on that div — the second half of #69.
+    await expect(side).not.toHaveAttribute('input-id')
+
+    // It must still SELECT. `Sell` and `Buy` are ToggleButtons inside the group.
+    await drawer.getByRole('button', { name: 'Sell', exact: true }).click()
+    await expect(drawer.getByRole('button', { name: 'Sell', exact: true })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+    await expect(groupNamed(drawer, SIDE_LABEL), 'the name must survive a selection').toHaveCount(1)
+
+    // --- 3b. Ticker, an AutoComplete (#70) ----------------------------------
+    // `aria-describedby` was swept into the root `ptmi()` and landed on the
+    // outer wrapper `<div>`, never on the inner `<input role="combobox">`, so
+    // the computed accessible description was "" — hint AND error unannounced.
+    const ticker = comboboxNamed(drawer, 'Ticker')
+    await expect(ticker, 'Ticker is a real <input>, so its NAME was never broken').toHaveCount(1)
+    await expect(ticker, 'the hint must be announced, not merely displayed').toHaveAccessibleDescription(
+      TICKER_HINT,
+    )
+
+    // Force a validation error, and assert the ERROR is what gets announced.
+    // FormField swaps hint for error, so this also proves the description
+    // tracks state rather than being wired once at mount.
+    // NB: scoped to the drawer — the page behind it has an "Add transaction"
+    // button too (the one that opened this drawer).
+    await drawer.getByRole('button', { name: 'Add transaction', exact: true }).click()
+    await expect(drawer.getByText(TICKER_ERROR)).toBeVisible()
+    await expect(ticker).toHaveAccessibleDescription(TICKER_ERROR)
+    await expect(ticker).toHaveAttribute('aria-invalid', 'true')
+
+    // `smoke.spec.js` addresses Ticker and Date by accessible name and was
+    // tightened to `exact: true` in the same pass (#70 flagged both as the same
+    // shape as the trap that nearly shipped a vacuous assertion in #65). Pin
+    // that the exact form still resolves, so the tightening cannot have quietly
+    // made those two lookups match nothing.
+    await expect(comboboxNamed(drawer, 'Date')).toHaveCount(1)
+
     // --- 3. Frequency (RecurringFormDrawer) ---------------------------------
     await page.goto(`/portfolios/${portfolio.id}/recurring`)
     await expect(page.getByRole('heading', { name: 'Recurring buys', level: 1 })).toBeVisible()
@@ -145,5 +208,10 @@ test.describe('a11y: Selects are named by their field label (#65)', () => {
     await quarterly.click()
     await expect(frequency).toContainText('Quarterly')
     await expect(comboboxNamed(recurringDrawer, FREQUENCY_LABEL)).toHaveCount(1)
+
+    // --- 5. Invest by, the second SelectButton (#69) -------------------------
+    const investBy = groupNamed(recurringDrawer, INVEST_BY_LABEL)
+    await expect(investBy, 'the Invest by SelectButton should be named by its label').toHaveCount(1)
+    await expect(investBy).not.toHaveAttribute('input-id')
   })
 })
