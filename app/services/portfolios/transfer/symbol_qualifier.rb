@@ -68,10 +68,12 @@ module Portfolios
       # Canadian venue and that a wrong-but-consistent suffix still achieves the
       # suffix's only job, which is not colliding with a US ticker. #66 made the
       # cost measurable for the first time and it is worse than "most common"
-      # suggested: **5,995 of 8,627 CAD listings (69%) are not on the TSX**, so
-      # the guess is wrong for the majority. `FINN` is the worked example — this
-      # yields `FINN.TO`, which 404s at every price provider, while the real
-      # listing is `FINN.NE` on Cboe Canada.
+      # suggested: re-measured 2026-08-07, **5,998 of 8,651 CAD listings (69.3%)
+      # are not on the TSX** — NEO 3,586, TSX 2,653, TSXV 1,681, CSE 731 — so the
+      # guess is wrong for the majority. (#79 quotes 5,995 of 8,627 from an
+      # earlier import of the directory; the ratio is the same.) `FINN` is the
+      # worked example — this yields `FINN.TO`, which 404s at every price
+      # provider, while the real listing is `FINN.NE` on Cboe Canada.
       #
       # #66 also made it FIXABLE for the first time, by importing Canadian rows
       # into `listed_instruments`: before it there was no `FINN.NE` row to look
