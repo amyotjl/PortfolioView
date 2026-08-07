@@ -9,8 +9,10 @@ import {
   type RecurringRunDate,
   type RecurringTransaction,
 } from '@/types'
-import { PORTFOLIOS_KEY } from '@/composables/usePortfolios'
-import { TRANSACTIONS_KEY } from '@/composables/useTransactions'
+import {
+  RECURRING_KEY,
+  invalidatePortfolioSeries,
+} from '@/composables/portfolioSeriesCache'
 
 /**
  * Recurring rules are SERVER state in the Pinia Colada cache, keyed
@@ -21,8 +23,12 @@ import { TRANSACTIONS_KEY } from '@/composables/useTransactions'
  * (mirroring the Transaction model), so the dashboard's cached candles/summary/
  * allocations are stale afterwards too. Transactions are included because a rule
  * that materializes creates real transactions.
+ *
+ * That list used to be hand-copied from `useTransactions`; #80 extracted it to
+ * `composables/portfolioSeriesCache.ts` so the two (now three) call sites cannot
+ * drift apart again.
  */
-export const RECURRING_KEY = 'recurring'
+export { RECURRING_KEY }
 
 /** Request body for create/update — mirrors the controller's permitted params. */
 export interface RecurringInput {
@@ -35,15 +41,6 @@ export interface RecurringInput {
   anchor_on: string
   end_on: string | null
   active: boolean
-}
-
-function invalidateSeries(cache: ReturnType<typeof useQueryCache>, portfolioId: number): void {
-  cache.invalidateQueries({ key: [RECURRING_KEY, portfolioId] })
-  cache.invalidateQueries({ key: [TRANSACTIONS_KEY, portfolioId] })
-  cache.invalidateQueries({ key: ['candles', portfolioId] })
-  cache.invalidateQueries({ key: ['summary', portfolioId] })
-  cache.invalidateQueries({ key: ['allocations', portfolioId] })
-  cache.invalidateQueries({ key: [...PORTFOLIOS_KEY] })
 }
 
 export function useRecurringQuery(portfolioId: MaybeRefOrGetter<number>) {
@@ -71,7 +68,7 @@ export function useCreateRecurring(portfolioId: MaybeRefOrGetter<number>) {
       apiPost(`/portfolios/${toValue(portfolioId)}/recurring_transactions`, input, {
         schema: recurringTransactionResponseSchema,
       }),
-    onSuccess: () => invalidateSeries(cache, toValue(portfolioId)),
+    onSuccess: () => invalidatePortfolioSeries(cache, toValue(portfolioId)),
   })
 }
 
@@ -84,7 +81,7 @@ export function useUpdateRecurring(portfolioId: MaybeRefOrGetter<number>) {
       apiPatch(`/portfolios/${toValue(portfolioId)}/recurring_transactions/${id}`, input, {
         schema: recurringTransactionResponseSchema,
       }),
-    onSuccess: () => invalidateSeries(cache, toValue(portfolioId)),
+    onSuccess: () => invalidatePortfolioSeries(cache, toValue(portfolioId)),
   })
 }
 
@@ -95,7 +92,7 @@ export function useDeleteRecurring(portfolioId: MaybeRefOrGetter<number>) {
     // so deleting a rule never rewrites history.
     mutation: (id: number) =>
       apiDelete(`/portfolios/${toValue(portfolioId)}/recurring_transactions/${id}`),
-    onSuccess: () => invalidateSeries(cache, toValue(portfolioId)),
+    onSuccess: () => invalidatePortfolioSeries(cache, toValue(portfolioId)),
   })
 }
 

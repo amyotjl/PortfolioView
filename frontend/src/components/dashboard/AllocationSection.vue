@@ -6,7 +6,9 @@ import AllocationTable from './AllocationTable.vue'
 import SectorTreemap from './SectorTreemap.vue'
 import SectorTreemapTable from './SectorTreemapTable.vue'
 import { useAllocationsQuery } from '@/composables/useAllocations'
+import { useSummaryQuery } from '@/composables/useSummary'
 import { instrumentDonutRows, sectorDonutRows } from '@/charts/donuts'
+import { allocationScopeNotice } from '@/lib/cash'
 import { formatDate } from '@/lib/format'
 
 /**
@@ -14,10 +16,30 @@ import { formatDate } from '@/lib/format'
  * Owns its own /allocations query (Pinia Colada dedupes), so the parent view
  * stays a thin composition surface. Allocation is an as-of-latest snapshot,
  * independent of the chart's date-range window.
+ *
+ * NO CASH SLICE (#80), deliberately. A slice would change every weight on screen
+ * across four surfaces, the ordinal single-hue ramp cannot express "this slice is a
+ * categorically different KIND of thing", and it would break the pinned invariant
+ * that `by_instrument[].sector` is byte-identical to the matching `by_sector` label.
+ * "How much is uninvested" is one number — a stat tile, not a slice.
+ *
+ * What a cash-tracked portfolio gets instead is a header sentence naming the scope,
+ * because `/allocations`' `total_value` is holdings-only and is therefore LESS than
+ * `/summary`'s `current_value` by exactly the cash balance. Saying so is cheaper than
+ * leaving a reader to discover two totals that disagree. Copy lives in `lib/cash.ts`.
  */
 const props = defineProps<{ portfolioId: number }>()
 
 const { allocations, status } = useAllocationsQuery(() => props.portfolioId)
+const { summary } = useSummaryQuery(() => props.portfolioId)
+
+const scopeNotice = computed(() =>
+  allocationScopeNotice({
+    holdingsValue: summary.value?.holdings_value,
+    currentValue: summary.value?.current_value,
+    cashBalance: summary.value?.cash_balance,
+  }),
+)
 
 const instrumentRows = computed(() =>
   allocations.value ? instrumentDonutRows(allocations.value) : [],
@@ -35,6 +57,8 @@ const asOfLabel = computed(() =>
       <h2 class="text-sm font-semibold text-ink">Allocation</h2>
       <p v-if="asOfLabel" class="text-xs text-ink-subtle">{{ asOfLabel }}</p>
     </div>
+
+    <p v-if="scopeNotice" class="max-w-3xl text-xs text-ink-subtle">{{ scopeNotice }}</p>
 
     <div v-if="status === 'pending'" class="grid gap-4 md:grid-cols-2">
       <div

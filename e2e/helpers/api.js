@@ -75,6 +75,23 @@ export async function createTransaction(page, portfolioId, transaction) {
   return body.transaction
 }
 
+/**
+ * Record a cash movement (#80).
+ *
+ * `amount` is an UNSIGNED magnitude; `kind` carries the direction. The response's
+ * `meta` carries the post-write balance, which is what a caller asserts on rather
+ * than recomputing it.
+ */
+export async function createCashTransaction(page, portfolioId, cashTransaction) {
+  const body = await mutate(
+    page,
+    'POST',
+    `/api/v1/portfolios/${portfolioId}/cash_transactions`,
+    { kind: 'deposit', notes: null, ...cashTransaction },
+  )
+  return body
+}
+
 /** Seeded benchmarks (SPY, VTI, QQQ…) in seed order. */
 export async function fetchBenchmarks(page) {
   const response = await page.request.get('/api/v1/benchmarks')

@@ -6,12 +6,18 @@ import {
   buildFlowSeriesData,
   alignDrawdown,
   extractDates,
+  flowKindLabel,
 } from './candles'
 import { LIGHT_CHART_THEME as theme } from './theme'
 import type { CandlesResponse } from '@/types'
 
 const APPROX = 'Portfolio H/L are bounds; component extremes may not co-occur.'
 
+/**
+ * The TRADE-BASIS fixture: `cash: null`, `flow_basis: 'trades'`. Every expectation
+ * written against it also serves as the #80 no-regression pin — an untracked payload
+ * must produce exactly the output it did before cash existed.
+ */
 const fixture: CandlesResponse = {
   candles: [
     { t: '2026-01-02', o: '100.00', h: '110.00', l: '95.00', c: '105.00' },
@@ -26,6 +32,7 @@ const fixture: CandlesResponse = {
       { t: '2026-01-06', v: '498.00' },
     ],
   },
+  cash: null,
   flows: [
     { t: '2026-01-02', net: '1000.00', items: [{ ticker: 'AAPL', kind: 'buy', amount: '1000.00' }] },
     { t: '2026-01-06', net: '-250.00', items: [{ ticker: 'AAPL', kind: 'sell', amount: '-250.00' }] },
@@ -40,19 +47,59 @@ const fixture: CandlesResponse = {
     filled_dates: ['2026-01-06'],
     benchmark_clamped: true,
     approximation: APPROX,
+    flow_basis: 'trades',
+    cash_negative: false,
+    cash_negative_since: null,
   },
+}
+
+/**
+ * The same three days for a portfolio that RECORDS CASH. Holdings legs are identical
+ * (candles are holdings-only in both bases); cash is a separate end-of-day series, and
+ * `flows` carries deposits/withdrawals only — no trade items at all.
+ */
+const CASH_FIXTURE: CandlesResponse = {
+  ...fixture,
+  cash: [
+    { t: '2026-01-02', v: '900.00' },
+    { t: '2026-01-05', v: '900.00' },
+    { t: '2026-01-06', v: '-50.00' },
+  ],
+  flows: [
+    {
+      t: '2026-01-02',
+      net: '1000.00',
+      items: [{ ticker: null, kind: 'deposit', amount: '1000.00' }],
+    },
+    {
+      t: '2026-01-06',
+      net: '-250.00',
+      items: [{ ticker: null, kind: 'withdrawal', amount: '-250.00' }],
+    },
+  ],
+  meta: { ...fixture.meta, flow_basis: 'cash', cash_negative: true, cash_negative_since: '2026-01-06' },
 }
 
 const EMPTY: CandlesResponse = {
   candles: [],
   benchmark: null,
+  cash: null,
   flows: [],
   drawdown: [],
-  meta: { partial: false, filled_dates: [], benchmark_clamped: false, approximation: '' },
+  meta: {
+    partial: false,
+    filled_dates: [],
+    benchmark_clamped: false,
+    approximation: '',
+    flow_basis: 'trades',
+    cash_negative: false,
+    cash_negative_since: null,
+  },
 }
 
 interface OptShape {
   grid: unknown[]
+  title: Array<{ text?: string }>
   series: Array<{
     name?: string
     type?: string
@@ -210,5 +257,144 @@ describe('empty payload', () => {
     expect(opt.grid).toHaveLength(3)
     expect(seriesNamed(opt, 'Portfolio')?.data).toEqual([])
     expect(opt.xAxis[0].data).toEqual([])
+  })
+})
+
+// --- Cash (#80) --------------------------------------------------------------
+
+describe('flowKindLabel', () => {
+  it('labels the cash kinds', () => {
+    expect(flowKindLabel('deposit')).toBe('Deposit')
+    expect(flowKindLabel('withdrawal')).toBe('Withdrawal')
+    expect(flowKindLabel('dividend_cash')).toBe('Cash dividend')
+  })
+
+  it('passes buy/sell through verbatim, which is what keeps a trade tooltip identical', () => {
+    expect(flowKindLabel('buy')).toBe('buy')
+    expect(flowKindLabel('sell')).toBe('sell')
+  })
+
+  it('falls through to the RAW STRING for an unknown kind', () => {
+    // `kind` is z.string() precisely so a newer backend kind renders ugly instead of
+    // throwing. The bars color by the sign of `amount`, never by `kind`, so an unknown
+    // kind cannot break the chart either.
+    expect(flowKindLabel('rebate')).toBe('rebate')
+  })
+})
+
+describe('pane titles follow the basis', () => {
+  it('keeps "Portfolio value" and "Net cash flow" when cash is null', () => {
+    // The no-regression pin: on the trade basis holdings ARE the portfolio value and
+    // the flow bars ARE net cash flow, so both old titles are still exactly right.
+    const titles = build(true).title.map((t) => t.text)
+    expect(titles).toEqual(['Portfolio value', 'Net cash flow', 'Drawdown from peak'])
+  })
+
+  it('retitles to "Holdings value" and "Deposits & withdrawals" when cash is tracked', () => {
+    // Both are corrections, not cosmetics: grid 0 is now a different number from the
+    // Total value tile, and grid 1 no longer contains trades at all.
+    const titles = build(true, CASH_FIXTURE).title.map((t) => t.text)
+    expect(titles).toEqual(['Holdings value', 'Deposits & withdrawals', 'Drawdown from peak'])
+  })
+
+  it('discriminates on payload.cash, not on meta.flow_basis', () => {
+    // A pure builder must read the series it is drawing. If the two ever disagreed,
+    // the presence of the data wins over the label claiming it.
+    const mislabelled: CandlesResponse = {
+      ...fixture,
+      meta: { ...fixture.meta, flow_basis: 'cash' },
+    }
+    expect(build(true, mislabelled).title[0].text).toBe('Portfolio value')
+  })
+})
+
+describe('tooltip cash rows', () => {
+  const render = (payload: CandlesResponse, date: string): string =>
+    build(true, payload).tooltip.formatter([{ axisValue: date }])
+
+  it('shows Close and no Total/Cash rows when cash is null', () => {
+    const html = render(fixture, '2026-01-05')
+    expect(html).toContain('Close')
+    expect(html).not.toContain('>Total<')
+    expect(html).not.toContain('>Cash<')
+    expect(html).not.toContain('>Holdings<')
+  })
+
+  it('adds Total and Cash rows, and relabels Close to Holdings, when cash is tracked', () => {
+    const html = render(CASH_FIXTURE, '2026-01-05')
+    // Holdings close $108.00 + cash $900.00 = $1,008.00, summed in exact cents.
+    expect(html).toContain('$1,008.00')
+    expect(html).toContain('Total')
+    expect(html).toContain('Holdings')
+    expect(html).toContain('$900.00')
+    expect(html).toContain('Cash')
+    expect(html).not.toContain('Close')
+  })
+
+  it('keeps the O/H/L subline, which is still holdings-only in both bases', () => {
+    expect(render(CASH_FIXTURE, '2026-01-05')).toContain('Open $105.00')
+  })
+
+  it('paints a negative cash row with the warn token, never the loss token', () => {
+    // Negative cash is a bookkeeping gap, not a loss — up/down stay reserved for real
+    // gain/loss polarity.
+    const html = render(CASH_FIXTURE, '2026-01-06')
+    expect(html).toContain('-$50.00')
+    expect(html).toContain(theme.warn)
+  })
+
+  it('uses no warn token at all when cash is positive', () => {
+    expect(render(CASH_FIXTURE, '2026-01-05')).not.toContain(theme.warn)
+  })
+
+  it('still carries the H/L bounds disclaimer on the cash basis', () => {
+    expect(render(CASH_FIXTURE, '2026-01-05')).toContain(APPROX)
+  })
+})
+
+describe('tooltip flow items', () => {
+  const render = (payload: CandlesResponse, date: string): string =>
+    build(true, payload).tooltip.formatter([{ axisValue: date }])
+
+  it('renders a trade item as `TICKER kind ±$x` — unchanged', () => {
+    const html = render(fixture, '2026-01-02')
+    expect(html).toContain('AAPL buy +$1,000.00')
+  })
+
+  it('renders a cash item with a LABEL and no ticker token', () => {
+    // `ticker` is null for a deposit; the leading token is dropped rather than
+    // rendered as the string "null".
+    const html = render(CASH_FIXTURE, '2026-01-02')
+    expect(html).toContain('Deposit +$1,000.00')
+    expect(html).not.toContain('null')
+  })
+
+  it('renders a withdrawal item with its negative amount', () => {
+    expect(render(CASH_FIXTURE, '2026-01-06')).toContain('Withdrawal -$250.00')
+  })
+
+  it('renders an unrecognised kind verbatim rather than blanking the line', () => {
+    const odd: CandlesResponse = {
+      ...CASH_FIXTURE,
+      flows: [
+        { t: '2026-01-02', net: '5.00', items: [{ ticker: null, kind: 'rebate', amount: '5.00' }] },
+      ],
+    }
+    expect(render(odd, '2026-01-02')).toContain('rebate +$5.00')
+  })
+})
+
+describe('cash adds no series to grid 0', () => {
+  it('draws exactly the same series set in both bases', () => {
+    // Cash goes in neither the candle nor a fourth series: the candlestick's grammar
+    // says "this is a market move", so a deposit drawn as a tall green candle would be
+    // a lie about performance, and cash has no O/H/L to fold in.
+    const names = (payload: CandlesResponse) => build(true, payload).series.map((s) => s.name)
+    expect(names(CASH_FIXTURE)).toEqual(names(fixture))
+  })
+
+  it('leaves the candlestick data holdings-only when cash is tracked', () => {
+    const opt = build(false, CASH_FIXTURE)
+    expect(seriesNamed(opt, 'Portfolio')?.data).toEqual(toCandlestickData(fixture.candles))
   })
 })

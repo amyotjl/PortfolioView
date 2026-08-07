@@ -6,6 +6,7 @@ import Toast from 'primevue/toast'
 import { useToast } from 'primevue/usetoast'
 import TransactionsTable from '@/components/transactions/TransactionsTable.vue'
 import TransactionFormDrawer from '@/components/transactions/TransactionFormDrawer.vue'
+import CashSection from '@/components/cash/CashSection.vue'
 import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
 import {
   useTransactionsQuery,
@@ -21,11 +22,13 @@ import type { TransactionFormValues } from '@/forms/transaction'
 import type { Transaction } from '@/types'
 
 /**
- * Transactions page (#49): the list, the create/edit drawer, and the delete
- * confirmation.
+ * Transactions page (#49): the trade list, its create/edit drawer, and the delete
+ * confirmation — plus the cash ledger above them (#80).
  *
- * This view owns the mutations (not the drawer) so the optimistic insert and its
- * undo toast can be coordinated in one place — see `onSubmit` below.
+ * This view owns the TRADE mutations (not the drawer) so the optimistic insert and
+ * its undo toast can be coordinated in one place — see `onSubmit` below. `CashSection`
+ * is a self-contained feature container that owns its own query and mutations, so
+ * nothing about cash is threaded through here.
  */
 const props = defineProps<{ id: string }>()
 const portfolioId = computed(() => Number(props.id))
@@ -241,69 +244,83 @@ function onPageChange(event: { page: number }): void {
 
 <template>
   <section>
-    <header class="mb-6 flex flex-wrap items-start justify-between gap-4">
-      <div>
-        <h1 class="text-xl font-semibold tracking-tight text-ink">Transactions</h1>
-        <p class="mt-1 text-sm text-ink-muted">
-          Every buy and sell in this portfolio, most recent first.
-        </p>
-      </div>
-      <Button label="Add transaction" :pt="buttonPt" @click="openCreate" />
+    <header class="mb-6">
+      <h1 class="text-xl font-semibold tracking-tight text-ink">Transactions</h1>
+      <p class="mt-1 text-sm text-ink-muted">
+        This portfolio’s cash movements and trades, most recent first.
+      </p>
     </header>
 
-    <!-- Loading -->
-    <div
-      v-if="status === 'pending'"
-      class="h-64 animate-pulse rounded-lg border border-line bg-panel"
-      aria-hidden="true"
-    />
-    <span v-if="status === 'pending'" class="sr-only">Loading transactions…</span>
+    <!--
+      Cash above trades: it is the shorter list, it is what a reader checks when the
+      total does not match their broker, and a deposit is what unlocks the
+      deposit-based return basis the trades below are measured against.
+    -->
+    <CashSection :portfolio-id="portfolioId" />
 
-    <!-- Error -->
-    <div
-      v-else-if="status === 'error'"
-      class="rounded-lg border border-line bg-panel p-8 text-center"
-    >
-      <p class="text-sm text-ink">We couldn’t load your transactions.</p>
-      <p class="mt-1 text-sm text-ink-muted">Check your connection and try again.</p>
-      <Button
-        label="Retry"
-        severity="secondary"
-        class="mt-4"
-        :pt="buttonPt"
-        @click="() => refetch()"
-      />
-    </div>
+    <section aria-label="Trades">
+      <header class="mb-3 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 class="text-base font-semibold text-ink">Trades</h2>
+          <p class="mt-0.5 text-sm text-ink-muted">Every buy and sell in this portfolio.</p>
+        </div>
+        <Button label="Add transaction" :pt="buttonPt" @click="openCreate" />
+      </header>
 
-    <!-- Empty (no optimistic row in flight either) -->
-    <div
-      v-else-if="isEmpty && !optimisticRow"
-      class="rounded-lg border border-dashed border-line-strong bg-panel p-10 text-center"
-    >
-      <h2 class="text-base font-semibold text-ink">No transactions yet</h2>
-      <p class="mx-auto mt-1 max-w-sm text-sm text-ink-muted">
-        Add your first buy to start building this portfolio’s history and performance chart.
-      </p>
-      <Button label="Add transaction" class="mt-5" :pt="buttonPt" @click="openCreate" />
-    </div>
+      <!-- Loading -->
+      <div
+        v-if="status === 'pending'"
+        class="h-64 animate-pulse rounded-lg border border-line bg-panel"
+        aria-hidden="true"
+      />
+      <span v-if="status === 'pending'" class="sr-only">Loading transactions…</span>
 
-    <!-- List -->
-    <div v-else class="overflow-hidden rounded-lg border border-line bg-panel">
-      <TransactionsTable
-        :transactions="rows"
-        :busy-id="optimisticRow ? -1 : null"
-        @edit="openEdit"
-        @delete="askDelete"
-      />
-      <Paginator
-        v-if="showPaginator"
-        :rows="perPage"
-        :total-records="totalRecords"
-        :first="firstRecord"
-        :pt="paginatorPt"
-        @page="onPageChange"
-      />
-    </div>
+      <!-- Error -->
+      <div
+        v-else-if="status === 'error'"
+        class="rounded-lg border border-line bg-panel p-8 text-center"
+      >
+        <p class="text-sm text-ink">We couldn’t load your transactions.</p>
+        <p class="mt-1 text-sm text-ink-muted">Check your connection and try again.</p>
+        <Button
+          label="Retry"
+          severity="secondary"
+          class="mt-4"
+          :pt="buttonPt"
+          @click="() => refetch()"
+        />
+      </div>
+
+      <!-- Empty (no optimistic row in flight either) -->
+      <div
+        v-else-if="isEmpty && !optimisticRow"
+        class="rounded-lg border border-dashed border-line-strong bg-panel p-10 text-center"
+      >
+        <h3 class="text-base font-semibold text-ink">No trades yet</h3>
+        <p class="mx-auto mt-1 max-w-sm text-sm text-ink-muted">
+          Add your first buy to start building this portfolio’s history and performance chart.
+        </p>
+        <Button label="Add transaction" class="mt-5" :pt="buttonPt" @click="openCreate" />
+      </div>
+
+      <!-- List -->
+      <div v-else class="overflow-hidden rounded-lg border border-line bg-panel">
+        <TransactionsTable
+          :transactions="rows"
+          :busy-id="optimisticRow ? -1 : null"
+          @edit="openEdit"
+          @delete="askDelete"
+        />
+        <Paginator
+          v-if="showPaginator"
+          :rows="perPage"
+          :total-records="totalRecords"
+          :first="firstRecord"
+          :pt="paginatorPt"
+          @page="onPageChange"
+        />
+      </div>
+    </section>
 
     <TransactionFormDrawer
       ref="drawer"
