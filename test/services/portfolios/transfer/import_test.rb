@@ -35,9 +35,17 @@ module Portfolios
         }.merge(overrides))
       end
 
-      def portfolio_spec(name, transactions: [], recurring: [], benchmark: nil)
+      def cash_spec(kind, amount:, on: "2024-01-04", notes: nil)
+        CashSpec.new(kind: kind, amount: bd(amount), notes: notes,
+                     occurred_on: on.is_a?(Date) ? on : Date.parse(on))
+      end
+
+      # `cash:` is passed only when a test means it — PortfolioSpec defaults
+      # cash_transactions to [], which is what keeps every pre-#80 test above
+      # constructing one unchanged.
+      def portfolio_spec(name, transactions: [], recurring: [], benchmark: nil, cash: [])
         PortfolioSpec.new(name: name, benchmark_name: benchmark, transactions: transactions,
-                          recurring_transactions: recurring, warnings: [])
+                          recurring_transactions: recurring, cash_transactions: cash, warnings: [])
       end
 
       def document(portfolios:, instruments: [], format: NATIVE_FORMAT, warnings: [])
@@ -442,6 +450,130 @@ module Portfolios
 
         assert_equal "failed", result.portfolios.first.status
         assert_match(/[Ff]requency/, result.portfolios.first.errors.first)
+      end
+
+      # --- Cash (issue #80) ----------------------------------------------------
+
+      test "writes a portfolio's cash rows and counts them per portfolio and in totals" do
+        doc = one_portfolio_doc(
+          transactions: [ transaction_spec("AAPL") ],
+          cash: [ cash_spec("deposit", amount: "1000", on: "2024-01-04"),
+                  cash_spec("dividend_cash", amount: "12.34", on: "2024-02-01") ]
+        )
+
+        result = import(doc)
+
+        assert_equal 2, result.portfolios.sole.cash_created
+        assert_equal 2, result.totals[:cash_created]
+
+        portfolio = @user.portfolios.find_by!(name: "Retirement")
+        assert_equal [ [ "deposit", bd("1000"), Date.new(2024, 1, 4) ],
+                       [ "dividend_cash", bd("12.34"), Date.new(2024, 2, 1) ] ],
+                     portfolio.cash_transactions.order(:occurred_on)
+                              .map { |c| [ c.kind, c.amount, c.occurred_on ] }
+        assert portfolio.cash_tracked?, "a cash row is the ONE predicate that flips the basis"
+      end
+
+      test "a portfolio with no cash section is not cash-tracked and reports zero" do
+        result = import(one_portfolio_doc(transactions: [ transaction_spec("AAPL") ]))
+
+        assert_equal 0, result.portfolios.sole.cash_created
+        assert_equal 0, result.totals[:cash_created]
+        assert_not @user.portfolios.find_by!(name: "Retirement").cash_tracked?
+      end
+
+      test "signs survive verbatim, including a negative dividend and a positive tax" do
+        # A dividend reversal and a tax refund. Storage is signed and there is no
+        # magnitude->sign step anywhere, so a coercion here would invert both.
+        doc = one_portfolio_doc(cash: [
+          cash_spec("withdrawal", amount: "-250", on: "2024-01-05"),
+          cash_spec("dividend_cash", amount: "-5.25", on: "2024-01-06"),
+          cash_spec("tax", amount: "3.10", on: "2024-01-07")
+        ])
+
+        import(doc)
+
+        assert_equal [ bd("-250"), bd("-5.25"), bd("3.1") ],
+                     @user.portfolios.find_by!(name: "Retirement")
+                          .cash_transactions.order(:occurred_on).map(&:amount)
+      end
+
+      test "a cash row that violates the sign CHECK fails its portfolio, not the file" do
+        doc = document(instruments: [ instrument_spec("AAPL") ], portfolios: [
+          portfolio_spec("Good", transactions: [ transaction_spec("AAPL") ]),
+          # A positive withdrawal: the model validation mirrors the CHECK, so this
+          # is a reportable failure rather than a 500 from PostgreSQL.
+          portfolio_spec("Bad", cash: [ cash_spec("withdrawal", amount: "40") ])
+        ])
+
+        result = import(doc)
+
+        assert_equal %w[created failed], result.portfolios.map(&:status)
+        assert_match(/Cash movement 1 \(withdrawal on 2024-01-04\)/, result.portfolios.last.errors.sole)
+        assert_match(/must be negative for a withdrawal/, result.portfolios.last.errors.sole)
+        assert_equal 0, result.portfolios.last.cash_created
+      end
+
+      test "a failed portfolio's cash rolls back with it, inside its own savepoint" do
+        # Cash is portfolio-scoped, so unlike split_events it belongs inside the
+        # savepoint: a portfolio that rolls back must take its cash with it.
+        doc = document(instruments: [ instrument_spec("AAPL") ], portfolios: [
+          portfolio_spec("Bad",
+                         cash: [ cash_spec("deposit", amount: "1000") ],
+                         # An uncovered sell aborts the savepoint AFTER the cash is written.
+                         transactions: [ transaction_spec("AAPL", side: "sell", shares: "1") ])
+        ])
+
+        assert_no_difference "CashTransaction.count" do
+          assert_equal "failed", import(doc).portfolios.sole.status
+        end
+      end
+
+      test "a cash-only portfolio is a real portfolio" do
+        result = import(document(portfolios: [ portfolio_spec("Savings", cash: [
+          cash_spec("deposit", amount: "10000", on: "2024-01-02")
+        ]) ]))
+
+        assert_equal "created", result.portfolios.sole.status
+        assert_equal 1, result.totals[:cash_created]
+        assert_equal 0, result.totals[:transactions_created]
+        assert @user.portfolios.find_by!(name: "Savings").cash_tracked?
+      end
+
+      test "a cash mutation bumps series_version so cached series rotate" do
+        # The FIRST cash row additionally flips the portfolio onto the cash basis,
+        # which rewrites flows for its whole history.
+        import(one_portfolio_doc(cash: [ cash_spec("deposit", amount: "500") ]))
+
+        assert_operator @user.portfolios.find_by!(name: "Retirement").series_version, :>, 1
+      end
+
+      test "a dry run previews the same cash_created it would really write" do
+        doc = one_portfolio_doc(
+          transactions: [ transaction_spec("AAPL") ],
+          cash: [ cash_spec("deposit", amount: "1000"), cash_spec("fee", amount: "-9.99") ]
+        )
+
+        preview = nil
+        assert_no_difference "CashTransaction.count" do
+          preview = import(doc, dry_run: true)
+        end
+        real = import(doc)
+
+        assert_equal 2, preview.totals[:cash_created]
+        assert_equal real.totals[:cash_created], preview.totals[:cash_created]
+        assert_equal real.portfolios.sole.cash_created, preview.portfolios.sole.cash_created
+      end
+
+      test "a skipped portfolio writes no cash at all" do
+        create_portfolio(name: "Retirement", user: @user)
+        doc = one_portfolio_doc(cash: [ cash_spec("deposit", amount: "1000") ])
+
+        assert_no_difference "CashTransaction.count" do
+          result = import(doc, on_conflict: "skip")
+          assert_equal "skipped", result.portfolios.sole.status
+          assert_equal 0, result.totals[:cash_created]
+        end
       end
 
       # --- Dry run -------------------------------------------------------------

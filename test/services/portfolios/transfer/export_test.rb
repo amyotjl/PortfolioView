@@ -22,7 +22,7 @@ module Portfolios
         payload = envelope
 
         assert_equal NATIVE_FORMAT, payload[:format]
-        assert_equal NATIVE_VERSION, payload[:version]
+        assert_equal NATIVE_VERSION_BASE, payload[:version]
         assert_match(/\A\d{4}-\d{2}-\d{2}T.*Z\z/, payload[:exported_at])
       end
 

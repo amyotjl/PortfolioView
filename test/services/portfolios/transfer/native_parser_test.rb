@@ -10,7 +10,7 @@ module Portfolios
       def envelope(overrides = {})
         {
           "format" => NATIVE_FORMAT,
-          "version" => NATIVE_VERSION,
+          "version" => NATIVE_VERSION_BASE,
           "instruments" => [
             { "symbol" => "AAPL", "name" => "Apple Inc", "instrument_type" => "stock", "currency" => "USD" }
           ],
@@ -79,6 +79,77 @@ module Portfolios
         assert rule.active
         assert_equal BigDecimal("100"), rule.dollar_amount
         assert_nil rule.share_amount
+      end
+
+      # --- Cash (issue #80) ---
+
+      def with_cash(rows, version: NATIVE_VERSION_CASH)
+        parse(envelope("version" => version,
+                       "portfolios" => [ envelope["portfolios"].first.merge("cash_transactions" => rows) ]))
+      end
+
+      test "reads a version-2 cash section, coercing amounts and dates" do
+        document = with_cash([
+          { "kind" => "deposit", "amount" => "1000.50", "occurred_on" => "2024-01-15", "notes" => "payday" }
+        ])
+
+        row = document.portfolios.first.cash_transactions.sole
+        assert_equal "deposit", row.kind
+        assert_equal BigDecimal("1000.50"), row.amount
+        assert_instance_of BigDecimal, row.amount
+        assert_equal Date.new(2024, 1, 15), row.occurred_on
+        assert_equal "payday", row.notes
+      end
+
+      test "a negative amount is read verbatim and NEVER coerced toward its kind" do
+        # A dividend reversal and a tax refund are legal rows whose sign IS the
+        # information. A parser that "corrected" either would turn a clawback into
+        # income, silently.
+        rows = with_cash([
+          { "kind" => "withdrawal", "amount" => "-250", "occurred_on" => "2024-02-01" },
+          { "kind" => "dividend_cash", "amount" => "-5.25", "occurred_on" => "2024-02-02" },
+          { "kind" => "tax", "amount" => "3.10", "occurred_on" => "2024-02-03" }
+        ]).portfolios.first.cash_transactions
+
+        assert_equal [ BigDecimal("-250"), BigDecimal("-5.25"), BigDecimal("3.1") ], rows.map(&:amount)
+      end
+
+      test "an absent cash section parses as empty, which is what keeps a v1 file working" do
+        # No special back-compat code: absent -> [] -> not cash-tracked -> exactly
+        # the pre-#80 behaviour. That is the payoff of "has >= 1 cash row" as the
+        # predicate instead of a flag column.
+        assert_empty parse(envelope).portfolios.first.cash_transactions
+      end
+
+      test "a version-2 envelope with no cash section is still readable" do
+        assert_empty parse(envelope("version" => NATIVE_VERSION_CASH)).portfolios.first.cash_transactions
+      end
+
+      test "a cash section that is not an array, or holds non-hashes, does not crash" do
+        assert_empty with_cash("nope").portfolios.first.cash_transactions
+        assert_empty with_cash([ "nope", 42, nil ]).portfolios.first.cash_transactions
+      end
+
+      test "a garbage cash amount or date becomes nil so the MODEL reports it" do
+        # Same rule as transactions: the user gets the message the cash form gives,
+        # not a parser error, and never a silently zeroed row.
+        row = with_cash([
+          { "kind" => "deposit", "amount" => "ten dollars", "occurred_on" => "not-a-date" }
+        ]).portfolios.first.cash_transactions.sole
+
+        assert_nil row.amount
+        assert_nil row.occurred_on
+      end
+
+      test "an unknown cash kind is carried through for the model's inclusion validation" do
+        # Normalizing it to "deposit" would invent money movements the file never
+        # described; the model rejects it with a message on the `kind` field.
+        row = with_cash([
+          { "kind" => "bonus", "amount" => "5", "occurred_on" => "2024-01-15" }
+        ]).portfolios.first.cash_transactions.sole
+
+        assert_equal "bonus", row.kind
+        assert_not CashTransaction.new(kind: row.kind, amount: row.amount, occurred_on: row.occurred_on).valid?
       end
 
       # --- Rejections ---

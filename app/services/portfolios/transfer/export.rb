@@ -37,7 +37,9 @@ module Portfolios
 
         {
           format: NATIVE_FORMAT,
-          version: NATIVE_VERSION,
+          # Contents-dependent: 2 only when some portfolio actually carries cash.
+          # See Portfolios::Transfer.native_version for why this moves at all.
+          version: Transfer.native_version(cash: portfolios.any? { |p| p.cash_transactions.any? }),
           exported_at: @exported_at.utc.iso8601,
           instruments: instrument_specs(portfolios),
           portfolios: portfolios.map { |portfolio| portfolio_payload(portfolio) }
@@ -56,7 +58,8 @@ module Portfolios
         scope = scope.where(id: @portfolio_ids) if @portfolio_ids
         # includes() is load-bearing: without it each transaction/rule would
         # re-query its instrument to serialize the symbol.
-        scope.includes(:benchmark, { transactions: :instrument }, { recurring_transactions: :instrument })
+        scope.includes(:benchmark, :cash_transactions,
+                       { transactions: :instrument }, { recurring_transactions: :instrument })
              .order(:created_at, :id)
              .to_a
       end
@@ -86,13 +89,34 @@ module Portfolios
         # that materialized it without either having an id in the target DB.
         keys_by_rule_id = rules.each_with_index.to_h { |rule, index| [ rule.id, "r#{index + 1}" ] }
 
-        {
+        payload = {
           name: portfolio.name,
           benchmark: portfolio.benchmark&.name,
           transactions: portfolio.transactions
                                  .sort_by { |tx| [ tx.executed_on, tx.id ] }
                                  .map { |tx| transaction_payload(tx, keys_by_rule_id) },
           recurring_transactions: rules.map { |rule| recurring_payload(rule, keys_by_rule_id) }
+        }
+
+        # OMITTED, not written as [], when the portfolio has no cash (issue #80).
+        # That is what keeps a no-cash export byte-identical to a pre-#80 one and
+        # lets the envelope stay at version 1 — see
+        # Portfolios::Transfer.native_version, which is the other half of this.
+        cash = portfolio.cash_transactions.sort_by { |row| [ row.occurred_on, row.id ] }
+        payload[:cash_transactions] = cash.map { |row| cash_payload(row) } if cash.any?
+
+        payload
+      end
+
+      # `amount` goes out SIGNED and verbatim. Nothing here may take a magnitude:
+      # a negative dividend_cash (a broker reversal) and a positive tax (a refund)
+      # are legitimate rows whose sign IS the information.
+      def cash_payload(row)
+        {
+          kind: row.kind,
+          amount: row.amount.to_s("F"),
+          occurred_on: row.occurred_on.iso8601,
+          notes: row.notes
         }
       end
 

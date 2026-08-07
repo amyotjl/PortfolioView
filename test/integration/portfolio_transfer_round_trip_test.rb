@@ -203,6 +203,162 @@ class PortfolioTransferRoundTripTest < ActionDispatch::IntegrationTest
                  "the file downloaded from one account must re-export identically from another"
   end
 
+  # --- Cash: the envelope's version 2 (issue #80) -------------------------------
+
+  # The pre-#80 envelope, transcribed from the version-1 format. A no-cash export
+  # must still produce these exact bytes: the only differences between the #80
+  # exporter and its predecessor, for a portfolio with no cash rows, are the
+  # version VALUE (the method returns 1 here, which is what the old constant was)
+  # and a `cash_transactions` key that is OMITTED rather than written as []. Both
+  # are no-ops for this fixture, so byte-identity is the assertion that proves it.
+  #
+  # If this literal ever needs editing to make the test pass, the export format
+  # changed and every user's stored file just became a diff — which is the whole
+  # reason it is spelled out here instead of being compared to itself.
+  PRE_CASH_GOLDEN = <<~JSON.chomp
+    {
+      "format": "portfolioview.portfolios",
+      "version": 1,
+      "exported_at": "2026-03-04T00:00:00Z",
+      "instruments": [
+        {
+          "symbol": "AAPL",
+          "name": null,
+          "instrument_type": "stock",
+          "currency": "USD",
+          "sector": null,
+          "industry": null
+        }
+      ],
+      "portfolios": [
+        {
+          "name": "Golden",
+          "benchmark": null,
+          "transactions": [
+            {
+              "symbol": "AAPL",
+              "side": "buy",
+              "kind": "normal",
+              "shares": "10.0",
+              "price": "150.25",
+              "fees": "0.0",
+              "executed_on": "2024-01-05",
+              "notes": null,
+              "recurring_key": null,
+              "scheduled_for": null
+            }
+          ],
+          "recurring_transactions": []
+        }
+      ]
+    }
+  JSON
+
+  def golden_portfolio!(user)
+    portfolio = create_portfolio(name: "Golden", user: user)
+    buy!(portfolio, @aapl, on: Date.new(2024, 1, 5), shares: "10", price: "150.25")
+    portfolio
+  end
+
+  test "a NO-CASH export omits the cash key, stays at version 1, and is byte-identical" do
+    golden_portfolio!(@source)
+
+    payload = export_for(@source)
+
+    assert_equal Portfolios::Transfer::NATIVE_VERSION_BASE, payload[:version]
+    assert_not payload[:portfolios].first.key?(:cash_transactions),
+               "an empty array here would bump every stored file into a diff for no gain"
+    assert_equal PRE_CASH_GOLDEN, JSON.pretty_generate(payload)
+    assert_not JSON.generate(payload).include?("cash"),
+               "the word must not appear at all in a no-cash export"
+  end
+
+  test "a cash-bearing export carries version 2 and round-trips as a fixed point" do
+    portfolio = create_portfolio(name: "Liquid", user: @source, benchmark: @benchmark)
+    buy!(portfolio, @aapl, on: Date.new(2024, 2, 1), shares: "4", price: "100")
+    # Every kind, both signs, including the two that are legitimately either:
+    # a dividend reversal and a tax refund.
+    cash!(portfolio, kind: "deposit", amount: "1000.50", on: Date.new(2024, 1, 15))
+    cash!(portfolio, kind: "withdrawal", amount: "-250", on: Date.new(2024, 3, 1))
+    cash!(portfolio, kind: "interest", amount: "0.07", on: Date.new(2024, 3, 2))
+    cash!(portfolio, kind: "dividend_cash", amount: "-5.25", on: Date.new(2024, 3, 3),
+          notes: "a reversal, and its sign is the information")
+    cash!(portfolio, kind: "tax", amount: "3.10", on: Date.new(2024, 3, 4))
+    cash!(portfolio, kind: "fee", amount: "-9.99", on: Date.new(2024, 3, 5))
+
+    original = export_for(@source)
+    assert_equal Portfolios::Transfer::NATIVE_VERSION_CASH, original[:version],
+                 "a cash-bearing file must fail loudly on a build that cannot read cash"
+
+    result = import_into(@target, original)
+    assert_equal 0, result.totals[:portfolios_failed], result.portfolios.map(&:errors).inspect
+    assert_equal 6, result.totals[:cash_created]
+
+    assert_equal JSON.pretty_generate(original), JSON.pretty_generate(export_for(@target)),
+                 "a round trip must be lossless"
+  end
+
+  test "the round trip preserves each cash amount's exact sign and scale" do
+    portfolio = create_portfolio(name: "Liquid", user: @source)
+    cash!(portfolio, kind: "dividend_cash", amount: "-5.25", on: Date.new(2024, 3, 3))
+    cash!(portfolio, kind: "tax", amount: "3.10", on: Date.new(2024, 3, 4))
+
+    import_into(@target, export_for(@source))
+
+    rows = @target.portfolios.find_by!(name: "Liquid").cash_transactions.order(:occurred_on)
+    assert_equal [ BigDecimal("-5.25"), BigDecimal("3.1") ], rows.map(&:amount),
+                 "a negative dividend is a reversal and a positive tax is a refund"
+    assert_equal %w[dividend_cash tax], rows.map(&:kind)
+  end
+
+  test "cash is exported sorted by (occurred_on, id) so two exports agree" do
+    portfolio = create_portfolio(name: "Liquid", user: @source)
+    cash!(portfolio, kind: "deposit", amount: "3", on: Date.new(2024, 3, 3))
+    cash!(portfolio, kind: "deposit", amount: "1", on: Date.new(2024, 1, 1))
+    # Two identical same-day deposits are two real bank transfers, so id breaks
+    # the tie rather than the rows being deduped.
+    cash!(portfolio, kind: "deposit", amount: "2", on: Date.new(2024, 3, 3))
+
+    rows = export_for(@source)[:portfolios].first[:cash_transactions]
+
+    assert_equal [ "1.0", "3.0", "2.0" ], rows.map { |r| r[:amount] }
+    assert_equal JSON.generate(export_for(@source)), JSON.generate(export_for(@source))
+  end
+
+  test "a version-2 file is REFUSED by a build that only reads version 1" do
+    portfolio = create_portfolio(name: "Liquid", user: @source)
+    cash!(portfolio, kind: "deposit", amount: "1000", on: Date.new(2024, 1, 15))
+    payload = export_for(@source)
+    assert_equal 2, payload[:version]
+
+    # The real gate, not a comment: an old build's SUPPORTED_VERSIONS. Refusing is
+    # the only honest outcome — an old NativeParser would ignore the unknown
+    # `cash_transactions` key and import a portfolio silently missing its money.
+    error = stub_const(Portfolios::Transfer, :SUPPORTED_VERSIONS, [ 1 ].freeze) do
+      assert_raises(Portfolios::Transfer::UnreadableFile) { import_into(@target, payload) }
+    end
+
+    assert_includes error.message, "has unsupported version 2"
+    assert_includes error.message, "this build reads 1"
+    assert_empty @target.portfolios
+  end
+
+  test "a version-1 file imports as a trade-basis portfolio, exactly as before" do
+    create_trading_days(Date.new(2024, 1, 1), Date.new(2024, 2, 29))
+    seed_prices(@aapl, weekdays_between(Date.new(2024, 1, 1), Date.new(2024, 2, 29)).index_with { 150 })
+    golden_portfolio!(@source)
+
+    payload = export_for(@source)
+    assert_equal 1, payload[:version]
+    import_into(@target, payload)
+
+    summary = Portfolios::Summary.call(portfolio: @target.portfolios.find_by!(name: "Golden"))
+
+    assert_equal "trades", summary.deposit_basis
+    assert_nil summary.cash_balance,
+               "nil means “does not track cash”; 0.00 would claim it tracks cash and is flat"
+  end
+
   # --- Analytics agree after a restore -----------------------------------------
 
   test "the restored portfolio values identically to the original" do
