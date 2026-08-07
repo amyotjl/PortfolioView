@@ -1,26 +1,47 @@
 # Status (living document)
 
-Last verified: **2026-08-05**. **All six issues that were open now have a finished branch
-awaiting a gate** — see "M10: six issues, five branches" immediately below, which is the
-section to read first. Nothing has been merged: the merge gate requires an independent tester
-verdict and none of these has one. One NEW issue came out of that work and is **not** started:
+Last verified: **2026-08-06**. **All six issues that were open now have a finished branch** —
+see "M10: six issues, five branches" immediately below, which is the section to read first.
+**Not one of them has an independent tester verdict**, so if a row in that section's table says
+it merged, it merged *ungated* — read the row, not the fact of the merge. One NEW issue came
+out of that work and is **not** started:
 [#79](https://github.com/amyotjl/PortfolioView/issues/79).
 
-## M10: six issues, five branches, none gated (2026-08-05)
+## M10: six issues, five branches, none gated (2026-08-05, merge status 2026-08-06)
 
 Not milestoned — these are the six issues open on 2026-08-05, worked in one session (#69 and
 #70 share a branch: same file, same defect family). Each branch is off `7eda07d` (`main`)
-except `m10/066-canadian-directory`, which continues the existing #66 work.
-**None is merged and none has an independent verdict** — the gate counts below are the
-author's own runs, which is exactly what the merge gate says not to trust.
+except `m10/066-canadian-directory`, which continues the existing #66 work. All six are pushed
+to `origin`.
 
-| Branch | Issues | Gates run by the author |
-|---|---|---|
-| `m10/073-signout-clears-cache` | #73 | Vitest 313/313, `vue-tsc` clean, new e2e spec green; fix reverted → 4 unit specs and the e2e both fail for the right reason |
-| `m10/069-070-pt-aria` | #69, #70 | Vitest 319/319, `vue-tsc` clean, e2e green; before/after measured in a real browser; 3 probes each failing only their own tests |
-| `m10/075-internal-token-diagnostics` | #75 | Rails 807/807, RuboCop clean; boot line and 401 log verified live; 3 probes |
-| `m10/074-unmount-actioncable` | #74 | Rails 802/802, RuboCop clean; `/cable` re-measured on a **full production build** in an isolated stack; 4 probes |
-| `m10/066-canadian-directory` | #66 | Rails 851/851, RuboCop clean; classifier scored **35/35** against known truth over **789 real factors on 423 symbols**; 7 probes |
+**NONE OF THESE HAS AN INDEPENDENT VERDICT.** The gate columns below are the *author's own*
+runs, which is exactly what the merge gate says not to trust at face value. Two branches were
+deliberately withheld from merge on that basis (`m10/066`, `m10/074`); see the Merged column.
+
+| Branch | Issues | Merged | Gates run by the author |
+|---|---|---|---|
+| `m10/073-signout-clears-cache` | #73 | see note ▼ | Vitest 313/313, `vue-tsc` clean, new e2e spec green; fix reverted → 4 unit specs and the e2e both fail for the right reason |
+| `m10/069-070-pt-aria` | #69, #70 | see note ▼ | Vitest 319/319, `vue-tsc` clean, e2e green; before/after measured in a real browser; 3 probes each failing only their own tests |
+| `m10/075-internal-token-diagnostics` | #75 | see note ▼ | Rails 807/807, RuboCop clean; boot line and 401 log verified live; 3 probes |
+| `m10/074-unmount-actioncable` | #74 | **held** | Rails 802/802, RuboCop clean; `/cable` re-measured on a **full production build** in an isolated stack; 4 probes |
+| `m10/066-canadian-directory` | #66 | **held** | Rails 851/851, RuboCop clean; classifier scored **35/35** against known truth over **789 real factors on 423 symbols**; 7 probes |
+
+**▼ Merge status, and the one thing to update when it changes.** As of 2026-08-06 nothing had
+merged: `main` was still `7eda07d`. The first three rows were *approved* for merge by the
+project owner on 2026-08-06 and the merge itself was left to them, so whether it happened is
+not knowable from here — **check `git log main`, not this line.** Whoever merges replaces the
+Merged cell with `ungated <date>` (or `PASS <date>` if a real gate was obtained first) in the
+same session, per the rule at the top of this file. That distinction is the whole point of the
+column: a future session must not read "merged" as "gated" and cite it as precedent.
+
+`m10/074` and `m10/066` are **held on purpose**, not forgotten:
+- **#66** has already failed three independent gates, and part of its 35/35 score is measured
+  against a truth table **the author assembled**. Nobody else has checked those labels. It is
+  the single branch where an independent gate is worth most.
+- **#74** changes boot configuration for every environment and drops a production database
+  declaration. Its evidence is the strongest of the six (a real production build from an empty
+  volume), but its failure mode is "production doesn't boot" rather than "a feature is wrong",
+  and nothing in the app uses Action Cable — so waiting costs nothing.
 
 **Read the per-issue notes below before gating any of them** — several correct claims that
 earlier issues or comments made incorrectly, and a gate that re-checks the original wording
@@ -165,6 +186,12 @@ the TSX**, so the `.TO` default is wrong for the majority (`FINN` → `FINN.TO` 
 
 ---
 
+Everything from here down is the file as it stood on **2026-07-30**, before the M10 session
+above. It is kept because its per-issue reasoning is still the best record of how the earlier
+milestones were built — but where it disagrees with the M10 section, **the M10 section wins**.
+In particular the "Still open" list in the next paragraph is a snapshot: all six of those
+issues now have finished branches.
+
 Last verified before this session: 2026-07-30. **#68** (Wealthsimple *activity ledger* import, the third format)
 and **#65** (Select a11y) both passed independent tester gates and **merged 2026-07-29** —
 see "#68 as built", "#68 merge gate" and "#65 as built" below. **#63** (null instrument names
@@ -190,14 +217,22 @@ height** since M6 and that **`/register` was unreachable by URL**. Run it after 
 change to the dashboard, the shell, or auth routing — those two classes of bug are
 invisible to Vitest and to the Rails suite.
 
-**Three** specs now, each registering **exactly one** user per run (registration is
-rate-limited to 10 per 3 minutes, so keep new specs API-driven — a full run now spends 3 of
+**Three** specs on `main`, each registering **exactly one** user per run (registration is
+rate-limited to 10 per 3 minutes, so keep new specs API-driven — a full run spends 3 of
 that budget): `smoke.spec.js`, `transfer.spec.js` (#64's export download + multipart import,
 plus #68's activity-ledger upload — a blob download and a multipart upload are both invisible
 to Vitest and to fixture-based Rails tests), and `select-a11y.spec.js` (#65's accessible-name
-assertions across three separate forms; needs no provider keys and no populated directory). Set
-`E2E_SCREENSHOTS=1` to have `transfer.spec.js` write `e2e/screenshots/*.png` for the
-"render it and look at it" check below; a normal run leaves nothing behind.
+assertions across three separate forms, extended in #69/#70; needs no provider keys and no
+populated directory). Set `E2E_SCREENSHOTS=1` to have `transfer.spec.js` write
+`e2e/screenshots/*.png` for the "render it and look at it" check below; a normal run leaves
+nothing behind.
+
+**A FOURTH spec arrives with `m10/073-signout-clears-cache`** and is the first to need **two**
+accounts, taking a full run from 3 registrations to **5**: `session-isolation.spec.js` proves
+user B never sees user A's cached data (#73). It asserts `pageLoads === 1`, because a full
+document load empties the caches under test and would make the whole spec vacuous — so it is
+also the one spec you must not "fix" by adding a `page.goto`. Update this paragraph's counts
+when that branch merges.
 
 **If e2e fails at registration with "Bad Gateway", the `web` container is still booting** —
 `docker compose restart vite` can take its dependency chain with it, and `bundle install` +
@@ -569,9 +604,12 @@ accname spec.
 - Gate measured both directions: by field label **0/0/0 → 1/1/1**, by selected value
   **1/1/1 → 0/0/0**. Five mutation probes, each failing a *specific* test. Note
   `fieldIds.spec.ts` stays green under a convention drift — it locks the pure functions only;
-  **`selectA11y.spec.ts` is the real guard** (the spec's own docstring overclaims this).
-- Third e2e spec added (`select-a11y.spec.js`), so a full suite run now spends **3** of the
+  **`selectA11y.spec.ts` is the real guard**. That docstring overclaim is corrected on
+  `m10/069-070-pt-aria`; before that branch, this file's warning was the only record of it.
+- Third e2e spec added (`select-a11y.spec.js`), so a full suite run spends **3** of the
   10-per-3-minutes registration budget. It needs no provider keys and no populated directory.
+  (#73's `session-isolation.spec.js` takes that to 5 when its branch merges — see the e2e
+  section near the top.)
 
 ## #71: two FAILs worth more than the feature (2026-07-30)
 
