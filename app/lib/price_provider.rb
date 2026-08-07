@@ -75,17 +75,22 @@ module PriceProvider
   #
   # Internal to the price pipeline: adapters emit Splits, never Factors.
   Factor = Data.define(:ex_date, :ratio, :numerator, :denominator) do
-    # "1097:1000", as Yahoo wrote it, for the warning text. Integers because the
-    # values arrive as whole numbers in BigDecimal clothing.
-    def label = "#{numerator.to_i}:#{denominator.to_i}"
+    # "1097:1000", as Yahoo wrote it, for the warning text.
+    #
+    # NOT `.to_i`, which is what this used to do on the belief — stated in a
+    # comment right here — that "the values arrive as whole numbers in BigDecimal
+    # clothing". THEY DO NOT. Yahoo sends fractional numerators, verified live:
+    # `BHP.AX 1.0697:1`, `WES.AX 0.9876:1`, `AV.L 1.012:1`, `VTI.CN 1:6.5`.
+    # Truncating printed a 6.97% factor as "1:1" and a 1.24% one as "0:1", so the
+    # warnings naming them were worse than silence. Found by #66's fourth gate.
+    #
+    # `to_s("F")` avoids BigDecimal's "0.10697e1" scientific form, and
+    # #trim_zeros keeps a whole number reading as "4:1" rather than "4.0:1.0".
+    def label = "#{trim_zeros(numerator)}:#{trim_zeros(denominator)}"
 
-    # Is the fraction, IN LOWEST TERMS, a plausible declared exchange ratio? A
-    # company declares 3-for-2 or 11-for-10; nobody declares 1097-for-1000.
-    # Reduced first so 114:100 (57/50) and 96:100 (24/25) count as declared while
-    # 1097:1000 and 10000:9607 do not.
-    def declared_ratio?(max_denominator)
-      Rational(numerator.to_i, denominator.to_i).denominator <= max_denominator
-    end
+    private
+
+    def trim_zeros(value) = value.to_s("F").sub(/\.0+\z/, "")
   end
 
   # A cash dividend. Only emitted when cash_per_share > 0 (the DB CHECK on

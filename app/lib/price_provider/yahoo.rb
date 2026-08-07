@@ -170,20 +170,17 @@ module PriceProvider
       adjustments, factor_warnings = build_adjustments(sym, result)
       bars, bar_warnings = build_bars(sym, result, offset)
 
-      # ORDER IS LOAD-BEARING, TWICE OVER.
-      #
-      # `classify_splits` reads the bars while they still carry YAHOO'S OWN
-      # ADJUSTED closes, because the whole classification turns on whether that
-      # series is continuous across the ex-date (see #classify_splits). Running it
-      # after #unadjust! would measure the series this adapter reconstructed —
-      # which has every factor divided back out — and the gap would then be a
-      # function of the factor being tested rather than evidence about it. The
-      # test suite pins the order for exactly that reason.
-      #
-      # And #unadjust! takes ADJUSTMENTS, not splits: prices must be un-adjusted
-      # by every factor Yahoo applied, including the ones that never moved a share
+      # #unadjust! takes ADJUSTMENTS, not splits: prices must be un-adjusted by
+      # every factor Yahoo applied, including the ones that never moved a share
       # count. Dropping those would leave the whole pre-event history off by them.
-      splits, split_warnings = classify_splits(sym, adjustments, bars)
+      #
+      # `classify_splits` no longer reads the bars at all. It used to, and the
+      # order was load-bearing for that reason — it had to see Yahoo's own adjusted
+      # closes, before #unadjust! divided the factors back out. Round 4's gate
+      # retired the price test (see #share_count_event?), so the two calls are now
+      # independent. The order below is kept only because it reads in the sequence
+      # the data flows.
+      splits, split_warnings = classify_splits(sym, adjustments)
       unadjust!(bars, adjustments)
 
       DailySeries.new(symbol: sym,
@@ -304,7 +301,7 @@ module PriceProvider
     # (gap 0.9693 against 1/ratio 0.9091 — a real subdivision), two events the
     # written form cannot tell apart at all.
     #
-    # ── WHERE THE EVIDENCE RUNS OUT: SPIN-OFFS ──────────────────────────────────
+    # ── WHERE THE EVIDENCE RUNS OUT, AND WHY IN-BAND IS NO LONGER CLASSIFIED ────
     #
     # A spin-off does NOT change the parent's share count — holders keep their
     # shares and receive new ones in the spun-off entity — but the parent's price
@@ -313,93 +310,71 @@ module PriceProvider
     # indistinguishable from a genuine subdivision BY PRICE ALONE. Measured: TRP.TO
     # 1097:1000 has gap 1.0015, as continuous as AAPL's 4:1.
     #
-    # The one thing that does separate them is the written form after all — but the
-    # OTHER half of it, and only inside the band where a price-only action is even
-    # possible. A split is DECLARED, so its ratio is a small-integer exchange ratio
-    # (4:1, 3:2, 11:10, 6:5, 114:100 → 57/50). A spin-off or distribution factor is
-    # DERIVED FROM MARKET PRICES, so it is an arbitrary decimal over a power of ten
-    # (1097:1000, 1237:1000, 10000:9607, 1055:1000 → 211/200). Hence
-    # MAX_DECLARED_DENOMINATOR, applied to the fraction in LOWEST TERMS.
+    # ROUND 4's GATE THEN SHOWED THE PRICE TEST FAILS IN THE OTHER DIRECTION TOO,
+    # and that the written-form guard behind it never actually ran. Verified live:
     #
-    # ── THE RULE ────────────────────────────────────────────────────────────────
+    #   NG.L    11:12   suppressed — a real consolidation. Return of capital PLUS
+    #                   consolidation in one action (the standard UK mechanism), so
+    #                   the cash offsets the price rise and gap (1.0812) sits by the
+    #                   price-only hypothesis (1.0909). Position overstated 9.1%.
+    #   TSCO.L  15:19   suppressed the same way — overstated 26.7%.
+    #   ULVR.L 100:112  suppressed the same way — overstated 12.0%.
+    #   NG.L    43:49   suppressed, and there is NO same-day dividend at all, so
+    #   MKS.L   17:21   reading the dividend would not have rescued these two.
+    #   BHP.AX 1.0697:1 KEPT as share-count — the BHP Steel demerger, where the
+    #                   ASX line's share count did not move. Phantom shares 6.97%.
     #
-    #   1. ratio outside NEAR_ONE_BAND        -> SHARE-COUNT, unconditionally.
-    #      No reinvested distribution or spin-off is worth 30% of a security's
-    #      value, let alone the 100x of a `1:100`. This guard is what keeps a
-    #      consolidation safe no matter how Yahoo wrote it or what its series
-    #      looks like, and it is why round 2's and round 3's blockers cannot
-    #      recur. It also absorbs a real Yahoo data-quality wrinkle: on thin
-    #      TSXV/CSE listings the series is sometimes NOT adjusted for the
-    #      operator's own factor (`RAGE.V 1:2` has gap 2.0000, `VVTM.V 1:100`
-    #      has gap 99.9999), which the gap test alone would read as price-only
-    #      and turn into a 2x–100x share error.
-    #   2. denominator in lowest terms > MAX_DECLARED_DENOMINATOR -> PRICE-ONLY.
-    #      A market-derived decimal near 1: a distribution or a spin-off.
-    #   3. otherwise ask the series, requiring GAP_MARGIN of separation.
-    #   4. no bar on one side -> SHARE-COUNT: what reaches here is a DECLARED
-    #      exchange ratio (rule 2 sent the market-derived ones away), and that is a
-    #      share-count change by definition. It is also the inconsequential case —
-    #      with no earlier close, #unadjust! has nothing to scale either way.
+    # The last one is the written-form guard failing: Yahoo sends FRACTIONAL
+    # numerators (`1.0697:1`, `0.9876:1`, `1.012:1`) and `declared_ratio?` did
+    # `Rational(numerator.to_i, denominator.to_i)`, so 1.0697:1 truncated to 1:1 —
+    # denominator 1, "a declared ratio", guard bypassed. `#label` printed "1:1" as
+    # well, which made the only warning it emitted actively misleading. That guard
+    # is now deleted rather than repaired, because with in-band unclassified there
+    # is nothing left for it to gate. `MAX_DECLARED_DENOMINATOR = 100` was broken
+    # independently anyway: `gcd(n,100) = 1` means any `n:100` reduces to
+    # denominator exactly 100, which `<= 100` admits — so `ZBH 103:100` (the ZimVie
+    # spin-off) passed as a declared ratio.
     #
-    # ── HOW THE RULE WAS CHOSEN, AND WHAT IT COSTS ──────────────────────────────
+    # ── THE RULE, AND WHAT IT DELIBERATELY GIVES UP ─────────────────────────────
     #
-    # Not from a hand-picked list. `#71` earned that rule the hard way and the
-    # round-3 gate restated it: a sample chosen by the person proposing the tier
-    # always flatters them. So the sweep was a DETERMINISTIC symbol set — every CAD
-    # instrument the real Wealthsimple import created, every symbol named in any of
-    # the three gate rounds, an evenly-spaced sample across the whole Canadian
-    # directory, and US controls with known corporate histories.
+    #   ratio OUTSIDE NEAR_ONE_BAND -> SHARE-COUNT. A 4:1, a 1:100, a 1:5. No
+    #     distribution or spin-off is worth 30% of a security's value, so there is
+    #     nothing here to confuse it with. This is where consolidations live and it
+    #     is unambiguous.
     #
-    # The sweep: 1,797 symbols requested, 789 distinct factors found on 423 of them
-    # — against the round-3 gate's own 482 factors on 209 symbols.
+    #   ratio INSIDE the band -> PRICE-ONLY, always, and WARNED every time.
     #
-    # Scored by driving THIS METHOD over all of it, against 35 events whose truth is
-    # independently known (public corporate actions plus every case the three gates
-    # named): THIS RULE 35/35. The shipped round-3 rule: 28/35. The two disagree on
-    # 24 of the 789, every one in the direction of the known truth. Only 3 of 789
-    # are close calls, and no factor outside the band is suppressed — the direction
-    # that produced rounds 2 and 3's blockers is closed by construction, not by
-    # tuning.
+    # FOUR INDEPENDENT GATES HAVE NOW REJECTED FOUR DIFFERENT IN-BAND RULES, each
+    # rejection finding a real money error the author believed impossible. The
+    # evidence says why: inside the band the same observation — a price that barely
+    # moved — is produced by a distribution, by a spin-off, and by a consolidation
+    # paired with a cash return. A daily OHLC feed does not carry the information
+    # needed to separate them. So this adapter stops guessing.
     #
-    # In-band population, which is what makes the band worth having: 108 price-only
-    # against 8 share-count. Outside it, 681 share-count against 0 price-only.
+    # WHAT THAT COSTS, stated plainly rather than papered over: a genuine SMALL
+    # split or consolidation coming only from Yahoo is no longer applied, so the
+    # position is understated by up to the band's width (typically under 12%). By
+    # the previous rule's own count the in-band population was 108 price-only
+    # against 8 share-count, so suppressing all of it is right far more often than
+    # not — but it IS wrong for those few, and it is wrong in a bounded, announced,
+    # never-fabricating direction. That asymmetry is the whole argument: an
+    # understated position is visibly incomplete, while phantom shares silently
+    # invent money.
     #
-    # Two known imperfections, stated rather than papered over:
+    # WHERE THE MISSING EVENTS COME FROM INSTEAD. The broker's own activity ledger
+    # states corporate actions outright — #68 already turns a
+    # `CorporateAction/SUBDIVISION` row into a SplitEvent — and Tiingo serves US
+    # symbols with a real splitFactor. Yahoo is the price source for venues nothing
+    # else covers; it is not, and cannot be, an authority on share counts.
     #
-    #   * `VOD 7:8` (2006) is classified price-only and is really a 7-for-8
-    #     consolidation — Vodafone returned capital AND consolidated in one action,
-    #     so the price moved for both reasons and the gap (1.1708) sits nearer the
-    #     price-only hypothesis (1.1429) than the share-count one. US-routed, so
-    #     Yahoo is never consulted for it today (ProviderRouter sends US symbols to
-    #     Tiingo); it is here because it is the one counter-example found.
-    #   * `GURU.TO 11:1000` (ratio 0.011) is classified SHARE-COUNT, where round 2's
-    #     gate note called suppression correct. There is no bar on either side of
-    #     the ex-date (the series starts later), so there is no evidence either way;
-    #     a 98.9% factor is far more plausible as a 1-for-91 consolidation than as a
-    #     distribution, and rule 1 says so. Nothing observable supports either
-    #     reading, and no price exists before that date for it to affect.
-    #
-    # Every price-only classification warns, and so does every fallback. Nothing
-    # here is ever silent.
+    # DO NOT reintroduce an in-band heuristic without an independent gate over a
+    # deterministic symbol sweep, and read all four rejected rounds first.
 
     # A price-only corporate action moves a few percent of a security's value; it
     # never moves 30%. Chosen from the data, not by taste: across 789 real factors
     # every price-only one lies in [0.875, 1.237], and every genuine share-count
     # event outside that sits well beyond [0.71, 1.4].
     NEAR_ONE_BAND = (1 / 1.4)..1.4
-
-    # A DECLARED exchange ratio is small integers. Applied in lowest terms, so
-    # 114:100 (57/50) and 96:100 (24/25) reach the series test while 1097:1000 and
-    # 10000:9607 do not.
-    MAX_DECLARED_DENOMINATOR = 100
-
-    # The nearer hypothesis always wins; this only decides whether the call gets
-    # called out as a CLOSE ONE in the warnings. It is deliberately not a decision
-    # threshold — a third "too close to tell" branch would need an arbitrary
-    # default, and for a factor this near 1 the cost of being wrong is bounded by
-    # the same small number that made it hard to tell. 2% is above ordinary
-    # day-to-day noise.
-    GAP_MARGIN = Math.log(1.02)
 
     # Every factor Yahoo reported, unclassified — this is the list #unadjust! must
     # use, and the input to #classify_splits.
@@ -426,18 +401,67 @@ module PriceProvider
         Factor.new(ex_date:, ratio:, numerator: num, denominator: den)
       end
 
-      [ adjustments.sort_by(&:ex_date), warnings ]
+      collapse_restatements(sym, adjustments.sort_by(&:ex_date), warnings)
+    end
+
+    # How far apart two reports of the SAME ratio may sit and still be one
+    # corporate action. A week covers the observed cases (5 and 2 calendar days)
+    # without being able to swallow a genuine repeat: nobody consolidates twice by
+    # the identical ratio inside a week, and a company that splits 2:1 twice does
+    # it years apart.
+    RESTATEMENT_WINDOW = 7
+
+    # ONE CORPORATE ACTION, REPORTED TWICE, MUST NOT BECOME TWO SPLIT EVENTS.
+    #
+    # Yahoo sometimes reports the same consolidation on two nearby ex-dates —
+    # measured live, not hypothesised:
+    #
+    #   VTI.CN  1:100 on 2026-05-22 AND 2026-05-27   (one 1-for-100, effective 05-22)
+    #   AMC.AX  1:5   on 2026-01-13 AND 2026-01-15   (one 1-for-5,  effective 01-15)
+    #
+    # Both land outside NEAR_ONE_BAND, so the classifier keeps both, and
+    # `SeriesWriter` upserts `split_events` on `[instrument_id, ex_date]` — two
+    # distinct keys, so two rows persist and `Holdings::Calculator` multiplies by
+    # the ratio TWICE. VTI.CN divided a position by 10,000 instead of 100; AMC.AX
+    # by 25 instead of 5. That is the largest-magnitude error this adapter can
+    # make, and it was found by #66's fourth independent gate.
+    #
+    # Collapsing keeps the EARLIER date. Yahoo's own ex-date is already sometimes a
+    # session early (documented at #adjusted_gap's callers), the earlier date is
+    # the one whose price gap the series shows, and a split applied a few days
+    # early can only affect a position held across those few days — whereas
+    # applying the factor twice is wrong forever after.
+    #
+    # Deliberately narrow: same ratio, within RESTATEMENT_WINDOW days, adjacent in
+    # the sorted list. A different ratio nearby is a different action (BHP.AX
+    # really does carry 110:100 twice, six years apart) and is left alone.
+    def collapse_restatements(sym, factors, warnings)
+      kept = []
+
+      factors.each do |factor|
+        previous = kept.last
+
+        if previous && previous.ratio == factor.ratio &&
+           (factor.ex_date - previous.ex_date).to_i <= RESTATEMENT_WINDOW
+          warnings << skip_warning(sym, "#{factor.label} appears on both #{previous.ex_date} and " \
+            "#{factor.ex_date}; treated as ONE corporate action dated #{previous.ex_date}, because " \
+            "applying it twice would change the share count by its square")
+          next
+        end
+
+        kept << factor
+      end
+
+      [ kept, warnings ]
     end
 
     # Splits Holdings::Calculator may see, plus a warning for every factor left
     # out and every call the evidence could not settle. See the comment above.
-    def classify_splits(sym, adjustments, adjusted_bars)
+    def classify_splits(sym, adjustments)
       warnings = []
-      closes = adjusted_bars.to_h { |bar| [ bar.date, bar.close ] }
-      dates = closes.keys.sort
 
       splits = adjustments.filter_map do |factor|
-        share_count, reason = share_count_event?(factor, closes, dates)
+        share_count, reason = share_count_event?(factor)
 
         if share_count
           # A reason on a KEPT factor means the evidence was thin (see the
@@ -457,56 +481,16 @@ module PriceProvider
 
     # [ share_count_event?, reason ] — the reason is for the warning, so it names
     # the evidence rather than a rule number.
-    def share_count_event?(factor, closes, dates)
+    #
+    # ONE TEST, NOT FOUR. See "WHY IN-BAND IS NO LONGER CLASSIFIED" above.
+    def share_count_event?(factor)
       return [ true, nil ] unless NEAR_ONE_BAND.cover?(factor.ratio)
 
-      unless factor.declared_ratio?(MAX_DECLARED_DENOMINATOR)
-        return [ false, "#{factor.label} is a market-derived decimal near 1, not a declared " \
-                        "exchange ratio, so it is a distribution or a spin-off" ]
-      end
-
-      gap = adjusted_gap(factor.ex_date, closes, dates)
-      # No bar on one side: the series cannot speak, so fall back on the written
-      # form, which by now is a DECLARED exchange ratio (the market-derived ones
-      # returned above) — and a declared exchange ratio is a share-count change by
-      # definition. This is also the inconsequential case: with no close before the
-      # ex-date, #unadjust! has nothing to scale either way. A real 5% stock
-      # dividend at the very start of a series is exactly this shape.
-      return [ true, nil ] if gap.nil?
-
-      # Distance, in log space, to each hypothesis: gap ≈ 1 (the traded price
-      # really moved by the factor, so a share count moved with it) versus
-      # gap ≈ 1/ratio (the price did not move at all).
-      moved = Math.log(gap).abs
-      unmoved = Math.log(gap * factor.ratio.to_f).abs
-      close_call = (moved - unmoved).abs < GAP_MARGIN
-      observed = "the adjusted close moves #{gap.round(4)} across the ex-date, against " \
-                 "#{(1 / factor.ratio.to_f).round(4)} if the price never moved"
-
-      return [ true, nil ] if moved < unmoved && !close_call
-      if moved < unmoved
-        # Kept, but the evidence was thin — say so, since the alternative reading
-        # would have left the share count alone.
-        return [ true, "CLOSE CALL kept as a share-count event: #{observed}" ]
-      end
-
-      [ false, "#{observed}, so the traded price did not move and no share count did " \
-               "either#{close_call ? ' (CLOSE CALL)' : ''}" ]
-    end
-
-    # close on the last session strictly BEFORE the ex-date, over the close on the
-    # first session on or after it. Yahoo adjusts prices strictly before the
-    # ex-date, which is the same boundary #unadjust! and Holdings::Calculator use.
-    def adjusted_gap(ex_date, closes, dates)
-      before = dates.reverse_each.find { |d| d < ex_date }
-      after = dates.find { |d| d >= ex_date }
-      return nil if before.nil? || after.nil?
-
-      before_close = closes[before]
-      after_close = closes[after]
-      return nil unless before_close&.positive? && after_close&.positive?
-
-      (before_close / after_close).to_f
+      [ false, "#{factor.label} is within #{NEAR_ONE_BAND.first.round(3)}–#{NEAR_ONE_BAND.last} of " \
+               "no change, where a price feed cannot distinguish a small consolidation from a " \
+               "distribution or a spin-off, so the share count is left alone. If this was a real " \
+               "split or consolidation, add it as a transaction adjustment or import the broker's " \
+               "own activity ledger, which states corporate actions outright" ]
     end
 
     def build_dividends(result, offset)
