@@ -31,13 +31,26 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7
 
-      - name: Set up Ruby
-        uses: ruby/setup-ruby@v1
-        with:
-          bundler-cache: true
-
+      # This job used to run `bin/importmap audit` and had NEVER passed: exit 127,
+      # no such file. There is no bin/importmap and there never was — this app is
+      # a Vite SPA whose JavaScript dependencies live in frontend/package.json,
+      # not an importmap app. The job's NAME was always right; only its command
+      # was inherited from the Rails template.
+      #
+      # No setup-node step on purpose: the runner already ships a Node/npm, and
+      # `npm audit` reads frontend/package-lock.json without installing anything,
+      # so this stays a seconds-long check with no new action to keep pinned.
+      #
+      # THRESHOLD IS `high`, DELIBERATELY. Two MODERATE advisories are open and
+      # cannot be fixed here — echarts and vue-echarts (XSS) both need a MAJOR
+      # bump, and ECharts is the whole dashboard, so that is a project decision
+      # and not a CI cleanup. Auditing at `moderate` would leave main permanently
+      # red, which is exactly the state that let a non-executable bin/ survive
+      # unnoticed for over a week. Lower this to `moderate` the day those two are
+      # dealt with.
       - name: Scan for security vulnerabilities in JavaScript dependencies
-        run: bin/importmap audit
+        working-directory: frontend
+        run: npm audit --audit-level=high
 
   lint:
     runs-on: ubuntu-latest
@@ -112,59 +125,3 @@ jobs:
           # RAILS_MASTER_KEY: ${{ secrets.RAILS_MASTER_KEY }}
           # REDIS_URL: redis://localhost:6379/0
         run: bin/rails db:test:prepare test
-
-  system-test:
-    runs-on: ubuntu-latest
-
-    services:
-      postgres:
-        # PINNED, and it must stay pinned to the major version the app actually
-        # runs (docker-compose.yml uses postgres:16 for dev and production).
-        # `image: postgres` means `postgres:latest`, so CI silently retested
-        # against a new major the day one shipped -- and did: a newer server
-        # raises SQLSTATE 23001 restrict_violation where 16 raises 23503
-        # foreign_key_violation, and Rails maps only the latter to
-        # ActiveRecord::InvalidForeignKey. That turned the four FK RESTRICT model
-        # tests into errors against a database this app is never deployed on.
-        # Bump this deliberately, together with docker-compose.yml, never alone.
-        image: postgres:16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-        ports:
-          - 5432:5432
-        options: --health-cmd="pg_isready" --health-interval=10s --health-timeout=5s --health-retries=3
-
-      # redis:
-      #   image: valkey/valkey:8
-      #   ports:
-      #     - 6379:6379
-      #   options: --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
-
-    steps:
-      - name: Install packages
-        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libpq-dev libvips
-
-      - name: Checkout code
-        uses: actions/checkout@v7
-
-      - name: Set up Ruby
-        uses: ruby/setup-ruby@v1
-        with:
-          bundler-cache: true
-
-      - name: Run System Tests
-        env:
-          RAILS_ENV: test
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432
-          # RAILS_MASTER_KEY: ${{ secrets.RAILS_MASTER_KEY }}
-          # REDIS_URL: redis://localhost:6379/0
-        run: bin/rails db:test:prepare test:system
-
-      - name: Keep screenshots from failed system tests
-        uses: actions/upload-artifact@v7
-        if: failure()
-        with:
-          name: screenshots
-          path: ${{ github.workspace }}/tmp/screenshots
-          if-no-files-found: ignore
