@@ -45,14 +45,26 @@ class CableConfigTest < ActiveSupport::TestCase
     # likely to "fix" it: switching the adapter to solid_cable without generating
     # db/cable_schema.rb produces a cable database that is created and empty
     # again, which is the state this issue was filed about.
+    #
+    # WRITTEN AS ONE UNCONDITIONAL ASSERTION ON PURPOSE. The first version looped
+    # over the environments and asserted inside `next unless adapter ==
+    # "solid_cable"` — so with no environment declaring solid_cable today the body
+    # never ran and the test executed ZERO assertions. Minitest reports that
+    # ("Test is missing assertions"), but only as a warning on a passing run, so
+    # it went unnoticed locally and surfaced in CI. A test that cannot fail is
+    # worse than no test: it reads as coverage. Asserting the implication itself
+    # always evaluates, whichever way the config goes.
     schema_exists = Rails.root.join("db/cable_schema.rb").exist?
+    declaring = CABLE.select { |_env, config| config["adapter"] == "solid_cable" }.keys
 
-    CABLE.each_value do |config|
-      next unless config["adapter"] == "solid_cable"
+    assert declaring.empty? || schema_exists,
+      "#{declaring.join(', ')} declare solid_cable, which needs db/cable_schema.rb — " \
+      "without it db:prepare creates a cable database and loads nothing into it"
 
-      assert schema_exists,
-        "solid_cable needs db/cable_schema.rb, or db:prepare creates an unusable cable database"
-    end
+    # And pin today's state explicitly, so the assertion above is not the only
+    # thing standing between this file and vacuity again.
+    assert_empty declaring,
+      "no environment should declare solid_cable until its schema exists (see cable.yml)"
   end
 
   test "production declares no cable database while nothing loads a schema into one" do

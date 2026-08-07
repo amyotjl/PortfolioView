@@ -70,7 +70,16 @@ jobs:
 
     services:
       postgres:
-        image: postgres
+        # PINNED, and it must stay pinned to the major version the app actually
+        # runs (docker-compose.yml uses postgres:16 for dev and production).
+        # `image: postgres` means `postgres:latest`, so CI silently retested
+        # against a new major the day one shipped -- and did: a newer server
+        # raises SQLSTATE 23001 restrict_violation where 16 raises 23503
+        # foreign_key_violation, and Rails maps only the latter to
+        # ActiveRecord::InvalidForeignKey. That turned the four FK RESTRICT model
+        # tests into errors against a database this app is never deployed on.
+        # Bump this deliberately, together with docker-compose.yml, never alone.
+        image: postgres:16
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -109,7 +118,16 @@ jobs:
 
     services:
       postgres:
-        image: postgres
+        # PINNED, and it must stay pinned to the major version the app actually
+        # runs (docker-compose.yml uses postgres:16 for dev and production).
+        # `image: postgres` means `postgres:latest`, so CI silently retested
+        # against a new major the day one shipped -- and did: a newer server
+        # raises SQLSTATE 23001 restrict_violation where 16 raises 23503
+        # foreign_key_violation, and Rails maps only the latter to
+        # ActiveRecord::InvalidForeignKey. That turned the four FK RESTRICT model
+        # tests into errors against a database this app is never deployed on.
+        # Bump this deliberately, together with docker-compose.yml, never alone.
+        image: postgres:16
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
