@@ -30,13 +30,23 @@ class Candles::CacheTest < ActiveSupport::TestCase
   test "key exactly matches the frozen scheme with both version components and benchmark_id" do
     @portfolio.reload
     expected = [
-      "candles", "v1", @portfolio.id, @portfolio.series_version,
+      "candles", "v2", @portfolio.id, @portfolio.series_version,
       "2026-07-10",              # prices_version = max(latest_price_on) across instruments
       "2026-07-06", "2026-07-10",
       "none"                     # no benchmark requested
     ].join("/")
 
     assert_equal expected, cache_for.key
+  end
+
+  # A payload-SHAPE change must rotate every key, and series_version cannot do
+  # it: an untracked portfolio's data never changes, so its key would never
+  # rotate and a warm entry from before the shape change would keep being served
+  # to a client whose schema requires the new keys. issue #80 added `cash` and
+  # three meta keys, hence v2.
+  test "VERSION is v2 — the payload shape changed with liquid cash (issue #80)" do
+    assert_equal "v2", Candles::Cache::VERSION
+    assert_includes cache_for.key, "candles/v2/"
   end
 
   test "benchmark_id appears in the key and distinguishes the benchmark variant" do

@@ -9,13 +9,23 @@ module Portfolios
   #   Benchmarks::Simulation as a close-value LINE (never candles — portfolio
   #   H/L are bounds while a single ETF's are real).
   #
-  # meta is folded down to exactly the frozen four keys. benchmark_clamped is
+  # - `cash` is the END-OF-DAY liquid-cash balance for each emitted candle date,
+  #   or NIL when the portfolio does not track cash (issue #80). It is a separate
+  #   series, never folded into the candle's O/H/L/C: the candlestick grammar
+  #   says "market move", and a deposit drawn as a tall green candle is a lie
+  #   about performance. Chart builders discriminate on `cash !== null` read from
+  #   the payload they are drawing, never on a flag threaded in from /summary.
+  #
+  # meta grows flow_basis / cash_negative / cash_negative_since; the other four
+  # keys are folded down exactly as before. benchmark_clamped is
   # true when the shadow line is clamped for EITHER reason the simulation can
   # report — an over-withdrawal (benchmark_clamped) or a benchmark history
   # shorter than the portfolio (sim_start_clamped) — since the frozen contract
   # exposes a single clamp flag.
   class CandlesReport
-    Result = Data.define(:candles, :benchmark, :flows, :drawdown, :meta)
+    CashPoint = Data.define(:date, :value)
+
+    Result = Data.define(:candles, :benchmark, :flows, :drawdown, :cash, :meta)
 
     def self.call(...) = new(...).call
 
@@ -35,6 +45,7 @@ module Portfolios
         benchmark: benchmark,
         flows: valuation.flows,
         drawdown: valuation.drawdown,
+        cash: cash_series(valuation),
         meta: merged_meta(valuation, benchmark)
       )
     end
@@ -49,12 +60,26 @@ module Portfolios
       Benchmarks::Simulation.call(portfolio: portfolio, from: from, to: to)
     end
 
+    # One point per EMITTED candle date, so the two series are index-aligned for
+    # the chart; nil (not []) when untracked, because "does not track cash" and
+    # "tracks cash, flat all week" are different states.
+    def cash_series(valuation)
+      cash = valuation.cash
+      return nil unless cash.tracked
+
+      valuation.candles.map { |candle| CashPoint.new(date: candle.date, value: cash.balances.fetch(candle.date, BigDecimal(0))) }.freeze
+    end
+
     def merged_meta(valuation, benchmark)
+      cash = valuation.cash
       {
         partial: valuation.meta[:partial] || (benchmark ? !!benchmark.meta[:partial] : false),
         filled_dates: valuation.meta[:filled_dates],
         benchmark_clamped: benchmark ? benchmark_clamped?(benchmark) : false,
-        approximation: valuation.meta[:approximation]
+        approximation: valuation.meta[:approximation],
+        flow_basis: cash.tracked ? "cash" : "trades",
+        cash_negative: !cash.first_negative_on.nil?,
+        cash_negative_since: cash.first_negative_on
       }
     end
 

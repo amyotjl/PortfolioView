@@ -163,6 +163,77 @@ class Benchmarks::SimulationTest < ActiveSupport::TestCase
     assert_predicate result.meta, :frozen?
   end
 
+  # --- basis: deposits for a cash-tracked portfolio (issue #80) --------------
+
+  # THE test that keeps benchmark_return_pct meaningful. summary.rb computes
+  #   pct(sim.values.last.value - net_deposits, net_deposits)
+  # so the dollars fed to the shadow ETF must be the SAME dollars net_deposits
+  # counts. Keep matching trades while the denominator switches to deposits and
+  # the expression is off by (Sum trade cost - Sum deposits) — silently, with no
+  # flag and no null.
+  test "a cash-tracked portfolio matches DEPOSITS, not trades" do
+    cash!(@portfolio, kind: "deposit", amount: "1000.00", on: MON)   # SPY @ 50 -> 20 shares
+    buy!(@portfolio, @aapl, on: WED, shares: "5", price: "100")      # would be $500 -> 8.333 shares
+
+    result = simulate
+
+    # 20 SPY shares from the deposit alone: 20 x 60 = 1200 from TUE on. Matching
+    # the WED trade instead would give a different number on every day.
+    assert_equal bd("1000"), value_on(result, MON)
+    assert_equal bd("1200"), value_on(result, TUE)
+    assert_equal bd("1200"), value_on(result, WED), "the trade is an internal transfer, not a new dollar"
+    assert_equal bd("1200"), value_on(result, FRI)
+  end
+
+  test "a withdrawal sells the shadow position by its own dollars" do
+    cash!(@portfolio, kind: "deposit", amount: "1000.00", on: MON)      # 20 SPY @ 50
+    cash!(@portfolio, kind: "withdrawal", amount: "-600.00", on: TUE)   # -10 SPY @ 60
+
+    result = simulate
+
+    assert_equal bd("600"), value_on(result, TUE), "20 - 10 = 10 shares x \$60"
+    assert_equal bd("600"), value_on(result, FRI)
+    assert_not result.meta[:benchmark_clamped]
+  end
+
+  # The DRIP rule generalized: interest/dividend_cash/tax/fee move the balance but
+  # are money the broker moved INSIDE the account, so matching them would hand the
+  # shadow portfolio free money the benchmark side never models.
+  test "the four internal cash kinds are NOT matched into the shadow ETF" do
+    cash!(@portfolio, kind: "deposit", amount: "1000.00", on: MON)
+    cash!(@portfolio, kind: "interest", amount: "50.00", on: TUE)
+    cash!(@portfolio, kind: "dividend_cash", amount: "25.00", on: TUE)
+    cash!(@portfolio, kind: "tax", amount: "-5.00", on: TUE)
+    cash!(@portfolio, kind: "fee", amount: "-4.95", on: TUE)
+
+    result = simulate
+
+    assert_equal bd("1200"), value_on(result, TUE), "still exactly the 20 deposit-bought shares"
+  end
+
+  # Kills include_cash: true in the inner Valuation call: the shadow ETF's value
+  # line must be pure benchmark shares, never the user's cash balance.
+  test "the user's cash balance never enters the shadow ETF's value line" do
+    cash!(@portfolio, kind: "deposit", amount: "1000.00", on: MON)
+
+    result = simulate
+
+    # $1,000 sat as cash all week; the shadow line is 20 SPY shares priced daily.
+    # If the inner valuation inherited the cash, MON would read 2,000 and TUE 2,200.
+    assert_equal bd("1000"), value_on(result, MON)
+    assert_equal bd("1200"), value_on(result, TUE)
+  end
+
+  test "a cash-tracked portfolio with only internal kinds matches nothing at all" do
+    cash!(@portfolio, kind: "interest", amount: "50.00", on: MON)
+    buy!(@portfolio, @aapl, on: MON, shares: "1", price: "100")
+
+    result = simulate
+
+    assert_empty result.values,
+                 "the basis is cash the moment a cash row exists, and no deposit means nothing to match"
+  end
+
   test "result carries the benchmark instrument identity for the serializer" do
     result = simulate
 

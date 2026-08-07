@@ -34,6 +34,10 @@ Rails.application.routes.draw do
       # the analytics member routes (candles/summary/allocations).
       resources :portfolios, only: [] do
         resources :transactions, only: %i[ index create update destroy ]
+        # Liquid cash (issue #80). Its own endpoint, never merged into
+        # transactions: a cash movement has no symbol/side/shares/price, and a
+        # union row shape would throw in every consumer's zod schema.
+        resources :cash_transactions, only: %i[ index create update destroy ]
         resources :recurring_transactions, only: %i[ index show create update destroy ] do
           post :preview, on: :collection
         end

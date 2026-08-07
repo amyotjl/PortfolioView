@@ -78,15 +78,20 @@ module ApiContract
                         share_amount frequency anchor_on next_run_on end_on active
                         paused_reason consecutive_skips created_at updated_at].sort.freeze
   PAGINATION_KEYS  = %w[page per_page total_count total_pages].sort.freeze
-  CANDLES_TOP_KEYS = %w[candles benchmark flows drawdown meta].sort.freeze
+  CANDLES_TOP_KEYS = %w[candles benchmark flows drawdown cash meta].sort.freeze
   CANDLE_KEYS      = %w[t o h l c].sort.freeze
   POINT_KEYS       = %w[t v].sort.freeze
   FLOW_KEYS        = %w[t net items].sort.freeze
   FLOW_ITEM_KEYS   = %w[ticker kind amount].sort.freeze
-  META_KEYS        = %w[partial filled_dates benchmark_clamped approximation].sort.freeze
+  META_KEYS        = %w[partial filled_dates benchmark_clamped approximation
+                        flow_basis cash_negative cash_negative_since].sort.freeze
   BENCHMARK_LINE_KEYS = %w[symbol values].sort.freeze
-  SUMMARY_KEYS     = %w[current_value net_deposits total_return total_return_pct
-                        benchmark_return_pct vs_benchmark_edge_pct max_drawdown_pct as_of].sort.freeze
+  SUMMARY_KEYS     = %w[current_value holdings_value cash_balance net_deposits deposit_basis
+                        total_return total_return_pct benchmark_return_pct vs_benchmark_edge_pct
+                        max_drawdown_pct cash_negative cash_negative_since as_of].sort.freeze
+  CASH_TRANSACTION_KEYS = %w[id portfolio_id kind amount occurred_on notes
+                             created_at updated_at].sort.freeze
+  CASH_META_KEYS   = %w[cash_balance cash_negative cash_negative_since].sort.freeze
   ALLOCATIONS_KEYS = %w[as_of total_value by_instrument by_sector].sort.freeze
   BY_INSTRUMENT_KEYS = %w[instrument_id symbol sector value weight].sort.freeze
   BY_SECTOR_KEYS   = %w[sector value weight].sort.freeze
@@ -621,7 +626,13 @@ module ApiContract
       drawdown_point = json.fetch("drawdown").first
       assert_exact_keys POINT_KEYS, drawdown_point, "drawdown point"
 
-      assert_exact_keys META_KEYS, json.fetch("meta"), "meta carries exactly the four flags"
+      assert_exact_keys META_KEYS, json.fetch("meta"), "meta carries exactly the frozen flags"
+
+      # A trades-only portfolio: no cash series at all, and `flows` on the trade
+      # basis. `cash` is null rather than [] so a chart builder can discriminate
+      # on the payload it is drawing (issue #80).
+      assert_nil json.fetch("cash"), "cash must be null, never [], when untracked"
+      assert_equal "trades", json.dig("meta", "flow_basis")
     end
 
     test "candles with benchmark=true carries the benchmark as a close-value LINE {symbol, values:[{t,v}]}, never candles" do
@@ -638,7 +649,7 @@ module ApiContract
       end
     end
 
-    test "summary is wrapped {summary} with exactly the eight lifetime tiles, money as strings" do
+    test "summary is wrapped {summary} with exactly the frozen lifetime tiles, money as strings" do
       get "/api/v1/portfolios/#{@portfolio.id}/summary"
       assert_response :ok
       assert_exact_keys %w[summary], json, "top level"
@@ -646,6 +657,43 @@ module ApiContract
       assert_exact_keys SUMMARY_KEYS, summary, "summary tiles"
       assert_money_string "1300", summary["current_value"], "current_value = 10 x FRI 130"
       assert_money_string "1005", summary["net_deposits"], "net_deposits includes fees"
+
+      # Untracked: holdings_value IS current_value, and cash_balance is NULL —
+      # never "0.00", which would mean "tracks cash and is exactly flat" (issue #80).
+      assert_equal summary["current_value"], summary["holdings_value"]
+      assert_nil summary["cash_balance"], "cash_balance is null for a portfolio without cash rows"
+      assert_equal "trades", summary["deposit_basis"]
+      assert_equal false, summary["cash_negative"]
+      assert_nil summary["cash_negative_since"]
+    end
+
+    test "cash_transactions index/create wrap the frozen cash shape with a signed amount string and balance meta" do
+      post "/api/v1/portfolios/#{@portfolio.id}/cash_transactions",
+        params: { kind: "deposit", amount: "2500.00", occurred_on: MON.iso8601 }, as: :json
+      assert_response :created
+      assert_exact_keys %w[cash_transaction meta], json, "create top level"
+      row = json.fetch("cash_transaction")
+      assert_exact_keys CASH_TRANSACTION_KEYS, row, "created cash transaction"
+      assert_money_string "2500", row["amount"], "amount"
+      assert_exact_keys CASH_META_KEYS, json.fetch("meta"), "balance meta"
+
+      get "/api/v1/portfolios/#{@portfolio.id}/cash_transactions"
+      assert_response :ok
+      assert_exact_keys %w[cash_transactions meta], json, "index top level"
+      assert_exact_keys CASH_TRANSACTION_KEYS, json.fetch("cash_transactions").sole, "cash transaction item"
+      assert_exact_keys PAGINATION_KEYS, json.fetch("meta"), "pagination meta"
+
+      # And the portfolio has now flipped onto the cash basis on BOTH endpoints,
+      # coherently: deposit_basis == "cash" <=> cash != null <=> cash_balance != null.
+      get "/api/v1/portfolios/#{@portfolio.id}/summary"
+      assert_equal "cash", json.dig("summary", "deposit_basis")
+      assert_not_nil json.dig("summary", "cash_balance")
+
+      get "/api/v1/portfolios/#{@portfolio.id}/candles",
+        params: { from: MON.iso8601, to: FRI.iso8601 }
+      assert_equal "cash", json.dig("meta", "flow_basis")
+      assert_not_nil json.fetch("cash")
+      json.fetch("cash").each { |point| assert_exact_keys POINT_KEYS, point, "cash point" }
     end
 
     test "allocations is wrapped {allocations} with by_instrument and by_sector slices in the frozen shape" do

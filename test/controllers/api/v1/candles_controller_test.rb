@@ -13,7 +13,8 @@ module Api
       THU = Date.new(2026, 7, 9)
       FRI = Date.new(2026, 7, 10)
 
-      META_KEYS = %w[partial filled_dates benchmark_clamped approximation].freeze
+      META_KEYS = %w[partial filled_dates benchmark_clamped approximation
+                     flow_basis cash_negative cash_negative_since].freeze
 
       setup do
         @user = users(:one)
@@ -111,7 +112,7 @@ module Api
         assert_equal "-0.2", drawdown.first["v"]
       end
 
-      test "meta carries exactly partial, filled_dates, benchmark_clamped, approximation" do
+      test "meta carries exactly the four original flags plus the three cash-basis ones" do
         body = get_candles(from: MON.iso8601, to: FRI.iso8601, benchmark: true)
         meta = body.fetch("meta")
 
@@ -120,6 +121,11 @@ module Api
         assert_equal [], meta["filled_dates"]
         assert_equal false, meta["benchmark_clamped"]
         assert_equal "component_extrema", meta["approximation"]
+        # A trades-only portfolio stays on the trade basis with no cash series.
+        assert_equal "trades", meta["flow_basis"]
+        assert_equal false, meta["cash_negative"]
+        assert_nil meta["cash_negative_since"]
+        assert_nil body.fetch("cash"), "cash must be null, not [], when untracked"
       end
 
       test "an empty portfolio returns a well-formed empty payload" do

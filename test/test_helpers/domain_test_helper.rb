@@ -59,6 +59,15 @@ module DomainTestHelper
                         executed_on: on, **attrs)
   end
 
+  # A liquid-cash movement (issue #80). `amount` is SIGNED, exactly as stored:
+  # deposit > 0, withdrawal < 0, the four internal kinds either way. There is
+  # deliberately no sign coercion here for the same reason the model has none —
+  # a fixture that writes the wrong sign must fail the CHECK, not be corrected.
+  def cash!(portfolio, kind:, amount:, on:, **attrs)
+    CashTransaction.create!(portfolio: portfolio, kind: kind, amount: bd(amount),
+                            occurred_on: on, **attrs)
+  end
+
   def split!(instrument, on:, ratio:)
     SplitEvent.create!(instrument: instrument, ex_date: on, ratio: bd(ratio))
   end

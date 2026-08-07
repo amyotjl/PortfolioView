@@ -200,6 +200,144 @@ class Portfolios::ValuationTest < ActiveSupport::TestCase
     assert_equal bd("0.33333333") * bd("11.75"), candle.close
   end
 
+  # --- liquid cash (issue #80) ----------------------------------------------
+
+  test "a portfolio with no cash rows is byte-identical: untracked cash, trade flows, holdings-only value" do
+    aapl = create_instrument(symbol: "AAPL")
+    seed_prices(aapl, { MON => "100", TUE => "120" })
+    buy!(@portfolio, aapl, on: MON, shares: "10", price: "100", fees: "5")
+
+    result = valuation(from: MON, to: TUE)
+
+    assert_not result.cash.tracked
+    assert_same Portfolios::CashLedger::UNTRACKED, result.cash
+    assert_equal bd("1200"), result.candles.last.close
+    assert_equal [ "buy" ], result.flows.sole.items.map(&:side), "flows stay the trade flows"
+  end
+
+  # Inception is the earlier of the first trade and the first cash movement.
+  # Taking it from the first TRADE is a live bug: the series starts late and — via
+  # Summary, which passes from: inception — build_flows' `next if effective < from`
+  # drops the earlier deposit entirely and net_deposits understates by it.
+  test "inception is the first CASH movement when it predates the first trade" do
+    aapl = create_instrument(symbol: "AAPL")
+    seed_prices(aapl, { WED => "100", THU => "100" })
+    cash!(@portfolio, kind: "deposit", amount: "10000.00", on: MON)
+    buy!(@portfolio, aapl, on: WED, shares: "10", price: "100")
+
+    result = valuation(from: MON, to: THU)
+
+    assert_equal [ MON, TUE, WED, THU ], result.candles.map(&:date),
+                 "the series begins the day the money arrived, not the day it was invested"
+    assert_equal [ MON ], result.flows.map(&:date)
+    assert_equal bd("10000"), result.flows.sum(BigDecimal(0), &:net)
+    assert_equal bd("9000"), result.cash.closing_balance, "10,000 in, 1,000 spent on the WED buy"
+  end
+
+  test "a cash-only portfolio produces a series equal to its cash balance" do
+    cash!(@portfolio, kind: "deposit", amount: "10000.00", on: MON)
+
+    result = valuation(from: MON, to: FRI)
+
+    assert_equal [ MON, TUE, WED, THU, FRI ], result.candles.map(&:date),
+                 "a deposit with no trades is a real portfolio, not an empty one"
+    assert_equal [ bd("0") ] * 5, result.candles.map(&:close), "no holdings, so the candle legs are zero"
+    assert_equal [ bd("10000") ] * 5, result.candles.map { |c| result.cash.balances.fetch(c.date) }
+    assert_equal [ bd("0") ] * 5, result.drawdown.map(&:value), "flat cash is not a drawdown"
+    assert_not result.meta[:partial]
+  end
+
+  test "candle legs stay HOLDINGS-ONLY while cash is emitted as its own series" do
+    aapl = create_instrument(symbol: "AAPL")
+    seed_prices(aapl, { MON => "100", TUE => "100" })
+    cash!(@portfolio, kind: "deposit", amount: "10000.00", on: MON)
+    buy!(@portfolio, aapl, on: MON, shares: "10", price: "100")
+
+    result = valuation(from: MON, to: TUE)
+
+    assert_equal bd("1000"), result.candles.last.close, "the candle is the holdings, never holdings + cash"
+    assert_equal bd("9000"), result.cash.balances.fetch(TUE)
+  end
+
+  test "drawdown runs on the CASH-INCLUSIVE close, so a sell is value-neutral" do
+    aapl = create_instrument(symbol: "AAPL")
+    seed_prices(aapl, { MON => "100", TUE => "100", WED => "100" })
+    cash!(@portfolio, kind: "deposit", amount: "1000.00", on: MON)
+    buy!(@portfolio, aapl, on: MON, shares: "10", price: "100")
+    sell!(@portfolio, aapl, on: WED, shares: "10", price: "100")
+
+    result = valuation(from: MON, to: WED)
+
+    assert_equal bd("0"), result.candles.last.close, "holdings are gone"
+    # Holdings-only, this sell would read as a -100% drawdown. With the cash
+    # account the $1,000 came back as cash, so total value never moved.
+    assert_equal [ bd("0"), bd("0"), bd("0") ], result.drawdown.map(&:value)
+  end
+
+  test "on the cash basis flows are the CASH movements exclusively — no trade items" do
+    aapl = create_instrument(symbol: "AAPL")
+    seed_prices(aapl, { MON => "100", TUE => "100" })
+    cash!(@portfolio, kind: "deposit", amount: "10000.00", on: MON)
+    cash!(@portfolio, kind: "withdrawal", amount: "-2500.00", on: TUE)
+    cash!(@portfolio, kind: "interest", amount: "3.00", on: TUE)
+    buy!(@portfolio, aapl, on: TUE, shares: "10", price: "100")
+
+    flows = valuation(from: MON, to: TUE).flows
+
+    assert_equal [ MON, TUE ], flows.map(&:date)
+    assert_equal %w[deposit], flows.first.items.map(&:side)
+    assert_equal %w[withdrawal], flows.last.items.map(&:side), "no buy item, and no interest item"
+    assert_equal bd("10000"), flows.first.net
+    assert_equal bd("-2500"), flows.last.net
+    flows.each { |flow| flow.items.each { |item| assert_nil item.symbol, "a cash movement has no ticker" } }
+    assert_equal bd("7500"), flows.sum(BigDecimal(0), &:net), "Sum(flows[].net) is the deposit ledger"
+  end
+
+  test "cash rows never reach Holdings::Calculator: no nil-keyed holding, nothing partial" do
+    aapl = create_instrument(symbol: "AAPL")
+    seed_prices(aapl, { MON => "100", TUE => "100" })
+    cash!(@portfolio, kind: "deposit", amount: "10000.00", on: MON)
+    buy!(@portfolio, aapl, on: MON, shares: "10", price: "100")
+
+    holdings = Holdings::Calculator.call(portfolio: @portfolio, from: MON, to: TUE).holdings
+
+    holdings.each do |date, position|
+      assert_instance_of Date, date
+      assert_equal [ aapl.id ], position.keys, "a cash row must not appear as a (nil) instrument position"
+    end
+    assert_not valuation(from: MON, to: TUE).meta[:partial]
+  end
+
+  test "unplaceable cash ORs into meta.partial so the payload is never cached as complete" do
+    beyond = Date.new(2026, 7, 13) # no SPY row
+    cash!(@portfolio, kind: "deposit", amount: "10000.00", on: beyond)
+    aapl = create_instrument(symbol: "AAPL")
+    seed_prices(aapl, { MON => "100" })
+    buy!(@portfolio, aapl, on: MON, shares: "1", price: "100")
+
+    result = valuation(from: MON, to: beyond)
+
+    assert result.meta[:partial], "cash the calendar cannot place yet must not be silently lost"
+    assert result.cash.unbucketed
+  end
+
+  test "injected transactions default include_cash OFF, and the flag can be forced" do
+    cash!(@portfolio, kind: "deposit", amount: "10000.00", on: MON)
+    aapl = create_instrument(symbol: "AAPL")
+    seed_prices(aapl, { MON => "100" })
+    synthetic = Data.define(:instrument_id, :side, :kind, :shares, :price, :fees, :executed_on)
+    injected = [ synthetic.new(instrument_id: aapl.id, side: "buy", kind: "normal",
+                               shares: bd("2"), price: bd("100"), fees: bd("0"), executed_on: MON) ]
+
+    from_injection = valuation(from: MON, to: MON, transactions: injected)
+    forced = valuation(from: MON, to: MON, transactions: injected, include_cash: true)
+
+    assert_not from_injection.cash.tracked, "a synthetic portfolio must never inherit real cash"
+    assert_equal bd("200"), from_injection.flows.sole.net, "and its flows stay the injected trades"
+    assert from_injection.meta[:filled_dates].empty?
+    assert forced.cash.tracked, "the flag is explicit, not merely implied"
+  end
+
   test "result collections are frozen" do
     result = valuation(from: MON, to: FRI)
 
