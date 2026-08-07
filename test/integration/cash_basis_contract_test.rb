@@ -200,6 +200,30 @@ class CashBasisContractTest < ActionDispatch::IntegrationTest
     assert_equal "1300.0", result["current_value"], "all of it is invested"
   end
 
+  # The DRIP pair at the endpoint level: the dividend and the reinvestment that
+  # spent it cancel in cash, the shares show up in holdings, and net_deposits does
+  # not move. Excluding the DRIP from the cash debit would leave cash_balance at
+  # 9,150 and current_value at 10,580 — inflated by exactly the $150 dividend,
+  # counted once as shares and once as the cash that bought them.
+  test "a cash dividend and its reinvestment cancel in cash, and total value never double-counts" do
+    cash!(@portfolio, kind: "deposit", amount: "10000.00", on: MON)
+    buy!(@portfolio, @aapl, on: MON, shares: "10", price: "100")
+    cash!(@portfolio, kind: "dividend_cash", amount: "150.00", on: TUE)
+    buy!(@portfolio, @aapl, on: TUE, shares: "1", price: "150", kind: "dividend_reinvestment")
+
+    result = summary
+
+    assert_equal "9000.0", result["cash_balance"], "10,000 - 1,000 invested; the +150/-150 pair cancels"
+    assert_equal "1430.0", result["holdings_value"], "11 shares (10 bought + 1 reinvested) x FRI 130"
+    assert_equal "10430.0", result["current_value"]
+    assert_equal "10000.0", result["net_deposits"], "neither the trade nor the dividend is a contribution"
+    assert_equal "430.0", result["total_return"], "the dividend's gain lands in RETURN, where it belongs"
+
+    # And the DRIP is still absent from flows and from the shadow ETF's matching.
+    kinds = candles.fetch("flows").flat_map { |flow| flow.fetch("items").map { |item| item["kind"] } }
+    assert_equal %w[deposit], kinds
+  end
+
   test "a cash-only portfolio charts its cash instead of the empty state" do
     cash!(@portfolio, kind: "deposit", amount: "10000.00", on: MON)
 

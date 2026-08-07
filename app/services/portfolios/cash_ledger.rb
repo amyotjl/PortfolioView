@@ -16,11 +16,20 @@ module Portfolios
   # SPLITS DO NOT TOUCH CASH. A split moves share counts, not money, so no split
   # arm exists here and none should be added.
   #
-  # kind: dividend_reinvestment TRANSACTIONS DO NOT TOUCH CASH EITHER, for the
-  # same reason they are excluded from external flows and benchmark matching: a
-  # DRIP is internal compounding — the dividend never sat in the cash account, so
-  # debiting the reinvestment would silently drain the balance by the dividend
-  # with no matching credit anywhere.
+  # EVERY TRADE MOVES CASH, REGARDLESS OF `kind` — dividend_reinvestment
+  # INCLUDED. This is NOT the same rule as the DRIP exclusion in
+  # Valuation#build_flows and Benchmarks::Simulation, and conflating the two is
+  # the trap: those say a DRIP is not an external CONTRIBUTION (it must not
+  # inflate net_deposits or buy the shadow ETF free shares), which stays true.
+  # This says a DRIP still SPENT money out of the cash account, which is also
+  # true — the dividend arrives as a `dividend_cash` credit (the importer records
+  # all six kinds) and the reinvestment spends it, so the pair nets to zero and
+  # the gain lands in return where it belongs.
+  #
+  # Excluding the debit here looks harmless in isolation and is not: with the
+  # credit recorded and the debit skipped, cash is permanently inflated by the
+  # dividend and total value DOUBLE-COUNTS it — once as the new shares, once as
+  # the cash that bought them. Two tests pin this; read them before "fixing" it.
   #
   # Query budget: `call` is PURE (zero queries). It takes `days:` and
   # `transactions:` from Valuation, which has already materialized both, and the
@@ -29,9 +38,6 @@ module Portfolios
   # measures 59 ms and a full sequential scan of the largest table in the schema.
   class CashLedger
     ZERO = BigDecimal(0)
-
-    DRIP_KIND = "dividend_reinvestment".freeze
-    private_constant :DRIP_KIND
 
     # One cash movement, flattened out of the database so the sweep never touches
     # ActiveRecord. `amount` is SIGNED as stored (deposit > 0, withdrawal < 0).
@@ -143,14 +149,18 @@ module Portfolios
       [ by_date, unbucketed ]
     end
 
-    # { effective Date => BigDecimal } — the cent-rounded external cash each
-    # day's trades moved, summed per day AFTER per-transaction rounding.
+    # { effective Date => BigDecimal } — the cent-rounded cash each day's trades
+    # moved, summed per day AFTER per-transaction rounding.
+    #
+    # EVERY trade, every `kind`. There is deliberately no dividend_reinvestment
+    # arm: a DRIP spent cash, and its funding `dividend_cash` credit is a row in
+    # the same ledger. (The DRIP exclusions in Valuation#build_flows and
+    # Benchmarks::Simulation are a DIFFERENT rule — "not an external
+    # contribution" — and stay exactly where they are.)
     def bucket_trades
       by_date = {}
 
       transactions.each do |tx|
-        next if tx.kind == DRIP_KIND
-
         effective = effective_day(tx.executed_on)
         next if effective.nil?
 

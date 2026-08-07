@@ -146,12 +146,58 @@ class Portfolios::CashLedgerTest < ActiveSupport::TestCase
     assert_equal bd("5000.00"), balances[FRI]
   end
 
-  test "a dividend_reinvestment buy does not move cash" do
+  # READ THIS BEFORE "FIXING" IT. Excluding dividend_reinvestment from the cash
+  # debit looks obviously right in isolation — a DRIP is internal compounding, so
+  # surely no money moved — and it is wrong. The money DID move: the dividend
+  # arrived as cash and the reinvestment spent it. The funding credit is a
+  # `dividend_cash` row that the activity-ledger importer writes (it records all
+  # six kinds, and #68 refused to pair a dividend to a later buy by amount, so it
+  # cannot know which dividends were reinvested and records them all).
+  #
+  # Skip the debit while that credit exists and cash is permanently inflated by
+  # the dividend, with total value DOUBLE-COUNTING it — once as the new shares,
+  # once as the cash that bought them. Silently, and in the flattering direction.
+  #
+  # The DRIP exclusions in Valuation#build_flows and Benchmarks::Simulation are a
+  # separate rule about CONTRIBUTIONS and are still correct; only the cash debit
+  # is universal. Two rules, one column — do not merge them.
+  test "a dividend_reinvestment buy debits cash exactly like any other buy" do
     cash!(@portfolio, kind: "deposit", amount: "10000.00", on: MON)
     buy!(@portfolio, @aapl, on: TUE, shares: "1", price: "500", kind: "dividend_reinvestment")
 
-    assert_equal bd("10000.00"), ledger.closing_balance,
-                 "a DRIP is internal compounding — debiting it would drain the balance with no matching credit"
+    result = ledger
+
+    assert_equal bd("9500.00"), result.closing_balance, "the reinvestment spent $500 of cash"
+    assert_equal bd("10000.00"), result.net_external_total, "but it is not a contribution"
+  end
+
+  # The matched pair — the analogue of #68's split matched-pair test, and the case
+  # that proves the design rather than one half of it.
+  test "a dividend_cash credit and the DRIP buy that spent it net to exactly zero" do
+    cash!(@portfolio, kind: "dividend_cash", amount: "100.00", on: TUE)
+    buy!(@portfolio, @aapl, on: TUE, shares: "0.2", price: "500", kind: "dividend_reinvestment")
+
+    result = ledger
+
+    assert_equal bd("0"), result.balances.fetch(TUE), "$100 in, $100 straight back out"
+    assert_equal bd("0"), result.closing_balance
+    assert_equal bd("0"), result.net_external_total,
+                 "neither half is external: the broker paid you INSIDE the account"
+    assert_nil result.first_negative_on, "and the pair never dips below zero"
+  end
+
+  # The case the exclusion was protecting, and the design's actual answer to it:
+  # a hand-marked DRIP with no recorded funding dividend goes negative, the
+  # warning surfaces it, and that is the user's cue to record the dividend. This
+  # is exactly what "warn, never reject" exists for.
+  test "a DRIP with no recorded funding dividend goes negative and warns, rather than being ignored" do
+    cash!(@portfolio, kind: "deposit", amount: "100.00", on: MON)
+    buy!(@portfolio, @aapl, on: TUE, shares: "1", price: "500", kind: "dividend_reinvestment")
+
+    result = ledger
+
+    assert_equal bd("-400.00"), result.closing_balance
+    assert_equal TUE, result.first_negative_on, "the missing dividend is surfaced, not swallowed"
   end
 
   # --- bucketing ------------------------------------------------------------
