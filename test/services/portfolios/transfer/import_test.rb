@@ -666,6 +666,75 @@ module Portfolios
         assert_equal 2, result.totals[:transactions_created]
         assert_equal 1, result.totals[:recurring_created]
       end
+      # --- #79: changing the venue default must not split one security in two ---
+
+      # THE CRITERION THAT MATTERS MOST, and it is asserted against a database
+      # that ALREADY HOLDS THE OLD SPELLING rather than a fresh one. #79 changes
+      # what a venue-less broker row resolves to (FINN -> FINN.NE instead of
+      # FINN.TO), and `instruments` is UNIQUE on upper(symbol) alone — so for a
+      # user who imported before the change, the new spelling must reuse the
+      # existing row, not mint a sibling with half the history. Two half-sized
+      # positions on a dashboard read as data, not as an error.
+      test "a venue-suffix change reuses the instrument imported under the old spelling" do
+        old = Instrument.create!(symbol: "FINN.TO", name: "Fidelity Global Innovators ETF",
+                                 instrument_type: "etf", currency: "CAD")
+
+        doc = document(
+          instruments: [ instrument_spec("FINN.NE", name: "Fidelity Global Innovators ETF",
+                                         instrument_type: "etf", currency: "CAD") ],
+          portfolios: [ portfolio_spec("CAD", transactions: [ transaction_spec("FINN.NE") ]) ]
+        )
+
+        result = nil
+        assert_no_difference -> { Instrument.count } do
+          result = import(doc)
+        end
+        assert_equal "created", result.portfolios.first.status
+
+        assert_equal old.id, Transaction.order(:id).last.instrument_id,
+                     "the new spelling must bind to the instrument already stored"
+      end
+
+      test "the sibling reuse does NOT collapse a US ticker into a non-US listing" do
+        # The other direction, and the reason venue_sibling_for requires BOTH
+        # sides to be venue-suffixed. US FINN and Canadian FINN.NE are different
+        # securities and must stay different instruments.
+        us = Instrument.create!(symbol: "FINN", name: "US Finn", instrument_type: "stock",
+                                currency: "USD")
+
+        doc = document(
+          instruments: [ instrument_spec("FINN.NE", name: "Fidelity Global Innovators ETF",
+                                         instrument_type: "etf", currency: "CAD") ],
+          portfolios: [ portfolio_spec("CAD", transactions: [ transaction_spec("FINN.NE") ]) ]
+        )
+
+        result = nil
+        assert_difference -> { Instrument.count }, 1 do
+          result = import(doc)
+        end
+        assert_equal "created", result.portfolios.first.status
+
+        assert_not_equal us.id, Transaction.order(:id).last.instrument_id
+      end
+
+      test "a DIFFERENT currency under the same base is not treated as a sibling" do
+        # venue_sibling_for matches on base symbol AND currency. A USD-quoted
+        # non-US listing is not the same security as the CAD one.
+        Instrument.create!(symbol: "XYZ.TO", name: "XYZ USD line", instrument_type: "etf",
+                           currency: "USD")
+
+        doc = document(
+          instruments: [ instrument_spec("XYZ.NE", name: "XYZ CAD line", instrument_type: "etf",
+                                         currency: "CAD") ],
+          portfolios: [ portfolio_spec("CAD", transactions: [ transaction_spec("XYZ.NE") ]) ]
+        )
+
+        result = nil
+        assert_difference -> { Instrument.count }, 1 do
+          result = import(doc)
+        end
+        assert_equal "created", result.portfolios.first.status
+      end
     end
   end
 end

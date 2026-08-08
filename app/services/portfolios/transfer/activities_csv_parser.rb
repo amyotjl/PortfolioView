@@ -133,6 +133,10 @@ module Portfolios
         # Pass 1: decide each symbol's venue once, from the whole file.
         @foreign = foreign_symbols(rows)
         @qualified = {}
+        # Symbols whose venue the directory could not settle, so the TSX was
+        # assumed (#79). Reported separately from the requalified list: those are
+        # a correct disambiguation, these are a guess that may be wrong.
+        @guessed_venues = []
 
         instruments = {}
         warnings = []
@@ -150,6 +154,7 @@ module Portfolios
 
         warnings.unshift(*ledger_warnings(tally))
         warnings << requalified_warning(requalified) if requalified.any?
+        warnings << guessed_venue_warning if @guessed_venues.any?
 
         Document.new(
           format: ACTIVITIES_CSV_FORMAT,
@@ -206,7 +211,14 @@ module Portfolios
           if @foreign.include?(key)
             key
           else
-            SymbolQualifier.call(symbol: key, assume_non_us: true)
+            # .resolve, not .call: this export has no exchange column at all, so
+            # the venue is either resolved against the directory or GUESSED, and
+            # the report has to be able to tell the user which (#79). Guessing
+            # silently is what shipped `FINN.TO` for a security listed as
+            # `FINN.NE`, with no price coverage and no explanation.
+            result = SymbolQualifier.resolve(symbol: key, assume_non_us: true)
+            @guessed_venues << result.symbol if result.guessed?
+            result.symbol
           end
 
         requalified[key] = qualified if qualified != key
@@ -613,9 +625,31 @@ module Portfolios
         "#{sorted.size} non-US #{one ? 'listing is' : 'listings are'} " \
         "venue-suffixed so #{one ? 'it cannot' : 'they cannot'} be confused with the US ticker of the same name " \
         "(#{examples}). This export has no exchange column, so the venue is inferred from the absence of an " \
-        "FX conversion on the trade. Price history is unavailable for these symbols — the provider directory " \
-        "covers US listings only — so their market value will read as zero until a non-US price source is " \
-        "configured."
+        "FX conversion on the trade. Where the local directory lists the security on exactly one Canadian venue " \
+        "that venue is used; otherwise the TSX is assumed and the symbol is listed separately below."
+      end
+
+      # #79. Kept SEPARATE from the requalified warning on purpose: that one
+      # reports a correct disambiguation, this one reports a GUESS the user may
+      # need to correct. Merging them would bury the uncertain cases in the
+      # certain ones.
+      #
+      # TENSE-NEUTRAL, like every other warning here — the same strings serve
+      # `dry_run`, and #64 shipped a preview that told users their data "was
+      # imported" before anything had been written.
+      def guessed_venue_warning
+        sorted = @guessed_venues.uniq.sort
+        shown = sorted.first(EXAMPLE_LIMIT).join(", ")
+        rest = sorted.size - EXAMPLE_LIMIT
+        examples = rest.positive? ? "#{shown}, and #{rest} more" : shown
+        one = sorted.size == 1
+
+        "The venue of #{sorted.size} #{one ? 'symbol is' : 'symbols are'} a GUESS: the local directory does not " \
+        "list #{one ? 'it' : 'them'} on exactly one Canadian venue, so the TSX (.TO) is assumed (#{examples}). " \
+        "Most Canadian listings are NOT on the TSX, so a guess that is wrong leaves the holding with no price " \
+        "history and a market value of zero — the cost basis stays exact either way. If a symbol here belongs to " \
+        "another venue, importing the broker's holdings report as well will name the venue correctly and both " \
+        "files will resolve to the same instrument."
       end
 
       # --- Scalars ---------------------------------------------------------------

@@ -562,6 +562,65 @@ module Portfolios
 
         assert_equal 1, document.portfolios.sole.transactions.size
       end
+      # --- #79: a guessed venue must be reported as a guess --------------------
+
+      # NOTE ON THE BASELINE: `listed_instruments` is EMPTY in the test
+      # environment, so every venue-less symbol in the fixture falls back to .TO
+      # exactly as it did before #79. That is why the rest of this file is
+      # unchanged — and it is also why the guess warning is what needs asserting
+      # here, since the fallback is the path these tests take.
+      test "the report says which venues are a GUESS, and names them" do
+        note = @document.warnings.find { |w| w.include?("is a GUESS") || w.include?("are a GUESS") }
+
+        assert note, "a guessed venue must be reported, got: #{@document.warnings.inspect}"
+        assert_includes note, "ZEQT.TO"
+        assert_includes note, ".TO) is assumed"
+        assert_match(/cost basis stays exact/, note,
+                     "say what is and is not affected, or the warning reads as data loss")
+      end
+
+      test "the guess warning is TENSE-NEUTRAL, because dry_run shows it too" do
+        # #64 shipped a preview reading "was imported" and told users their data
+        # had already been written. Locked for this warning too.
+        note = @document.warnings.find { |w| w.include?("GUESS") }
+
+        assert_no_match(/was imported|were imported/, note)
+      end
+
+      test "a symbol the directory settles to ONE venue is not reported as a guess" do
+        # The FINN case, driven end to end through the parser: with a directory row
+        # naming the venue, the symbol resolves to it and drops out of the guess
+        # list entirely.
+        ListedInstrument.create!(symbol: "ZEQT.NE", exchange: "NEO", asset_type: "ETF",
+                                 currency: "CAD")
+
+        document = ActivitiesCsvParser.call(@body)
+        symbols = document.portfolios.flat_map { |p| p.transactions.map(&:symbol) }.uniq
+
+        assert_includes symbols, "ZEQT.NE", "the directory venue must win over the .TO default"
+        assert_not_includes symbols, "ZEQT.TO"
+
+        guess = document.warnings.find { |w| w.include?("GUESS") }
+        assert_not_includes guess.to_s, "ZEQT",
+                            "a resolved venue is not a guess and must not be reported as one"
+      end
+
+      test "an AMBIGUOUS base symbol stays a guess even though the directory knows it" do
+        # Two Canadian venues for one base symbol. Picking one would bind the
+        # holding to the wrong security some of the time, so it falls back to .TO
+        # AND is reported — the directory knowing something is not the same as the
+        # directory settling it.
+        ListedInstrument.create!(symbol: "ZEQT.NE", exchange: "NEO", asset_type: "ETF",
+                                 currency: "CAD")
+        ListedInstrument.create!(symbol: "ZEQT.TO", exchange: "TSX", asset_type: "ETF",
+                                 currency: "CAD")
+
+        document = ActivitiesCsvParser.call(@body)
+        symbols = document.portfolios.flat_map { |p| p.transactions.map(&:symbol) }.uniq
+
+        assert_includes symbols, "ZEQT.TO"
+        assert_includes document.warnings.find { |w| w.include?("GUESS") }.to_s, "ZEQT.TO"
+      end
     end
   end
 end
