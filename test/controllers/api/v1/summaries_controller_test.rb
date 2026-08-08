@@ -14,8 +14,9 @@ module Api
       FRI = Date.new(2026, 7, 10)
 
       SUMMARY_KEYS = %w[
-        current_value net_deposits total_return total_return_pct
-        benchmark_return_pct vs_benchmark_edge_pct max_drawdown_pct as_of
+        current_value holdings_value cash_balance net_deposits deposit_basis
+        total_return total_return_pct benchmark_return_pct vs_benchmark_edge_pct
+        max_drawdown_pct cash_negative cash_negative_since as_of
       ].freeze
 
       setup do
@@ -59,6 +60,14 @@ module Api
         assert_nil summary["vs_benchmark_edge_pct"]
         assert_equal "0.0", summary["max_drawdown_pct"]
         assert_nil summary["as_of"]
+        # Nothing to value yet: the zero payload stays on the trade basis, so the
+        # cross-endpoint invariant (basis "cash" <=> cash_balance non-null) holds
+        # even here.
+        assert_equal "0.0", summary["holdings_value"]
+        assert_nil summary["cash_balance"]
+        assert_equal "trades", summary["deposit_basis"]
+        assert_equal false, summary["cash_negative"]
+        assert_nil summary["cash_negative_since"]
       end
 
       # --- Full lifetime math incl. benchmark edge + all-time-peak drawdown ---
@@ -89,6 +98,11 @@ module Api
         # portfolio peaked at 1500 (TUE) then dipped to 1200 (WED): -20%.
         assert_equal "-0.2", summary["max_drawdown_pct"]
         assert_equal "2026-07-10", summary["as_of"]
+
+        # No cash rows: holdings_value IS current_value and cash_balance is null.
+        assert_equal "1500.0", summary["holdings_value"]
+        assert_nil summary["cash_balance"]
+        assert_equal "trades", summary["deposit_basis"]
       end
 
       test "without a benchmark the benchmark tiles are null" do

@@ -37,6 +37,31 @@
  * exactly what happened, and what a fixture written against the wrong assumption
  * about `o` could not catch. It took looking at the rendered chart.
  *
+ * CASH (#80), AND WHY THE DISCARD RULE ABOVE IS UNCHANGED
+ * ------------------------------------------------------
+ * When a portfolio tracks cash, total value is holdings + cash, so exactly two
+ * expressions change: `value` becomes the candle close PLUS cash on that day, and
+ * `baseCents` becomes the first candle's open PLUS cash on the first candle's day.
+ * Nothing else — in particular `flows.filter(f => f.t > first.t)` stays EXACTLY as
+ * written.
+ *
+ * That is not a lucky coincidence, it is the same convention twice: `/candles`'
+ * `cash` series is END-OF-DAY, so its first point already contains every cash
+ * movement dated on or before the first candle, precisely as `o` already contains
+ * every trade dated on or before it. Same convention, same discard rule, no new
+ * logic. A START-of-day cash series would double-count day one and reproduce the
+ * phantom band described above — which is why the pair of fixtures in the spec
+ * (a deposit on day one, and the same portfolio with it on day two) is the test
+ * that matters: a single fixture is what CONFIRMED the #52 bug instead of catching
+ * it.
+ *
+ * What this buys is the thing the chart previously could not express: a trade
+ * becomes VALUE-NEUTRAL (money moves from cash into holdings, total unchanged),
+ * and idle cash is finally *in* the value line instead of silently omitted.
+ *
+ * When `payload.cash === null` every cash lookup is 0 and the output is
+ * byte-identical to before this feature. That is the no-regression pin.
+ *
  * NEGATIVE GROWTH (the documented rendering choice #52 asks for)
  * -------------------------------------------------------------
  * A stack cannot hold a negative band: ECharts stacks negatives downward from
@@ -82,7 +107,7 @@ export const VALUE_SERIES = 'Total value'
 /** One trading day of the derivation. All figures are exact integer cents. */
 export interface ContributionPoint {
   t: string
-  /** Portfolio value — the day's close. */
+  /** Total value — the day's holdings close PLUS that day's cash balance. */
   valueCents: number
   /** Window-opening value plus every net flow up to and including this date. */
   contributedCents: number
@@ -113,8 +138,23 @@ export function deriveContributions(payload: CandlesResponse): Contributions {
   const first = payload.candles[0]
   if (!first) return { baseCents: 0, points: [] }
 
-  const baseCents = toCents(first.o) ?? 0
+  /*
+   * END-OF-DAY cash by date; an empty map when the portfolio does not track cash, so
+   * every lookup below is 0 and the derivation collapses to its pre-#80 form. The
+   * backend emits one point per swept day, so a candle date absent from the series
+   * means no cash existed yet.
+   */
+  const cashCentsByDate = new Map<string, number>()
+  for (const point of payload.cash ?? []) {
+    const cents = toCents(point.v)
+    if (cents !== null) cashCentsByDate.set(point.t, cents)
+  }
+  const cashAt = (date: string): number => cashCentsByDate.get(date) ?? 0
 
+  // The window-opening TOTAL: holdings at the open plus the cash standing that day.
+  const baseCents = (toCents(first.o) ?? 0) + cashAt(first.t)
+
+  // UNCHANGED, and deliberately so — see "CASH … the discard rule" in the module note.
   const flows = payload.flows
     .filter((f) => f.t > first.t)
     .map((f) => ({ t: f.t, netCents: toCents(f.net) ?? 0 }))
@@ -129,7 +169,7 @@ export function deriveContributions(payload: CandlesResponse): Contributions {
       contributedCents += flows[flowIndex].netCents
       flowIndex += 1
     }
-    const valueCents = toCents(candle.c) ?? 0
+    const valueCents = (toCents(candle.c) ?? 0) + cashAt(candle.t)
     points.push({
       t: candle.t,
       valueCents,

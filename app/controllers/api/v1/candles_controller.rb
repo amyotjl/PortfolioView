@@ -57,8 +57,11 @@ module Api
         Trading::Calendar.last_day || Trading::Calendar.today
       end
 
+      # Inception = the earlier of the first trade and the first cash movement.
+      # Taking only the first trade dropped a deposit that predated it (issue #80).
       def default_from(portfolio, to)
-        portfolio.transactions.minimum(:executed_on) || to
+        [ portfolio.transactions.minimum(:executed_on),
+          portfolio.cash_transactions.minimum(:occurred_on) ].compact.min || to
       end
     end
   end

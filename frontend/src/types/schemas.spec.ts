@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   allocationsResponseSchema,
   candlesResponseSchema,
+  cashTransactionMutationResponseSchema,
+  cashTransactionsResponseSchema,
   errorEnvelopeSchema,
   ACTIVITIES_CSV_FORMAT,
   formatLabel,
@@ -27,6 +29,7 @@ describe('API contract schemas (docs/API_SHAPES.md)', () => {
     const payload = {
       candles: [{ t: '2026-01-02', o: '100.00', h: '101.50', l: '99.25', c: '100.75' }],
       benchmark: { symbol: 'SPY', values: [{ t: '2026-01-02', v: '470.10' }] },
+      cash: null,
       flows: [
         {
           t: '2026-01-02',
@@ -35,7 +38,15 @@ describe('API contract schemas (docs/API_SHAPES.md)', () => {
         },
       ],
       drawdown: [{ t: '2026-01-02', v: '0.00000000' }],
-      meta: { partial: false, filled_dates: [], benchmark_clamped: false, approximation: '' },
+      meta: {
+        partial: false,
+        filled_dates: [],
+        benchmark_clamped: false,
+        approximation: '',
+        flow_basis: 'trades',
+        cash_negative: false,
+        cash_negative_since: null,
+      },
     }
 
     const parsed = parseResponse(candlesResponseSchema, payload, 'GET /candles')
@@ -43,6 +54,8 @@ describe('API contract schemas (docs/API_SHAPES.md)', () => {
     expect(typeof parsed.candles[0].c).toBe('string')
     expect(parsed.benchmark?.symbol).toBe('SPY')
     expect(parsed.flows[0].items[0].kind).toBe('buy')
+    // null <=> "this portfolio does not track cash".
+    expect(parsed.cash).toBeNull()
   })
 
   it('parses /summary and /allocations as WRAPPED objects', () => {
@@ -51,6 +64,11 @@ describe('API contract schemas (docs/API_SHAPES.md)', () => {
       {
         summary: {
           current_value: '12345.67',
+          holdings_value: '12345.67',
+          cash_balance: null,
+          deposit_basis: 'trades',
+          cash_negative: false,
+          cash_negative_since: null,
           net_deposits: '10000.00',
           total_return: '2345.67',
           total_return_pct: '0.234567',
@@ -151,6 +169,182 @@ describe('API contract schemas (docs/API_SHAPES.md)', () => {
     expect(() =>
       parseResponse(summaryResponseSchema, { summary: { current_value: '1.00' } }, 'GET /summary'),
     ).toThrow(SchemaValidationError)
+  })
+
+  // --- Liquid cash (#80) ---
+
+  describe('cash_balance: null is NOT zero, and a MISSING key is not null', () => {
+    const base = {
+      current_value: '12345.67',
+      holdings_value: '12345.67',
+      cash_balance: null as string | null,
+      deposit_basis: 'trades',
+      cash_negative: false,
+      cash_negative_since: null,
+      net_deposits: '10000.00',
+      total_return: '2345.67',
+      total_return_pct: '0.234567',
+      benchmark_return_pct: null,
+      vs_benchmark_edge_pct: null,
+      max_drawdown_pct: '0.101010',
+      as_of: '2026-07-17',
+    }
+
+    it('parses an explicit null as "this portfolio does not track cash"', () => {
+      const parsed = summaryResponseSchema.parse({ summary: { ...base } })
+      expect(parsed.summary.cash_balance).toBeNull()
+      expect(parsed.summary.deposit_basis).toBe('trades')
+    })
+
+    it("parses '0.00' as \"tracks cash, exactly flat\" — a DIFFERENT state", () => {
+      const parsed = summaryResponseSchema.parse({
+        summary: { ...base, cash_balance: '0.00', deposit_basis: 'cash' },
+      })
+      expect(parsed.summary.cash_balance).toBe('0.00')
+      expect(parsed.summary.cash_balance).not.toBeNull()
+    })
+
+    /**
+     * THE REQUIRED FAILURE. `cash_balance` is `.nullable()` and NOTHING ELSE — no
+     * `.optional()`, no `.default()`. A backend that forgets the key must throw here
+     * rather than have the client silently read the absence as flat, because that is the
+     * one mutation that turns every existing portfolio's dashboard into a lie without
+     * any visible error.
+     */
+    it('FAILS when cash_balance is absent from the payload', () => {
+      const { cash_balance: _omitted, ...withoutCash } = base
+      const result = summaryResponseSchema.safeParse({ summary: withoutCash })
+      expect(result.success).toBe(false)
+      expect(() =>
+        parseResponse(summaryResponseSchema, { summary: withoutCash }, 'GET /summary'),
+      ).toThrow(SchemaValidationError)
+    })
+
+    it('FAILS when the other new required keys are absent', () => {
+      for (const key of [
+        'holdings_value',
+        'deposit_basis',
+        'cash_negative',
+        'cash_negative_since',
+      ] as const) {
+        const partial: Record<string, unknown> = { ...base }
+        delete partial[key]
+        expect(summaryResponseSchema.safeParse({ summary: partial }).success, key).toBe(false)
+      }
+    })
+
+    it('rejects an unknown deposit_basis rather than mislabelling the denominator', () => {
+      // Unlike `kind`, the basis is a closed two-value discriminator that decides which
+      // tiles exist; failing loudly beats rendering the wrong denominator's caption.
+      expect(
+        summaryResponseSchema.safeParse({ summary: { ...base, deposit_basis: 'twr' } }).success,
+      ).toBe(false)
+    })
+  })
+
+  it('parses a cash-tracked /candles payload, with nullable ticker and open-ended kind', () => {
+    const parsed = parseResponse(
+      candlesResponseSchema,
+      {
+        candles: [{ t: '2026-01-02', o: '100.00', h: '101.50', l: '99.25', c: '100.75' }],
+        benchmark: null,
+        cash: [{ t: '2026-01-02', v: '-50.00' }],
+        flows: [
+          {
+            t: '2026-01-02',
+            net: '1000.00',
+            // A deposit has no instrument, and `kind` is a plain string so a kind this
+            // build has never heard of cannot blank the dashboard (the import.status
+            // precedent).
+            items: [
+              { ticker: null, kind: 'deposit', amount: '1000.00' },
+              { ticker: null, kind: 'rebate', amount: '5.00' },
+            ],
+          },
+        ],
+        drawdown: [{ t: '2026-01-02', v: '0.00000000' }],
+        meta: {
+          partial: false,
+          filled_dates: [],
+          benchmark_clamped: false,
+          approximation: '',
+          flow_basis: 'cash',
+          cash_negative: true,
+          cash_negative_since: '2026-01-02',
+        },
+      },
+      'GET /candles',
+    )
+    expect(parsed.cash?.[0].v).toBe('-50.00')
+    expect(parsed.flows[0].items[0].ticker).toBeNull()
+    expect(parsed.flows[0].items[1].kind).toBe('rebate')
+    expect(parsed.meta.cash_negative_since).toBe('2026-01-02')
+  })
+
+  it('FAILS when /candles omits the cash key entirely', () => {
+    // Same reasoning as cash_balance: absent must not be read as "untracked".
+    expect(
+      candlesResponseSchema.safeParse({
+        candles: [],
+        benchmark: null,
+        flows: [],
+        drawdown: [],
+        meta: {
+          partial: false,
+          filled_dates: [],
+          benchmark_clamped: false,
+          approximation: '',
+          flow_basis: 'trades',
+          cash_negative: false,
+          cash_negative_since: null,
+        },
+      }).success,
+    ).toBe(false)
+  })
+
+  it('parses a cash movement, keeping its amount an UNSIGNED magnitude string', () => {
+    const parsed = parseResponse(
+      cashTransactionMutationResponseSchema,
+      {
+        cash_transaction: {
+          id: 7,
+          portfolio_id: 3,
+          kind: 'withdrawal',
+          // Unsigned on the wire: `kind` carries the direction, so an edit form
+          // repopulating from GET never hands a sign to the DECIMAL regex.
+          amount: '5000.00',
+          occurred_on: '2026-08-03',
+          notes: null,
+          created_at: '2026-08-03T12:00:00Z',
+          updated_at: '2026-08-03T12:00:00Z',
+        },
+        // The post-write balance IS signed — a single movement is a magnitude, an
+        // aggregate is signed.
+        meta: { cash_balance: '-3800.00', cash_negative: true, cash_negative_since: '2026-08-03' },
+      },
+      'POST /cash_transactions',
+    )
+    expect(parsed.cash_transaction.amount).toBe('5000.00')
+    expect(parsed.meta.cash_balance).toBe('-3800.00')
+  })
+
+  it('accepts a kind the frontend has never heard of (z.string(), not a zod enum)', () => {
+    const parsed = cashTransactionsResponseSchema.parse({
+      cash_transactions: [
+        {
+          id: 1,
+          portfolio_id: 3,
+          kind: 'rebate',
+          amount: '1.00',
+          occurred_on: '2026-08-03',
+          notes: 'from the future',
+          created_at: '2026-08-03T12:00:00Z',
+          updated_at: '2026-08-03T12:00:00Z',
+        },
+      ],
+      meta: { page: 1, per_page: 50, total_count: 1, total_pages: 1 },
+    })
+    expect(parsed.cash_transactions[0].kind).toBe('rebate')
   })
 
   // --- Export / import (#64) ---

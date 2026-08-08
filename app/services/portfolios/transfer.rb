@@ -17,11 +17,38 @@ module Portfolios
     # checked on import — a file whose format string we don't recognize is
     # rejected with a field error rather than half-parsed.
     NATIVE_FORMAT = "portfolioview.portfolios".freeze
-    # Bump only for a BREAKING envelope change. Import accepts any version it
-    # explicitly knows how to read (SUPPORTED_VERSIONS), so adding an optional
-    # key does NOT need a bump.
-    NATIVE_VERSION = 1
-    SUPPORTED_VERSIONS = [ 1 ].freeze
+
+    # Envelope versions. 1 is the original; 2 is 1 plus a per-portfolio
+    # `cash_transactions` array (issue #80).
+    NATIVE_VERSION_BASE = 1
+    NATIVE_VERSION_CASH = 2
+    SUPPORTED_VERSIONS = [ NATIVE_VERSION_BASE, NATIVE_VERSION_CASH ].freeze
+
+    # THE VERSION AN EXPORT STAMPS DEPENDS ON WHAT IS IN IT, which is why this is
+    # a method and not a constant: 2 iff some exported portfolio carries at least
+    # one cash row, else 1. Paired with Export OMITTING the `cash_transactions`
+    # key entirely for a portfolio that has none. Both halves are load-bearing.
+    #
+    #   * Omitting the key keeps a no-cash export BYTE-IDENTICAL to a pre-#80
+    #     export, which preserves the asserted export -> import -> export fixed
+    #     point with no test churn and no silent reformat of every user's file.
+    #   * The conditional version makes a cash-BEARING file fail loudly on an old
+    #     build instead of silently losing money. An old NativeParser ignores
+    #     unknown keys, so it would drop the whole cash section and produce a
+    #     portfolio whose net_deposits, benchmark and candles all differ, with no
+    #     warning at all.
+    #
+    # THIS DELIBERATELY DEPARTS from the rule the old NATIVE_VERSION comment
+    # stated — "adding an optional key does not need a bump". That rule reasons
+    # about READABILITY: an old key set is still readable by a new build, which
+    # remains true here (absent key -> [] -> not cash-tracked -> exactly today's
+    # behaviour, so back-compat in that direction is structural). The reverse
+    # direction is the trap, because a SUCCESSFUL READ is the failure mode: the
+    # file parses, the import "works", and the money is gone. A refusal is the
+    # only honest outcome, so the version has to move.
+    def self.native_version(cash:)
+      cash ? NATIVE_VERSION_CASH : NATIVE_VERSION_BASE
+    end
 
     # Broker holdings snapshot (the user-supplied Wealthsimple report shape).
     HOLDINGS_CSV_FORMAT = "wealthsimple.holdings".freeze
@@ -76,11 +103,31 @@ module Portfolios
       :frequency, :anchor_on, :next_run_on, :end_on, :active
     )
 
+    # One liquid-cash movement (issue #80). `amount` is SIGNED, exactly as the
+    # column stores it and exactly as the wire carries it: deposit > 0,
+    # withdrawal < 0, and the four internal kinds either way but never zero.
+    # There is no magnitude->sign conversion anywhere in this pipeline — a
+    # broker's negative dividend_cash (a reversal) and positive tax (a refund)
+    # must survive a round trip unchanged, and `.abs` anywhere here would destroy
+    # exactly that.
+    CashSpec = Data.define(:kind, :amount, :occurred_on, :notes)
+
     # `warnings` are per-portfolio, non-fatal notes (a dropped short position, a
     # benchmark that doesn't exist here). They are surfaced to the user rather
     # than swallowed — a silent partial import is the failure mode this feature
     # can least afford.
-    PortfolioSpec = Data.define(:name, :benchmark_name, :transactions, :recurring_transactions, :warnings)
+    PortfolioSpec = Data.define(
+      :name, :benchmark_name, :transactions, :recurring_transactions, :warnings, :cash_transactions
+    ) do
+      # `cash_transactions` defaults for the same reason Document#splits does:
+      # every pre-#80 parser and test constructs a PortfolioSpec without naming a
+      # member it never produces, and a required member would break them all at
+      # once for no gain. An absent cash section means "this portfolio does not
+      # track cash", which is precisely what an empty array yields.
+      def initialize(cash_transactions: [], **rest)
+        super(cash_transactions: cash_transactions, **rest)
+      end
+    end
 
     # An instrument-global corporate action (backlog #068). NOT per portfolio:
     # `split_events` is keyed on (instrument_id, ex_date) and every portfolio

@@ -17,6 +17,16 @@ module Portfolios
     #   fees        = 0                                <- not in the report
     #   executed_on = the report's "As of <date>" trailer
     #
+    # Each synthesized buy is paired with an OFFSETTING `deposit` of the same
+    # dollars on the same date (issue #80). The buy would otherwise debit cash the
+    # user never spent, and a snapshot has no deposit rows to fund it from. Because
+    # every offset is same-date and same-dollar as its buy, the portfolio's cash
+    # lands at exactly 0.00, net_deposits equals total book value — the same figure
+    # the trade basis produced before there was a cash ledger — and every synthetic
+    # benchmark trade still lands on the same date for the same dollars, so
+    # benchmark_return_pct does not move either. A snapshot import's numbers are
+    # provably unchanged while its basis becomes cash.
+    #
     # Consequences the UI states plainly and that a reader of this code must not
     # forget:
     #   * Total cost basis is preserved (that is why Book Value is divided rather
@@ -93,7 +103,13 @@ module Portfolios
           # A portfolio can end up with no usable rows (all shorts / all zero
           # quantity); dropping it beats creating an empty portfolio the user
           # then has to delete. The reason is already in `warnings`.
-          portfolios: portfolios.reject { |spec| spec.transactions.empty? },
+          #
+          # Cash is checked too, for symmetry with ActivitiesCsvParser: here every
+          # cash row is an offset for a transaction, so the two conditions cannot
+          # disagree — but a predicate that ONLY looks at transactions is the shape
+          # that silently discards money in the parser that can produce cash-only
+          # accounts, and one predicate is easier to keep right than two.
+          portfolios: portfolios.reject { |spec| spec.transactions.empty? && spec.cash_transactions.empty? },
           warnings: warnings
         )
       end
@@ -107,7 +123,8 @@ module Portfolios
       # where nothing has been written yet.
       def synthesized_history_warning(as_of)
         "A holdings report has no trade history, so each position becomes one opening buy " \
-        "dated #{as_of.iso8601} priced at its book value per share. Total cost basis is preserved, " \
+        "dated #{as_of.iso8601} priced at its book value per share, funded by a matching deposit on the " \
+        "same day. Total cost basis is preserved and the cash balance is zero, " \
         "but purchase dates and individual lots are not — charts before #{as_of.iso8601} will be empty."
       end
 
@@ -143,7 +160,38 @@ module Portfolios
           benchmark_name: nil,
           transactions: transactions,
           recurring_transactions: [],
+          cash_transactions: transactions.filter_map { |tx| opening_deposit_for(tx) },
           warnings: []
+        )
+      end
+
+      # The offsetting deposit for ONE synthesized opening buy — see the class
+      # header for why it exists and what it buys us.
+      #
+      # The amount is reconstructed from the SPEC (shares x price), not taken from
+      # the report's book value, so it equals what Portfolios::TradeCash will
+      # charge for that buy to the cent. `price` is book value / quantity rounded
+      # to 6 dp (one book value in the real report carries 24 decimals), so the raw
+      # book value can differ from the trade's actual cash effect by a fraction of
+      # a cent — and cash that drifts by pennies is exactly what this feature
+      # exists to stop.
+      def opening_deposit_for(tx)
+        amount = MoneyMath.round_to_cents(tx.shares * tx.price)
+        # amount <> 0 is a CHECK, and a zero deposit would abort the whole
+        # portfolio's savepoint. A position this small has a trade cash effect of
+        # 0.00 too, so skipping it still nets to zero.
+        return nil if amount.zero?
+
+        CashSpec.new(
+          kind: "deposit",
+          amount: amount,
+          # SAME DATE as its buy, deliberately. A day either side leaves the
+          # balance at zero but moves the benchmark's synthetic fill onto a
+          # different close, silently changing benchmark_return_pct.
+          occurred_on: tx.executed_on,
+          notes: "Offsets the synthesized opening buy: a holdings report has no deposit history, so the " \
+                 "cash that funded this position is recorded on the same day for the same amount. The " \
+                 "position's cost basis is contributed capital; the net cash effect is zero."
         )
       end
 

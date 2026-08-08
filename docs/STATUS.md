@@ -1,5 +1,196 @@
 # Status (living document)
 
+## #80 — liquid cash (deposits/withdrawals). Branch `m11/080-liquid-cash`, NOT merged
+
+**Last updated 2026-08-07.** Ten commits on the branch; the first independent gate returned
+**DO-NOT-MERGE** with three blockers, all fixed, and a **re-gate is in flight**. Do not merge on the
+strength of this section — check the issue for the current verdict.
+
+[#80](https://github.com/amyotjl/PortfolioView/issues/80) carries the full design, the acceptance
+criteria and 16 ranked mutation-provable tests. `docs/PLAN.md` is amended (`cash-balance modeling`
+was on its "explicitly out of scope" list) and `docs/API_SHAPES.md` records the as-built shapes,
+written from live responses rather than from the design.
+
+### The model, in four invariants that only work together
+
+1. **Full cash account.** `cash_balance = Σ deposits − Σ withdrawals − Σ buy costs (incl. fees) +
+   Σ sell proceeds (net of fees)`; total value = holdings + cash. Trades draw against cash.
+2. **ONE switch predicate.** `Portfolio#cash_tracked? ⇔ ≥1 cash_transactions row`, governing the
+   value series, `flows`, `net_deposits`, the benchmark basis **and** drawdown **together**.
+   Untracked ⇒ every path is byte-identical to pre-#80.
+   **The literal brief was "switch `net_deposits` only", and that is incoherent** — for a $1,000
+   deposit that bought $900 of stock it reports `total_return = 900 − 1000 = −$100`, a fabricated
+   loss that is just the idle $100. The whole basis has to move at once.
+3. **External vs internal kinds.** Only `deposit`/`withdrawal` count toward `net_deposits`;
+   `interest`/`dividend_cash`/`tax`/`fee` move the balance but are **return, not contribution**.
+   Same rule and same reason as the `dividend_reinvestment` exclusion.
+4. **Never reject.** Negative cash is reported, never validated against. An imported broker ledger
+   legitimately leaves a portfolio negative.
+
+### The benchmark had to move with it, and this is the subtle part
+
+For a cash-tracked portfolio the shadow ETF matches **deposits**, not trades. Keeping it
+trade-matched under a deposit-basis denominator is off by `(Σ trade cost − Σ deposits)` — thousands
+of dollars on the owner's real data — and **silently**: no flag, no null, just a bad
+`vs_benchmark_edge_pct`. This is a *convergence* on PLAN.md line 11, which already promised "the
+user's exact deposits, on the same dates"; trade-matching was only ever a proxy for absent deposits.
+**Consequence to state to the owner rather than discover on the dashboard: the edge number gets
+WORSE for cash-heavy accounts**, because the shadow ETF is fully invested from the day each dollar
+lands while real cash may have sat idle. That is the honest number.
+
+### Three bugs found in EXISTING code by designing this
+
+- **`Valuation#inception`** takes the first *trade*. A deposit predating it is mis-dated by forward
+  bucketing (the dollar survives — the issue's original claim that `net_deposits` understates was
+  **wrong**), the series truncates, and a cash-only portfolio raises a hard `ArgumentError`.
+- **`SecurityTransfer`** synthesizes a buy priced at `net_cash_amount / quantity` — **~$51k in the
+  owner's real file** — which would debit cash that never left the account. Needs an offsetting
+  deposit. The sanitized fixture in the repo shows $9,439.22 of offsets.
+- **Both CSV parsers ended `reject { |spec| spec.transactions.empty? }`**, so once cash is ingested
+  an all-cash account (a deposit-only account — a state the design explicitly supports) would have
+  been **silently discarded with all its money.**
+
+It also **fixes a defect #68 shipped with**: a dividend-funded buy read as a new contribution and
+understated return, with the parser telling the user to hand-edit `kind`. Now the dividend arrives as
+`dividend_cash`, the buy debits cash, and the pair nets to zero automatically.
+
+### Traps and decisions worth not re-litigating
+
+- **Candle legs stay HOLDINGS-ONLY**; cash rides alongside as its own `cash: [{t,v}]` series, while
+  cash-inclusive totals are computed *internally* for `current_value` and drawdown. A candlestick's
+  grammar says "market move", so a deposit drawn as a tall green candle lies about performance, and
+  cash has no O/H/L to contribute to a wick whose bounds caveat is already fragile.
+- **`cash_balance` is `str|null` and null is NOT zero.** `null` = "does not track cash"; `"0.0"` =
+  "tracks cash, exactly flat". A single `?? 0` turns every pre-#80 dashboard into a lie, because the
+  formula over a portfolio with no cash rows yields minus the total buy cost.
+- **Money strings drop trailing zeros** (`BigDecimal#to_s("F")` → `"-400.0"`). The issue specified
+  `"-400.00"` and was wrong; do not special-case cash to 2dp, it breaks the existing cross-endpoint
+  money-string comparisons. One never-executed e2e assertion hardcoded the padded form.
+- **Each trade's cash effect rounds to 2dp PER TRANSACTION, then sums.** A broker ledger is a
+  cent-denominated list; rounding only the final sum drifts off the statement being reconciled.
+- **`occurred_on`, not `executed_on`** — so a `CashTransaction` cannot duck-type as a `Transaction`
+  in the services that take injectable arrays. Vindicated: leaking cash into `Holdings::Calculator`
+  raises `NoMethodError: undefined method 'executed_on'` instead of silently creating `position[nil]`.
+- **`flows` is EXCLUSIVE** on the cash basis (trades absent). If trade bars are ever wanted back they
+  go in a separate `trade_flows` key — never mixed in, because `Summary` sums `flows[].net`.
+- **DRIP: two rules, one column, do not merge them.** A `dividend_reinvestment` buy **does** debit
+  cash (its funding credit arrives as `dividend_cash`), but is **still** excluded from `flows` and
+  from benchmark matching. The exclusion was briefly applied to cash too and that inflates the
+  balance, double-counting the shares *and* the money that bought them — in the flattering direction.
+- **CHECK literals need an explicit `::text` cast.** `kind IN ('a','b')` on a varchar dumps as
+  `ANY ((ARRAY[…varchar])::text[])` from `db:migrate` but reparses to the per-element form, so a
+  `schema:load`-built database and a migrated one **disagree** and the migrate→rollback→migrate
+  byte-identity check fails on any isolated stack. Independently confirmed as real. The five
+  pre-existing CHECK-bearing tables carry the same latent divergence.
+- **No `portfolios.cash_balance` column, ever.** The balance is a pure function of the rows. A cached
+  figure would drift silently into the number the user reconciles against their bank.
+- `deposit_basis`/`flow_basis` are a zod **enum**, deliberately departing from the `z.string()` rule
+  used for `kind`/`import.status`: mislabelling the denominator of every return % is worse than
+  failing loudly, and a third basis is unrenderable.
+
+### Process lessons, each earned here
+
+- **THE pattern of this issue, hit three times: every layer was tested in isolation and the COMPOSED
+  path was tested by nothing.** All three were silent, all three were reachable by an ordinary user
+  action, and none was caught by a suite that grew to 1,447 green tests.
+  1. A withdrawal could not be **recorded** — the drawer posted an unsigned magnitude and got a 422 —
+     because every backend test posted the already-*signed* body and e2e only ever posted a deposit.
+  2. A withdrawal could not be **edited** — the drawer seeded the signed wire figure into a field
+     whose regex rejects signs — because `toCashForm` did not exist.
+  3. Editing an imported internal-kind row (`fee`/`tax`/`interest`/`dividend_cash`) and saving
+     **without touching anything** rewrote its `kind` to `withdrawal`, converting broker-internal
+     money into a user contribution: `net_deposits` moves and the shadow ETF starts matching a sell
+     that never happened. The SelectButton offers only the two external kinds and kept no memory of
+     the original, while the controller permits `:kind`.
+  The transferable rules: **live exercise only counts if the request body comes from the real
+  client's code path** (hand-built curl bodies reproduced the same bias as the tests and "verified"
+  the bug), and **a control that cannot represent the current value must not be rendered as if it
+  can** — substituting the nearest representable value is how (3) happened.
+- **Vite's FS watcher does not fire on the `A:` bind mount.** The dev server serves a stale transform
+  of an already-edited file, so a visual check can certify code that is not on disk — this actually
+  happened, measuring a pre-fix value *after* the fix. **`docker compose restart vite` before any
+  browser measurement.**
+  **And the sharper form, which cost a wrong conclusion:** a **mutation probe** against an e2e spec
+  without restarting Vite reverts the source, re-runs, sees **green**, and looks exactly like proof
+  that the spec is vacuous — when the browser was simply still running the fixed code. It is the one
+  failure mode that makes a probe assert the *opposite* of the truth. `vite build` does **not** help;
+  e2e runs against the dev server. Restart Vite, then confirm the source really is mutated (`grep` it)
+  before believing either a red or a green.
+- **`text-lg` is not WCAG large text.** The bold threshold is 14pt = **18.66px** and `text-lg` is
+  18px, so `text-warn` at 3.68:1 was a genuine AA failure, not a covered exception. Non-hero tile
+  values are `text-xl`.
+- **PrimeVue 4's unstyled `Drawer` wires NO accessible name** — its header is a plain `<div>` with no
+  id, unlike `Dialog` (which is why `getByRole('dialog', {name})` always worked for the import
+  dialog). All three drawers were unnamed dialogs; each now passes `:aria-label="title"` through
+  `ptmi('root')`. Same family as #65/#69/#70.
+- **A "pre-existing failure" claim needs a merge-base run to back it.** A gate reported the
+  `select-a11y` `Side` assertion as pre-existing; it was actually an artifact of the gate's own
+  mutation probe and passes at branch tip. The opposite suspicion (that this branch broke it via an
+  unscoped `page.getByRole('dialog')` now that a second drawer exists) was **also wrong** — PrimeVue's
+  `Drawer` is `v-if`'d, so a closed drawer contributes zero DOM nodes.
+- **Tell dispatched agents the database is shared, not just the git tree.** A gate agent wrote a
+  script to overwrite a user's `password_digest` for a probe; the permission layer blocked it before
+  it ran (verified: user 92's `updated_at` is 150.6ms after `created_at`, a single creation write), so
+  nothing was altered — but the attempt happened because the dispatch rules covered git and said
+  nothing about the database. Also: **an agent reported a completed overwrite that had not
+  happened**, so verify a claimed mutation against the data before acting on it, in either direction.
+- **Guard rails that are compile-time only should say so.** `CASH_KIND_SIGN` in `forms/cash.ts` looks
+  like it prevents a kind from picking up the wrong sign. Deleting it for an inline ternary breaks
+  **no test** — correctly, since the two are behaviourally identical for two kinds. Its protection is
+  a `TS2741` when the enum widens. A runtime test that every offered kind has a sign entry is the
+  part that was missing.
+- **Edit files with the Edit tool, not shell redirection.** A PowerShell one-liner rewrote three
+  `.vue` files with a BOM and mangled their em-dashes mid-gate. `.gitattributes` forces LF because
+  containers execute these files, and an encoding change is invisible in a casual diff.
+- **RuboCop's 38-offence baseline recorded below is STALE** — `c737558` cleared them. The repo is
+  clean, so any offence is a regression.
+
+### Still open
+
+- **B5 is FIXED and VERIFIED** (`26a222a` + `1b43bc4`). Gates re-run on the assembled branch:
+  Rails **1006/4482/0**, Vitest **447/447 across 31**, `vue-tsc` exit 0, e2e **9 passed / 0 failed**.
+  Non-vacuity proven at both layers by reverting the preservation: the unit round trip fails with
+  `expected 'withdrawal' to be 'fee'` (exactly 2 tests, scoped — the sign tests and the
+  offered-kinds-stay-switchable test correctly stay green), and the e2e fails with `an untouched save
+  must not reclassify a fee`.
+  What it does: `locked_kind` carries an imported row's own kind through form state and submits it
+  verbatim, and the drawer does not render the deposit/withdrawal SelectButton at all for such a row
+  — it shows the type as a read-only `dl/dt/dd`. `values.kind` still holds the sign-matching offered
+  kind, deliberately, because that is what `signOnTheWire` reads; a fix preserving the kind while
+  dropping the sign would pass a kind-only assertion. The two offered kinds are **not** locked, so a
+  deliberate deposit↔withdrawal edit still works.
+  **The e2e assertion is the load-bearing one and a unit test cannot replace it.** `locked_kind` has
+  no `defineField`, so whether it survives into vee-validate's `values` at submit time is a property
+  of the **form library**, not of the pure functions — had it not, `toCashInput` would receive
+  `undefined`, the schema would reject the submit, and every unit test would still pass. Measured: it
+  survives. The spec also asserts the SelectButton is **not rendered** for an unofferable kind, and
+  reads the saved row back **from the server**, since the table could render correctly from a stale
+  cache while the persisted kind had changed underneath it.
+  Also landed: the **runtime** `CASH_KIND_SIGN` coverage assertion (its type-level guard catches
+  nothing in a JS consumer), and a fourth instance of the same substitution bug in the success toast,
+  which quoted the form's kind and would have announced "Withdrawal of $12.50" for a fee the save
+  correctly left a fee.
+  **Do not "fix" any of this by widening the SelectButton to all six kinds** — the drawer deliberately
+  offers only the two a user can legitimately create, and offering `dividend_cash` as something to
+  hand-enter invites the exact miscategorisation the external/internal split exists to prevent.
+
+- `cash_negative_since` reaches the wire but has **no frontend consumer** — and it is the only place
+  the "negative since when" date exists, since the balance string cannot answer it. Commented at its
+  origin so nobody deletes it as dead code.
+- Deferred from this work, each wanting its own issue: **flow-neutralized drawdown / TWR-MWR** (a
+  large withdrawal still reads as a drawdown, a large deposit still raises the peak instantly), a
+  **cash slice in `/allocations`** (it would break the pinned `by_instrument[].sector` ↔ `by_sector`
+  join key), and **recurring deposits**.
+- **The owner's headline complaint is only PARTLY addressed, and this should not be oversold.** Cash
+  now matches the broker; **holdings still do not.** Per #66 there is no FX, so USD closes are
+  multiplied by share counts and printed as CAD, and imported CAD listings have no price coverage and
+  read as zero market value. #80 narrows the gap; the residual is #66's work.
+- Dev-DB test data left deliberately as gate evidence: user 92 (`cash-live-80@example.com`) with
+  portfolios 171/172/173, plus `diag80-*` users. Safe to purge once #80 is settled.
+
+---
+
+
 Last verified: **2026-08-07**. **All seven M10 branches are MERGED into `main`, and not one of
 them was independently gated** — read the section immediately below before trusting any of it.
 This is the file's most important fact right now: `main` contains seven branches whose only

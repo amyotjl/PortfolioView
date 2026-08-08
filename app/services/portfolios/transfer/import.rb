@@ -42,7 +42,8 @@ module Portfolios
       MAX_RENAME_ATTEMPTS = 50
 
       PortfolioResult = Data.define(
-        :name, :imported_as, :status, :transactions_created, :recurring_created, :errors, :warnings
+        :name, :imported_as, :status, :transactions_created, :recurring_created, :cash_created,
+        :errors, :warnings
       )
 
       Result = Data.define(:format, :dry_run, :portfolios, :totals, :warnings)
@@ -213,13 +214,17 @@ module Portfolios
         spec = item.spec
         return skipped_result(item) if item.name.nil?
 
-        created = { transactions: 0, recurring: 0 }
+        created = { transactions: 0, recurring: 0, cash: 0 }
 
         begin
           # requires_new: a real SAVEPOINT, so this portfolio rolls back without
           # discarding siblings already written in the outer transaction.
           ActiveRecord::Base.transaction(requires_new: true) do
             portfolio = build_portfolio(spec, item.name, item.warnings)
+            # Cash rows are PORTFOLIO-SCOPED, so unlike split_events they belong
+            # inside this savepoint: a portfolio that rolls back must take its
+            # cash with it, and no other portfolio depends on these rows.
+            created[:cash] = create_cash_transactions(spec, portfolio)
             rules_by_key = create_recurring_rules(spec, portfolio, item.warnings)
             created[:recurring] = rules_by_key.size
             created[:transactions] = create_transactions(spec, portfolio, rules_by_key, item.warnings)
@@ -227,7 +232,7 @@ module Portfolios
         rescue PortfolioFailed => e
           return PortfolioResult.new(
             name: spec.name, imported_as: nil, status: "failed",
-            transactions_created: 0, recurring_created: 0,
+            transactions_created: 0, recurring_created: 0, cash_created: 0,
             errors: [ e.message ], warnings: item.warnings
           )
         end
@@ -238,6 +243,7 @@ module Portfolios
           status: item.name == spec.name ? "created" : "renamed",
           transactions_created: created[:transactions],
           recurring_created: created[:recurring],
+          cash_created: created[:cash],
           errors: [],
           warnings: item.warnings
         )
@@ -246,7 +252,8 @@ module Portfolios
       def skipped_result(item)
         PortfolioResult.new(
           name: item.spec.name, imported_as: nil, status: "skipped",
-          transactions_created: 0, recurring_created: 0, errors: [], warnings: item.warnings
+          transactions_created: 0, recurring_created: 0, cash_created: 0,
+          errors: [], warnings: item.warnings
         )
       end
 
@@ -272,6 +279,46 @@ module Portfolios
           warnings << "Benchmark “#{benchmark_name}” doesn’t exist in this database, so the imported portfolio has no benchmark."
         end
         benchmark
+      end
+
+      # Cash before trades, mirroring the economic order: the money arrives, then
+      # it is spent.
+      #
+      # AN HONEST NOTE, because the alternative is a vacuous test. There is
+      # currently NO ORDERING DEPENDENCY here. Nothing reads the running balance
+      # during a write — negative cash is legal by decision, so no validation and
+      # no CHECK consults it — which means moving this call after
+      # #create_transactions would not fail a single test. So there is no test
+      # claiming it would. "Cash first" is what stays correct if anything ever
+      # DOES read the balance mid-write, and it costs nothing today. Contrast
+      # #create_splits, whose ordering IS load-bearing (Positions::Validator reads
+      # splits from the database while replaying) and which has a matched pair of
+      # tests that discriminate on order alone.
+      #
+      # The rows are written in file order. A parser that dropped an unreadable
+      # row already reported it; nothing unparseable reaches here.
+      def create_cash_transactions(spec, portfolio)
+        spec.cash_transactions.each_with_index.sum do |cash_spec, index|
+          row = portfolio.cash_transactions.new(
+            kind: cash_spec.kind,
+            # SIGNED, verbatim. See Portfolios::Transfer::CashSpec.
+            amount: cash_spec.amount,
+            occurred_on: cash_spec.occurred_on,
+            notes: cash_spec.notes
+          )
+
+          unless row.save
+            raise PortfolioFailed,
+                  "#{describe_cash(cash_spec, index)} could not be imported: #{messages_for(row)}"
+          end
+
+          1
+        end
+      end
+
+      def describe_cash(cash_spec, index)
+        date = cash_spec.occurred_on ? " on #{cash_spec.occurred_on.iso8601}" : ""
+        "Cash movement #{index + 1} (#{cash_spec.kind.presence || '(no kind)'}#{date})"
       end
 
       def create_recurring_rules(spec, portfolio, warnings)
@@ -378,6 +425,7 @@ module Portfolios
           portfolios_failed: results.count { |r| r.status == "failed" },
           transactions_created: results.sum(&:transactions_created),
           recurring_created: results.sum(&:recurring_created),
+          cash_created: results.sum(&:cash_created),
           # Instrument-global, so it belongs to the run rather than to any one
           # portfolio row.
           splits_created: @splits_created

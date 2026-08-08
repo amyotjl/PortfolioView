@@ -95,6 +95,12 @@ module Portfolios
             benchmark_name: row["benchmark"].presence,
             transactions: transaction_specs(row["transactions"]),
             recurring_transactions: recurring_specs(row["recurring_transactions"]),
+            # Absent in a version-1 file, and absent from a version-2 file's
+            # portfolios that hold no cash. Either way this yields [], the
+            # portfolio is not cash-tracked, and every figure it reports is
+            # exactly what a pre-#80 build reported. Back-compat is structural
+            # here because the predicate is "has >= 1 cash row", not a flag.
+            cash_transactions: cash_specs(row["cash_transactions"]),
             warnings: []
           )
         end
@@ -117,6 +123,27 @@ module Portfolios
             notes: row["notes"].presence,
             recurring_key: row["recurring_key"].presence,
             scheduled_for: date(row["scheduled_for"])
+          )
+        end
+      end
+
+      # `amount` is read SIGNED and never coerced toward its kind's usual
+      # direction: a negative dividend_cash and a positive tax are legal rows, so
+      # a sign "correction" here would silently rewrite a reversal into a receipt.
+      # A wrong sign for deposit/withdrawal is left to the model validation, which
+      # mirrors the CHECK and reports on the `amount` field like every other bad
+      # row in this parser.
+      def cash_specs(raw)
+        return [] unless raw.is_a?(Array)
+
+        raw.filter_map do |row|
+          next unless row.is_a?(Hash)
+
+          CashSpec.new(
+            kind: row["kind"].to_s.strip,
+            amount: decimal(row["amount"]),
+            occurred_on: date(row["occurred_on"]),
+            notes: row["notes"].presence
           )
         end
       end

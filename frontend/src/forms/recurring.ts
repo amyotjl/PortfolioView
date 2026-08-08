@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { decimalField } from './decimalField'
 import type { RecurringInput } from '@/composables/useRecurringTransactions'
 
 /**
@@ -18,21 +19,17 @@ import type { RecurringInput } from '@/composables/useRecurringTransactions'
  * positive, and the other is sent as null so the server stores exactly one.
  */
 
-const DECIMAL = /^(?:\d+(?:\.\d*)?|\.\d+)$/
-
 export const recurringFrequencies = ['weekly', 'biweekly', 'monthly', 'quarterly'] as const
 
+/**
+ * The local `amountField` this form used to carry was a near-duplicate of the
+ * transaction form's validator — same messages, same refine order, one fewer
+ * option. #80 collapsed both onto `forms/decimalField.ts`, which removes that
+ * divergence rather than adding a third copy for cash. Every message string is
+ * unchanged, which is what keeps `recurring.spec.ts` green.
+ */
 function amountField(label: string, scale: number) {
-  return z
-    .string()
-    .trim()
-    .min(1, `${label} is required`)
-    .refine((value) => DECIMAL.test(value), `${label} must be a number`)
-    .refine(
-      (value) => (value.split('.')[1] ?? '').length <= scale,
-      `${label} allows at most ${scale} decimal place${scale === 1 ? '' : 's'}`,
-    )
-    .refine((value) => /[1-9]/.test(value), `${label} must be greater than zero`)
+  return decimalField({ label, scale, allowZero: false })
 }
 
 export const recurringFormSchema = z

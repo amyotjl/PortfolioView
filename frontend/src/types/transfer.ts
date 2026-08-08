@@ -25,6 +25,17 @@ export const importPortfolioResultSchema = z.object({
   status: z.string(),
   transactions_created: z.number(),
   recurring_created: z.number(),
+  /**
+   * Cash movements recorded for THIS portfolio (issue #80): deposits,
+   * withdrawals, and the broker ledger's dividend/interest/tax/fee rows.
+   *
+   * Unlike `splits_created`, cash is portfolio-scoped rather than
+   * instrument-global, so it appears on both a portfolio row and the run
+   * totals — mirroring `transactions_created`. `.default(0)` for the same
+   * reason as `splits_created`: a server predating #80 omits the key, and a
+   * schema failure throws in dev and would blank the whole dialog.
+   */
+  cash_created: z.number().default(0),
   errors: z.array(z.string()),
   warnings: z.array(z.string()),
 })
@@ -44,6 +55,8 @@ export const importTotalsSchema = z.object({
    * throws in dev and would blank the whole dialog).
    */
   splits_created: z.number().default(0),
+  /** Cash movements recorded across the run (issue #80). See the portfolio-row twin. */
+  cash_created: z.number().default(0),
 })
 
 export const importReportSchema = z.object({

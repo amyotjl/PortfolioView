@@ -8,7 +8,7 @@ Greenfield project in `a:\PorfolioView` (currently empty). The goal is a deploye
 - Backend **Ruby on Rails 8.x**, frontend **Vue 3** — user's choice
 - **Runs locally for now** (Docker Compose on the user's machine); architecture stays deployable to a host later. **Single-user / invite-only** registration
 - **Daily EOD** price data is sufficient
-- Benchmark = **cash-flow-matched**: simulate the user's exact deposits, on the same dates, into an index ETF (e.g. SPY)
+- Benchmark = **cash-flow-matched**: simulate the user's exact deposits, on the same dates, into an index ETF (e.g. SPY) — matched against the **deposit ledger** for a portfolio that records cash transactions, and against **trade cost** otherwise (the pre-cash proxy, adopted only because there were no deposits to match). See § Cash model.
 - Dev environment: **Docker / Dev Containers** on Windows 11
 
 The design below was produced by parallel research/design agents and hardened by an adversarial review that traced the split math, benchmark math, and API contracts; its fixes are baked in throughout (marked where non-obvious).
@@ -73,6 +73,7 @@ All money/shares are `numeric`, never float: shares `numeric(20,8)`, prices `num
 - `split_events` — instrument_id, ex_date, **`ratio numeric(12,6)`** (stores Tiingo's decimal splitFactor directly; no integer-rationalizing of 10:9 oddities); UNIQUE (instrument_id, ex_date)
 - `dividend_events` — instrument_id, ex_date, cash_per_share; **captured from Tiingo's `divCash` from day one** (cheap to capture, expensive to backfill later; powers the future dividend-timeline chart and total-return benchmark)
 - `transactions` — portfolio_id, instrument_id, side (buy/sell), **kind (normal / dividend_reinvestment)**, shares (>0), price, **fees numeric(12,2) default 0**, executed_on, notes, recurring_transaction_id + scheduled_for with **partial UNIQUE index** (materialization idempotency)
+- `cash_transactions` (**amended 2026-08-07, issue #80**) — portfolio_id, `kind` (`deposit` / `withdrawal` / `interest` / `dividend_cash` / `tax` / `fee`), **`amount numeric(12,2)` stored SIGNED**, occurred_on, notes; CHECK on the kind domain and a CHECK enforcing `deposit > 0` / `withdrawal < 0` (the four internal kinds take either sign — real ledgers carry dividend reversals and tax refunds); one index on `(portfolio_id, occurred_on)`; FK `on_delete: :cascade`. **A separate table, not a widened `transactions`**: a cash movement has no instrument, no shares and no price, and folding it in would mean relaxing `shares > 0` / `price > 0` to `shares IS NULL OR shares > 0` — a CHECK passes on NULL, so those guards would stop protecting real trades. Named `occurred_on`, not `executed_on`, so a `CashTransaction` can never duck-type as a `Transaction` inside the services that take injectable arrays and read `.executed_on`. **There is deliberately no `portfolios.cash_balance` column** — the balance is a pure function of these rows plus `transactions`, so it cannot drift.
 - `recurring_transactions` — portfolio_id, instrument_id, side (**buy only in v1**, validated), amount_type (dollars/shares), dollar_amount / share_amount, frequency (weekly/biweekly/monthly/quarterly), anchor_on, next_run_on (**clamped ≥ creation date** — no surprise historical materialization), end_on, active, paused_reason, consecutive_skips
 
 ## Core domain logic (`app/services/`)
@@ -89,10 +90,48 @@ Verified example: buy 10 AAPL @ $400 pre-4:1-split → CSF 4 → 40 shares × $1
 
 - `Holdings::Calculator` — one sweep over transactions + splits + trading days → `{date => {instrument_id => shares}}`; 3 queries total, no N+1.
 - `Positions::Validator` — runs on **every transaction create/update/destroy**: replays the split-adjusted running position from first transaction to today and rejects (422, naming the first offending date) any mutation that drives it negative — catches oversells *and* backdated edits/deletes. No short positions in v1.
-- `Portfolios::Valuation` — portfolio OHLC per trading day = Σ shares × component O/H/L/C. Portfolio H/L are documented **bounds** (component extremes don't co-occur; correct for EOD data, flagged in `meta.approximation` and a tooltip disclaimer). Missing instrument-day → forward-fill last close, flagged in `meta.filled_dates`.
-- `Benchmarks::Simulation` — each real transaction becomes a synthetic same-dollar trade (dollars include fees on buys, net of fees on sells) of the benchmark ETF at the close of the first trading day **on or after** the transaction date (strictly-after would systematically lag the benchmark one trading day behind the portfolio's own effect date around every cash flow); fed through the same Calculator/Valuation machinery (SPY splits handled identically). `kind: dividend_reinvestment` transactions are **excluded** from external flows and from benchmark matching (otherwise the shadow portfolio gets free money the benchmark side never models). Over-withdrawal clamps + `meta.benchmark_clamped`; benchmark history shorter than the portfolio clamps the sim start + meta flag. v1 is explicitly labeled **price-return**; v1.1 upgrades to total-return by reinvesting `dividend_events` in the shadow position.
-- Drawdown computed server-side from **inception-to-date** closes (all-time peak, not window peak).
+- `Portfolios::Valuation` — portfolio OHLC per trading day = Σ shares × component O/H/L/C. Portfolio H/L are documented **bounds** (component extremes don't co-occur; correct for EOD data, flagged in `meta.approximation` and a tooltip disclaimer). Missing instrument-day → forward-fill last close, flagged in `meta.filled_dates`. **The emitted candle legs are HOLDINGS-ONLY in both bases** (issue #80); cash rides alongside as its own `cash: [{t,v}]` series, because a candlestick's grammar says "this is a market move" and a deposit drawn as a tall green candle is a lie about performance — and cash has no O/H/L at all, so folding it in would dilute the H/L wick whose bounds caveat is already the fragile part of that pane. Cash-inclusive totals *are* computed internally, for `current_value` and for drawdown.
+- `Benchmarks::Simulation` — the shadow ETF is fed **the same external-cash series `net_deposits` is derived from, and never a different one.** For a portfolio that records cash transactions that is its **deposit/withdrawal ledger** (`CashTransaction::EXTERNAL_KINDS`); for one that does not it remains the **trade-cost proxy** — each real transaction becomes a synthetic same-dollar trade (dollars include fees on buys, net of fees on sells). Either way the fill is at the close of the first trading day **on or after** the movement's date (strictly-after would systematically lag the benchmark one trading day behind the portfolio's own effect date around every cash flow); fed through the same Calculator/Valuation machinery (SPY splits handled identically) with **`include_cash: false`** — the shadow position is fully invested by construction and must never inherit the user's cash balance. Excluded from matching: `transactions.kind: dividend_reinvestment` on the trade basis, and every non-external cash kind (`interest`, `dividend_cash`, `tax`, `fee`) on the cash basis — one rule, one reason: otherwise the shadow portfolio gets free money the benchmark side never models. **The two bases must switch together with `net_deposits`**; feeding a trade-basis simulation into a deposit-basis denominator is off by `(Σ trade cost − Σ deposits)` and is silently wrong. Over-withdrawal clamps + `meta.benchmark_clamped`; benchmark history shorter than the portfolio clamps the sim start + meta flag. v1 is explicitly labeled **price-return**; v1.1 upgrades to total-return by reinvesting `dividend_events` in the shadow position.
+- `Portfolios::CashLedger` (**issue #80**) — the per-trading-day cash balance series. `cash_balance(D) = Σ cash amounts − Σ buy costs (incl. fees) + Σ sell proceeds (net of fees)`, each movement bucketed to the first trading day **≥** its date (the same rule flows already use). **Balances are END-OF-DAY**, which is what lets the contribution chart reuse its existing "discard flows dated ≤ the first candle" rule unchanged. Each trade's cash effect is **rounded to 2dp per transaction, then summed** — a broker's ledger is a cent-denominated list of discrete movements, and rounding only the final sum drifts off the statement the user is reconciling against. Splits do not touch cash. Takes the trading days and transactions `Valuation` has already materialized, so it costs exactly one extra query.
+- Drawdown computed server-side from **inception-to-date** closes (all-time peak, not window peak) — **cash-inclusive** for a cash-tracked portfolio. That strictly improves it: today *every sell registers as a drawdown*, because holdings value drops with nothing to offset it, whereas under the cash model a sell is value-neutral. **Residual, not fixed:** a large withdrawal still reads as a drawdown and a large deposit still raises the peak instantly.
 - Cost basis: **average cost** in v1 (stated in the UI); per-share basis divides by CSF.
+
+## Cash model (amended 2026-08-07, issue #80)
+
+Four invariants, in one place, because they only work together.
+
+**1. Full cash account.** `cash_balance = Σ deposits − Σ withdrawals − Σ buy costs (incl. fees) +
+Σ sell proceeds (net of fees)`; `portfolio total value = holdings market value + cash balance`;
+trades draw against cash. This is a deliberate replica of a broker statement.
+
+**2. One switch predicate, governing everything at once.**
+`Portfolio#cash_tracked? ⇔ the portfolio has ≥ 1 cash_transactions row`, and it governs the value
+series, `flows`, `net_deposits`, the benchmark basis **and** drawdown **together**. Untracked ⇒ every
+code path is exactly the pre-#80 one, so no existing portfolio's numbers move.
+
+**A partial switch produces an incoherent `total_return`, which is why this is one predicate and not
+several.** Switching only the `net_deposits` denominator while total value stays holdings-only
+reports, for a $1,000 deposit that bought $900 of stock, `total_return = 900 − 1000 = −$100` — a
+fabricated loss that is just the idle $100.
+
+**3. External versus internal kinds.** Only `deposit`/`withdrawal` cross the account boundary and
+count toward `net_deposits`. `interest`/`dividend_cash`/`tax`/`fee` move the balance but are
+**return, not contribution** — the broker paid you *inside* the account. This is the same rule, and
+the same reason, as the `dividend_reinvestment` exclusion: otherwise the shadow portfolio gets free
+money the benchmark side never models. Adding any of the four to `EXTERNAL_KINDS` would silently
+turn a broker dividend into a user contribution.
+
+**4. Never reject.** Negative cash is **reported** (`cash_negative`, `cash_negative_since`), never
+validated against. No CHECK, no model validation, no clamp, no `Positions::Validator` arm — a cash
+row cannot make a share position negative, so that invariant stays literally true of `transactions`
+rows. An imported broker ledger legitimately leaves a portfolio negative, so rejecting would break
+the feature's headline use case.
+
+**What this does NOT fix.** For a CAD account holding US securities the *cash* side now matches the
+broker but the *holdings* side still does not: there is no FX (#66's decision is "assume everything
+is CAD"), so USD closes are multiplied by share counts and printed as CAD, and imported CAD listings
+have no price coverage at all and read as zero market value. Issue #80 **narrows** the reported gap
+substantially; the residual is #66's work.
 
 **Trading calendar & time.** A trading day = a date where SPY has a price row (the price cache *is* the calendar — no holiday tables). All "what day is it" logic runs in **America/New_York**. Jobs are scheduled **daily, 7 days a week** (idempotent no-ops on non-trading days) — this dodges the cron-in-UTC bug where `1-5` weekday masks silently skip Friday's 21:30 ET run.
 
@@ -125,6 +164,7 @@ GET    /api/v1/portfolios/:id/summary       # lifetime stat tiles (total investe
 GET    /api/v1/portfolios/:id/allocations   # by_instrument + by_sector pies
 GET    /api/v1/portfolios/:id/holdings?instrument_id&as_of   # sell-form pre-flight
 CRUD   /api/v1/portfolios/:id/transactions              # POST by symbol (validated vs directory, USD/US-exchange only in v1)
+CRUD   /api/v1/portfolios/:id/cash_transactions          # deposits/withdrawals (issue #80); amount is an UNSIGNED magnitude + kind
 CRUD   /api/v1/portfolios/:id/recurring_transactions
 POST   /api/v1/portfolios/:id/recurring_transactions/preview   # dry-run next 3 run dates
 POST   /api/internal/jobs/daily_sync        # bearer-token; "Sync now" button + future external-cron hook
@@ -132,7 +172,23 @@ POST   /api/internal/jobs/daily_sync        # bearer-token; "Sync now" button + 
 
 `/candles` response: portfolio `candles: [{t,o,h,l,c}]`; **benchmark as a close-value line** `{symbol, values: [{t,v}]}` (candle-vs-candle would falsely make the portfolio look more volatile, since portfolio H/L are bounds but a single ETF's are real); `flows: [{t, net, items: [{ticker, kind, amount}]}]` (feeds the cash-flow pane + tooltips); server-computed `drawdown`; `meta: {partial, filled_dates, benchmark_clamped, approximation}`. Stat tiles come from `/summary`, never from a windowed candles payload.
 
-**Caching (Solid Cache):** key = `candles/v1/{pid}/{series_version}/{prices_version}/{from}/{to}/{benchmark_id}` where `prices_version` = max `latest_price_on` across the portfolio's instruments (not just the benchmark's — otherwise a late-landing ticker fetch leaves a stale cached day). Closed-month chunks include `prices_version` and are never cached while `meta.partial`. `series_version` bumps on any transaction/recurring mutation, backfill completion, or late-discovered historical split.
+**Amended 2026-08-07 (issue #80).** `/candles` gains `cash: [{t,v}] | null` — signed, end-of-day,
+`null` for a portfolio that does not track cash — and `meta` gains `flow_basis`, `cash_negative`,
+`cash_negative_since`. **`flows` is the EXTERNAL-cash series and its basis now depends on the
+portfolio**, named by `meta.flow_basis`: on the cash basis its items are deposits/withdrawals and
+**trades are absent** (under a full cash account a trade is an internal transfer that does not move
+total value, so a trade bar in the "flows explain value jumps" pane would actively mislead); on the
+trade basis it is byte-identical to M4. `items[].ticker` is therefore nullable and `items[].kind`
+is no longer a `buy|sell` enum — model both permissively. **Invariant, and it is load-bearing:
+`Σ flows[].net` over all time == `summary.net_deposits`, in both bases** — `charts/contributions.ts`
+depends on it silently. If trade bars are ever wanted back they go in a **separate `trade_flows`
+key**, never mixed into `flows`, because `Summary` sums `flows[].net` and a mixed array would
+silently corrupt `net_deposits`. `/summary` gains `holdings_value`, `cash_balance` (**`string|null`
+— `null` means "does not track cash", `"0.00"` means "tracks cash and is exactly flat"; these are
+different states and a single `?? 0` anywhere turns an existing portfolio's dashboard into a lie**),
+`deposit_basis`, `cash_negative`, `cash_negative_since`.
+
+**Caching (Solid Cache):** key = `candles/v1/{pid}/{series_version}/{prices_version}/{from}/{to}/{benchmark_id}` where `prices_version` = max `latest_price_on` across the portfolio's instruments (not just the benchmark's — otherwise a late-landing ticker fetch leaves a stale cached day). Closed-month chunks include `prices_version` and are never cached while `meta.partial`. `series_version` bumps on any transaction/recurring/**cash** mutation, backfill completion, or late-discovered historical split. **The cache key version moved `v1` → `v2` for issue #80**, and that bump is a requirement rather than insurance: `series_version` alone does not cover it, because an untracked portfolio's payload never changes and so its key never rotates, leaving warm `v1` entries that lack the new `meta` keys.
 
 ## Frontend (`frontend/` inside the repo)
 
@@ -197,7 +253,7 @@ a:\PorfolioView\
 
 ## Verification
 
-- **Unit (the money math)**: AAPL 4:1 split fixture — pre-split buy values correctly post-split; sell-on-ex-date and buy-on-ex-date ordering; oversell + backdated-edit rejection; end-of-month recurrence clamping (Jan-31 → Feb-28 → Mar-31); benchmark exact-dollar matching incl. fees; DRIP exclusion from flows; drawdown from all-time peak.
+- **Unit (the money math)**: AAPL 4:1 split fixture — pre-split buy values correctly post-split; sell-on-ex-date and buy-on-ex-date ordering; oversell + backdated-edit rejection; end-of-month recurrence clamping (Jan-31 → Feb-28 → Mar-31); benchmark exact-dollar matching incl. fees; DRIP exclusion from flows; drawdown from all-time peak. **Cash (issue #80):** the balance formula with fees on **both** sides; a golden untracked-portfolio payload proving nothing moved; a deposit-matched benchmark against a trade-matched one, in a case where the two provably differ; cash never entering the shadow ETF; the internal kinds moving the balance and **not** `net_deposits`; negative cash accepted with a flag (201, not 422); a deposit predating the first trade reaching `flows`; a snapshot import's numbers provably unchanged; a split not moving cash.
 - **Integration**: seed a demo portfolio (AAPL/MSFT/VOO transactions spanning 2020–2026, crossing the real AAPL split), backfill with a real Tiingo key, spot-check `/candles` values by hand.
 - **E2E (Playwright)**: register with invite code → create portfolio → add transaction → candlestick renders → toggle benchmark → pies render.
 - **Runtime**: `docker compose up` + `bin/dev`; hit the internal sync trigger; confirm quota counters and idempotent re-runs.
@@ -210,4 +266,11 @@ a:\PorfolioView\
 
 ## Deferred to v1.1+ (explicitly out of scope now)
 
-Total-return benchmark (dividend reinvestment — data already captured), non-USD instruments, cash-balance modeling, recurring sells, ticker-rename/merger remediation (documented as a manual admin re-map), dividend timeline / correlation / TWR-MWR charts.
+Total-return benchmark (dividend reinvestment — data already captured), non-USD instruments, recurring sells, ticker-rename/merger remediation (documented as a manual admin re-map), dividend timeline / correlation / TWR-MWR charts.
+
+**Amended 2026-08-07 (issue #80):** `cash-balance modeling` was on this list and has been **pulled
+forward** at the project owner's request — the app's total value was not comparable to the broker's
+without it. See § Cash model. Still deferred from that work specifically: **flow-neutralized
+drawdown** (a large withdrawal still reads as a drawdown and a large deposit still raises the
+all-time peak instantly — that is TWR/MWR-grade work, listed above), a **cash slice in
+`/allocations`**, and **recurring deposits**.

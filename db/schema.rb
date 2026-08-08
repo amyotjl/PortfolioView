@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_07_30_033936) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_07_221600) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "citext"
   enable_extension "pg_catalog.plpgsql"
@@ -22,6 +22,19 @@ ActiveRecord::Schema[8.1].define(version: 2026_07_30_033936) do
     t.datetime "updated_at", null: false
     t.index ["instrument_id"], name: "index_benchmarks_on_instrument_id", unique: true
     t.index ["name"], name: "index_benchmarks_on_name", unique: true
+  end
+
+  create_table "cash_transactions", force: :cascade do |t|
+    t.decimal "amount", precision: 12, scale: 2, null: false
+    t.datetime "created_at", null: false
+    t.string "kind", null: false
+    t.text "notes"
+    t.date "occurred_on", null: false
+    t.bigint "portfolio_id", null: false
+    t.datetime "updated_at", null: false
+    t.index ["portfolio_id", "occurred_on"], name: "index_cash_transactions_on_portfolio_id_and_occurred_on"
+    t.check_constraint "kind::text = 'deposit'::text AND amount > 0::numeric OR kind::text = 'withdrawal'::text AND amount < 0::numeric OR (kind::text <> ALL (ARRAY['deposit'::text, 'withdrawal'::text])) AND amount <> 0::numeric", name: "cash_transactions_amount_sign"
+    t.check_constraint "kind::text = ANY (ARRAY['deposit'::text, 'withdrawal'::text, 'interest'::text, 'dividend_cash'::text, 'tax'::text, 'fee'::text])", name: "cash_transactions_kind_check"
   end
 
   create_table "daily_prices", force: :cascade do |t|
@@ -168,6 +181,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_07_30_033936) do
   end
 
   add_foreign_key "benchmarks", "instruments", on_delete: :restrict
+  add_foreign_key "cash_transactions", "portfolios", on_delete: :cascade
   add_foreign_key "daily_prices", "instruments", on_delete: :cascade
   add_foreign_key "dividend_events", "instruments", on_delete: :cascade
   add_foreign_key "portfolios", "benchmarks", on_delete: :restrict

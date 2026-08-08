@@ -59,7 +59,7 @@ module Api
         body = JSON.parse(response.body)
 
         assert_equal Portfolios::Transfer::NATIVE_FORMAT, body["format"]
-        assert_equal Portfolios::Transfer::NATIVE_VERSION, body["version"]
+        assert_equal Portfolios::Transfer::NATIVE_VERSION_BASE, body["version"]
         assert_equal [ "Retirement" ], body["portfolios"].map { |p| p["name"] }
         assert_no_match(/Not Yours/, response.body)
       end
@@ -101,7 +101,8 @@ module Api
         assert_equal 1, report.dig("totals", "transactions_created")
 
         row = report["portfolios"].sole
-        assert_equal %w[name imported_as status transactions_created recurring_created errors warnings].sort,
+        assert_equal %w[name imported_as status transactions_created recurring_created cash_created
+                        errors warnings].sort,
                      row.keys.sort, "the import report shape is part of the contract"
         assert_equal "created", row["status"]
         assert_equal "Imported", row["imported_as"]
@@ -131,17 +132,28 @@ module Api
         assert_equal 1, report.dig("totals", "splits_created")
       end
 
-      test "an activity-ledger import surfaces the cash rows it could not represent" do
+      test "an activity-ledger import reports the cash it ingested and the counts per account" do
         post import_api_v1_portfolios_path,
              params: { file: upload(file_fixture("activities_report.csv").read) }
 
-        warnings = JSON.parse(response.body).dig("import", "warnings")
-        assert warnings.any? { |w| w.include?("not a cash balance") },
-               "skipped deposits/dividends must reach the client"
-        assert warnings.any? { |w| w.include?("understates return") },
-               "the consequence for contributed capital must reach the client"
+        report = JSON.parse(response.body).fetch("import")
+        warnings = report["warnings"]
+        assert warnings.any? { |w| w.include?("recorded in the portfolio’s cash ledger") },
+               "what happened to the deposits and dividends must reach the client, got: #{warnings.inspect}"
         assert warnings.any? { |w| w.include?("3.0:1 split") },
                "a DERIVED split ratio is an inference and must be disclosed"
+
+        # The stale version of this test asserted the opposite ("not a cash
+        # balance", "understates return"). Both statements were true only while
+        # there was nowhere to put the cash.
+        assert_no_match(/not a cash balance|understates return/, warnings.join(" "),
+                        "the pre-#80 caveats are now false and must not be shipped to a user")
+
+        # TFSA: 1 deposit + 1 dividend + 1 interest + 1 tax + 1 fee + 2 transfer
+        # offsets. RRSP: 1 interest.
+        counts = report["portfolios"].to_h { |p| [ p["name"], p["cash_created"] ] }
+        assert_equal({ "TFSA" => 7, "RRSP" => 1 }, counts)
+        assert_equal 8, report.dig("totals", "cash_created")
       end
 
       test "the activity ledger and the holdings snapshot are distinguished by content" do
@@ -289,7 +301,7 @@ module Api
         ]
         JSON.generate(
           format: Portfolios::Transfer::NATIVE_FORMAT,
-          version: Portfolios::Transfer::NATIVE_VERSION,
+          version: Portfolios::Transfer::NATIVE_VERSION_BASE,
           instruments: [ { symbol: "AAPL", name: "Apple Inc", instrument_type: "stock", currency: "USD" } ],
           portfolios: [ { name: name, benchmark: nil, transactions: transactions,
                           recurring_transactions: [] } ]

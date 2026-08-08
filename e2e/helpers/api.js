@@ -75,6 +75,27 @@ export async function createTransaction(page, portfolioId, transaction) {
   return body.transaction
 }
 
+/**
+ * Record a cash movement (#80).
+ *
+ * `amount` IS SIGNED — positive for a deposit, negative for a withdrawal. An
+ * unsigned figure is a 422 on `amount`; the server refuses to guess a direction
+ * from `kind` because `tax`/`fee` are genuinely ± under one kind name. The SPA's
+ * form is unsigned and converts in `frontend/src/forms/cash.ts`.
+ *
+ * The response's `meta` carries the post-write balance, which is what a caller
+ * asserts on rather than recomputing it.
+ */
+export async function createCashTransaction(page, portfolioId, cashTransaction) {
+  const body = await mutate(
+    page,
+    'POST',
+    `/api/v1/portfolios/${portfolioId}/cash_transactions`,
+    { kind: 'deposit', notes: null, ...cashTransaction },
+  )
+  return body
+}
+
 /** Seeded benchmarks (SPY, VTI, QQQ…) in seed order. */
 export async function fetchBenchmarks(page) {
   const response = await page.request.get('/api/v1/benchmarks')

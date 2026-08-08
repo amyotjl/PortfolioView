@@ -17,6 +17,30 @@ module Benchmarks
   # matching it would hand the shadow portfolio free money (the price-return
   # benchmark deliberately models none of its own dividends either).
   #
+  # WHICH MOVEMENTS ARE MATCHED depends on the portfolio's basis (issue #80).
+  # For a CASH-TRACKED portfolio the shadow ETF matches DEPOSITS AND WITHDRAWALS,
+  # not trades, because summary.rb computes
+  #
+  #   benchmark_return_pct = pct(sim.values.last.value - net_deposits, net_deposits)
+  #
+  # and net_deposits is the deposit ledger there. Keep matching trades while the
+  # denominator switches and that expression subtracts a deposit-basis figure
+  # from a trade-basis simulation: off by (Σ trade cost − Σ deposits), silently,
+  # with no flag and no null. docs/PLAN.md asked for the deposit version from the
+  # start ("simulate the user's exact deposits, on the same dates, into an index
+  # ETF"); trade matching was only ever the proxy available before there were
+  # deposits to match. The trade branch is UNCHANGED for untracked portfolios.
+  #
+  # Only CashTransaction::EXTERNAL_KINDS are matched — the DRIP rule generalized:
+  # interest, dividend_cash, tax and fee move the balance but are money the
+  # broker moved INSIDE the account, so matching them would hand the shadow
+  # portfolio free money the benchmark side never models.
+  #
+  # The shadow ETF needs no cash account of its own: under deposit matching it is
+  # fully invested by construction, which is what a benchmark IS. That also means
+  # it now correctly PENALIZES idle cash — expect vs_benchmark_edge_pct to move
+  # down on cash-heavy accounts that adopt cash tracking.
+  #
   # Guard rails:
   # - an over-withdrawal clamps the shadow position at zero and sets
   #   meta[:benchmark_clamped]
@@ -34,6 +58,12 @@ module Benchmarks
     Point  = Data.define(:date, :value)
     Result = Data.define(:instrument_id, :symbol, :values, :meta)
 
+    # One external movement to match, normalized so the fill sweep is identical
+    # for a trade and for a cash movement: `dollars` is the magnitude in the
+    # direction's own sign, `side` buys or sells the shadow ETF.
+    Movement = Data.define(:side, :executed_on, :dollars)
+    private_constant :Movement
+
     def self.call(...) = new(...).call
 
     def initialize(portfolio:, from:, to:, benchmark: nil)
@@ -45,12 +75,15 @@ module Benchmarks
     end
 
     def call
-      real = external_transactions
+      real = external_movements
       dates, closes = benchmark_closes
 
       synthetic, flags = build_synthetic_trades(real, dates, closes)
+      # include_cash: false is redundant belt-and-braces (an injected transaction
+      # list already defaults it off) — the shadow ETF must never inherit the
+      # user's cash, and that must be impossible to break by accident.
       valuation = Portfolios::Valuation.call(portfolio: portfolio, from: from, to: to,
-                                             transactions: synthetic)
+                                             transactions: synthetic, include_cash: false)
 
       Result.new(
         instrument_id: instrument.id,
@@ -72,12 +105,40 @@ module Benchmarks
 
     def instrument = benchmark.instrument
 
-    def external_transactions
+    # The movements the shadow ETF matches, ordered by date (the fill sweep
+    # relies on non-decreasing fill dates to apply each split exactly once).
+    #
+    # `tracked` is derived from the cash rows loaded HERE rather than from a
+    # second Portfolio#cash_tracked? call: that predicate's `SELECT 1 ... LIMIT 1`
+    # early-exit estimate makes Postgres prefer a Seq Scan, which for an
+    # UNTRACKED portfolio scans the whole table to prove absence.
+    def external_movements
+      cash_rows = portfolio.cash_transactions.order(:occurred_on, :id)
+                           .pluck(:kind, :amount, :occurred_on)
+      return cash_movements(cash_rows) if cash_rows.any?
+
+      trade_movements
+    end
+
+    # Deposits and withdrawals only, in window. A withdrawal is stored negative,
+    # so its magnitude sells the shadow position.
+    def cash_movements(cash_rows)
+      cash_rows.filter_map do |kind, amount, occurred_on|
+        next unless CashTransaction::EXTERNAL_KINDS.include?(kind)
+        next if occurred_on > to
+
+        amount = MoneyMath.decimal(amount)
+        Movement.new(side: amount.negative? ? "sell" : "buy",
+                     executed_on: occurred_on, dollars: amount.abs)
+      end
+    end
+
+    def trade_movements
       portfolio.transactions
                .where(kind: "normal")
                .where(executed_on: ..to)
                .order(:executed_on, :id)
-               .to_a
+               .map { |tx| Movement.new(side: tx.side, executed_on: tx.executed_on, dollars: Portfolios::TradeCash.dollars(tx)) }
     end
 
     # [sorted dates array, {date => close}]
@@ -101,13 +162,13 @@ module Benchmarks
 
       # real is ordered by executed_on, so fill dates are non-decreasing and
       # one forward sweep applies each split exactly once.
-      real.each do |tx|
-        fill_date = dates.bsearch { |d| d >= tx.executed_on }
+      real.each do |movement|
+        fill_date = dates.bsearch { |d| d >= movement.executed_on }
         if fill_date.nil?
           flags[:dropped] = true
           next
         end
-        flags[:start_clamped] = true if tx.executed_on < dates.first
+        flags[:start_clamped] = true if movement.executed_on < dates.first
 
         # Splits apply at the START of their ex-date, before same-day fills.
         while split_index < splits.size && splits[split_index][0] <= fill_date
@@ -115,13 +176,13 @@ module Benchmarks
           split_index += 1
         end
 
-        dollars = external_dollars(tx)
+        dollars = movement.dollars
         next unless dollars.positive?
 
         close  = closes.fetch(fill_date)
         shares = (dollars / close).round(8)
 
-        if tx.side == "sell"
+        if movement.side == "sell"
           if shares > position
             shares = position
             flags[:clamped] = true
@@ -133,21 +194,12 @@ module Benchmarks
         end
 
         synthetic << SyntheticTransaction.new(
-          instrument_id: instrument.id, side: tx.side, kind: "normal",
+          instrument_id: instrument.id, side: movement.side, kind: "normal",
           shares: shares, price: close, fees: BigDecimal(0), executed_on: fill_date
         )
       end
 
       [ synthetic, flags ]
-    end
-
-    # The external cash the real trade moved: buys cost + fees, sells
-    # proceeds - fees — the same convention as Portfolios::Valuation flows.
-    def external_dollars(tx)
-      shares = MoneyMath.decimal(tx.shares)
-      price  = MoneyMath.decimal(tx.price)
-      fees   = MoneyMath.decimal(tx.fees)
-      tx.side == "sell" ? shares * price - fees : shares * price + fees
     end
   end
 end

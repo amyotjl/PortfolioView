@@ -22,6 +22,10 @@ module Portfolios
         portfolio(name).transactions.select { |t| t.symbol == symbol }.sort_by(&:executed_on)
       end
 
+      def cash(name) = portfolio(name).cash_transactions.sort_by(&:occurred_on)
+      def cash_of(name, kind) = cash(name).select { |c| c.kind == kind }
+      def ingested_note = @document.warnings.find { |w| w.include?("cash ledger") }
+
       # --- Shape ---
 
       test "groups rows into one portfolio per account type" do
@@ -249,7 +253,172 @@ module Portfolios
         assert document.warnings.any? { |w| w.include?("different split ratios") }
       end
 
-      # --- Cash-only activity ---
+      # --- Cash activity (issue #80) ---
+
+      test "maps all five cash activities onto the six CashTransaction kinds" do
+        assert_equal [ [ "deposit", BigDecimal("5000"), Date.new(2025, 4, 10) ] ],
+                     cash_of("TFSA", "deposit").reject { |c| c.notes }.map { |c| [ c.kind, c.amount, c.occurred_on ] },
+                     "MoneyMovement with a positive net is a deposit"
+        assert_equal [ BigDecimal("73.7") ], cash_of("TFSA", "dividend_cash").map(&:amount)
+        assert_equal [ BigDecimal("0.01") ], cash_of("TFSA", "interest").map(&:amount)
+        assert_equal [ BigDecimal("-0.49") ], cash_of("TFSA", "tax").map(&:amount)
+        assert_equal [ BigDecimal("172.5") ], cash_of("TFSA", "fee").map(&:amount)
+        assert_equal [ BigDecimal("0.02") ], cash_of("RRSP", "interest").map(&:amount)
+      end
+
+      test "MoneyMovement's direction comes from the sign of net_cash_amount" do
+        body = <<~CSV
+          transaction_date,account_type,activity_type,activity_sub_type,description,symbol,name,currency,quantity,unit_price,commission,net_cash_amount
+          2025-01-02,TFSA,MoneyMovement,EFT,Deposit,,,CAD,100,,,100
+          2025-01-03,TFSA,MoneyMovement,EFT,Withdrawal,,,CAD,-40,,,-40
+        CSV
+
+        rows = ActivitiesCsvParser.call(body).portfolios.sole.cash_transactions
+
+        assert_equal [ [ "deposit", BigDecimal("100") ], [ "withdrawal", BigDecimal("-40") ] ],
+                     rows.map { |c| [ c.kind, c.amount ] }
+      end
+
+      test "a NEGATIVE dividend and a POSITIVE tax survive with their signs" do
+        # A dividend reversal and a tax refund are real broker rows. `.abs`
+        # anywhere in this pipeline turns a clawback into income and a refund into
+        # a charge — silently, because both are legal values for their kind.
+        body = <<~CSV
+          transaction_date,account_type,activity_type,activity_sub_type,description,symbol,name,currency,quantity,unit_price,commission,net_cash_amount
+          2025-01-03,TFSA,Dividend,-,Dividend reversal,ZZZ,Zed Inc,CAD,-5.25,,,-5.25
+          2025-01-04,TFSA,Tax,NRT,Withholding tax refund,,,CAD,3.1,,,3.1
+        CSV
+
+        rows = ActivitiesCsvParser.call(body).portfolios.sole.cash_transactions
+
+        assert_equal [ [ "dividend_cash", BigDecimal("-5.25") ], [ "tax", BigDecimal("3.1") ] ],
+                     rows.map { |c| [ c.kind, c.amount ] }
+      end
+
+      test "cash uses transaction_date, never settlement_date" do
+        body = <<~CSV
+          transaction_date,settlement_date,account_type,activity_type,activity_sub_type,description,symbol,name,currency,quantity,unit_price,commission,net_cash_amount
+          2025-01-02,2025-01-06,TFSA,MoneyMovement,EFT,Deposit,,,CAD,100,,,100
+        CSV
+
+        assert_equal Date.new(2025, 1, 2),
+                     ActivitiesCsvParser.call(body).portfolios.sole.cash_transactions.sole.occurred_on
+      end
+
+      test "the amount is rounded to the cent, not to the column's full precision" do
+        body = <<~CSV
+          transaction_date,account_type,activity_type,activity_sub_type,description,symbol,name,currency,quantity,unit_price,commission,net_cash_amount
+          2025-01-03,TFSA,Interest,-,Stock lending,,,CAD,0.014999,,,0.014999
+        CSV
+
+        # amount is numeric(12,2); PostgreSQL would round it anyway, and a figure
+        # that disagrees with the stored one is how a preview lies about a total.
+        assert_equal BigDecimal("0.01"),
+                     ActivitiesCsvParser.call(body).portfolios.sole.cash_transactions.sole.amount
+      end
+
+      test "a cash row with no amount is DROPPED with a warning, not imported at zero" do
+        # The cash_transactions_amount_sign CHECK forbids a zero amount, so a zero
+        # row would abort the whole portfolio's savepoint on import. One warned
+        # no-op row beats one failed portfolio.
+        body = <<~CSV
+          transaction_date,account_type,activity_type,activity_sub_type,description,symbol,name,currency,quantity,unit_price,commission,net_cash_amount
+          2025-01-02,TFSA,MoneyMovement,EFT,Deposit,,,CAD,100,,,100
+          2025-01-03,TFSA,Dividend,-,A dividend of nothing,ZZZ,Zed Inc,CAD,0,,,0
+          2025-01-04,TFSA,Interest,-,Interest with a blank amount,,,CAD,,,,
+        CSV
+
+        document = ActivitiesCsvParser.call(body)
+
+        assert_equal [ "deposit" ], document.portfolios.sole.cash_transactions.map(&:kind)
+        note = document.warnings.find { |w| w.include?("no amount") }
+        assert_not_nil note, "a dropped row must be reported, got: #{document.warnings.inspect}"
+        assert_includes note, "1 dividend payment"
+        assert_includes note, "1 interest payment"
+        assert_includes note, "dropped"
+      end
+
+      test "a sub-half-cent amount that rounds to zero is dropped rather than failing the CHECK" do
+        body = <<~CSV
+          transaction_date,account_type,activity_type,activity_sub_type,description,symbol,name,currency,quantity,unit_price,commission,net_cash_amount
+          2025-01-02,TFSA,MoneyMovement,EFT,Deposit,,,CAD,100,,,100
+          2025-01-03,TFSA,Interest,-,A rounding residue,,,CAD,0.004,,,0.004
+        CSV
+
+        document = ActivitiesCsvParser.call(body)
+
+        assert_equal [ "deposit" ], document.portfolios.sole.cash_transactions.map(&:kind)
+        assert document.warnings.any? { |w| w.include?("no amount") }
+      end
+
+      test "a trade produces NO cash row — the ledger derives a trade's cash from the trade" do
+        # Emitting one here would debit every purchase twice.
+        body = <<~CSV
+          transaction_date,account_type,activity_type,activity_sub_type,description,symbol,name,currency,quantity,unit_price,commission,net_cash_amount
+          2025-01-02,TFSA,Trade,BUY,Bought 1 share,ZZZ,Zed Inc,CAD,1,10,0,-10
+          2025-01-03,TFSA,Trade,SELL,Sold 1 share,ZZZ,Zed Inc,CAD,-1,12,0,12
+        CSV
+
+        assert_empty ActivitiesCsvParser.call(body).portfolios.sole.cash_transactions
+      end
+
+      test "a SUBDIVISION produces no cash row — a split moves shares, not money" do
+        assert_empty cash("TFSA").select { |c| c.occurred_on == Date.new(2025, 8, 18) }
+      end
+
+      # --- The SecurityTransfer offset: issue #80 test 10 ---
+
+      test "a SecurityTransfer nets to EXACTLY zero cash" do
+        # The synthesized buy/sell would otherwise debit/credit cash that never
+        # crossed the account boundary — worth about -$51,000 in the owner's real
+        # file. Portfolios::CashLedger computes
+        #   balance = Σ cash.amount − Σ TradeCash.for(tx)
+        # so netting to zero is exactly this identity, and it holds per direction:
+        # a deposit for the buy, a withdrawal for the sell.
+        transfers = transactions("TFSA", "XSB.TO")
+        offsets = cash("TFSA").select { |c| c.notes&.include?("broker transfer") }
+
+        assert_equal 2, transfers.size
+        assert_equal 2, offsets.size
+
+        trade_cash = transfers.sum(BigDecimal(0)) { |tx| Portfolios::TradeCash.for(tx) }
+        offset_cash = offsets.sum(BigDecimal(0), &:amount)
+
+        assert_equal BigDecimal(0), offset_cash - trade_cash,
+                     "a transfer must move shares without moving cash"
+      end
+
+      test "a transfer IN offsets with a deposit, a transfer OUT with a withdrawal" do
+        offsets = cash("TFSA").select { |c| c.notes&.include?("broker transfer") }
+                              .index_by(&:kind)
+
+        deposit = offsets.fetch("deposit")
+        assert_equal BigDecimal("9706.62"), deposit.amount
+        assert_equal Date.new(2026, 5, 5), deposit.occurred_on,
+                     "the offset must share its trade's date or the benchmark's synthetic fill moves"
+        assert_includes deposit.notes, "no cash crossed the account boundary"
+
+        withdrawal = offsets.fetch("withdrawal")
+        assert_equal BigDecimal("-267.4"), withdrawal.amount
+        assert_equal Date.new(2026, 5, 6), withdrawal.occurred_on
+      end
+
+      test "the transfer offset is reconstructed from the trade, so it cannot drift by a cent" do
+        # net_cash_amount / quantity is rounded to 6 dp, so shares x price can
+        # differ from the raw ledger amount by a fraction of a cent. The offset
+        # must match what TradeCash charges, not what the file said.
+        body = <<~CSV
+          transaction_date,account_type,activity_type,activity_sub_type,description,symbol,name,currency,quantity,unit_price,commission,net_cash_amount
+          2026-05-05,TFSA,SecurityTransfer,-,Transfer of 7.0 shares into the account,ZZZ,Zed Inc,CAD,7,,,100
+        CSV
+
+        spec = ActivitiesCsvParser.call(body).portfolios.sole
+        tx = spec.transactions.sole
+        offset = spec.cash_transactions.sole
+
+        # 100 / 7 = 14.285714285... -> 14.285714; 7 x 14.285714 = 99.999998 -> 100.00
+        assert_equal Portfolios::TradeCash.for(tx), offset.amount
+      end
 
       test "cash-only rows create no transactions" do
         all = @document.portfolios.flat_map(&:transactions)
@@ -262,8 +431,8 @@ module Portfolios
         assert_equal 11, all.size
       end
 
-      test "reports every skipped cash category with a count and a total" do
-        note = @document.warnings.find { |w| w.include?("not a cash balance") }
+      test "reports every ingested cash category with a count and a total" do
+        note = ingested_note
 
         assert_not_nil note
         assert_includes note, "1 dividend payment totalling 73.70"
@@ -282,7 +451,7 @@ module Portfolios
           2025-01-05,TFSA,MoneyMovement,EFT,Deposit,,,CAD,100,,,100
         CSV
 
-        note = ActivitiesCsvParser.call(body).warnings.find { |w| w.include?("not a cash balance") }
+        note = ActivitiesCsvParser.call(body).warnings.find { |w| w.include?("cash ledger") }
 
         assert_includes note, "2 dividend payments totalling 4.00"
         assert_includes note, "1 cash movement totalling 100.00"
@@ -290,18 +459,36 @@ module Portfolios
       end
 
       test "amounts are formatted to two decimals with thousands separators" do
-        note = @document.warnings.find { |w| w.include?("not a cash balance") }
-
         # "5000.0" is a raw BigDecimal leaking into user-facing prose.
-        assert_no_match(/totalling \d+\.\d(?!\d)/, note)
+        assert_no_match(/totalling \d+\.\d(?!\d)/, ingested_note)
       end
 
-      test "states both consequences of having no cash ledger" do
-        note = @document.warnings.find { |w| w.include?("Two consequences") }
+      test "the report states what the cash ledger does with the rows, not that they were lost" do
+        # This test used to assert the OPPOSITE: that contributed capital is
+        # "derived from what you actually bought" and that a dividend-funded buy
+        # "understates return". Both were true only while there was nowhere to put
+        # a dividend. Shipping either now sends the user editing transaction kinds
+        # to fix a problem that no longer exists.
+        note = ingested_note
 
         assert_not_nil note
-        assert_includes note, "derived from what you actually bought"
-        assert_includes note, "understates return"
+        assert_includes note, "total value includes its cash balance"
+        assert_includes note, "contributed capital comes from the deposit rows"
+        assert_includes note, "not counted as a new contribution"
+
+        joined = @document.warnings.join(" ")
+        assert_no_match(/not a cash balance/, joined)
+        assert_no_match(/understates return/, joined)
+        assert_no_match(/dividend reinvestment/, joined)
+      end
+
+      test "no warning claims a completed write, because previews reuse these strings" do
+        # The same strings serve dry_run, where nothing has been written yet.
+        assert_not_empty @document.warnings
+        @document.warnings.each do |warning|
+          assert_no_match(/\b(was|were)\s+imported\b/i, warning,
+                          "a preview must not claim the write already happened: #{warning.inspect}")
+        end
       end
 
       test "an unrecognized activity type is skipped by name rather than silently" do
@@ -337,15 +524,30 @@ module Portfolios
         assert_includes error.message, "no activity rows"
       end
 
-      test "an account whose every row is cash yields no empty portfolio" do
+      test "an account whose every row is cash is KEPT, because its money is real" do
+        # This asserted `assert_empty document.portfolios` before there was a cash
+        # ledger, when a portfolio could only be made of transactions. Dropping the
+        # account now would silently discard a $100 deposit — the exact failure
+        # this feature exists to end.
         body = <<~CSV
           transaction_date,account_type,activity_type,activity_sub_type,description,symbol,name,currency,quantity,unit_price,commission,net_cash_amount
           2025-01-02,TFSA,MoneyMovement,EFT,Deposit,,,CAD,100,,,100
         CSV
 
-        document = ActivitiesCsvParser.call(body)
+        spec = ActivitiesCsvParser.call(body).portfolios.sole
 
-        assert_empty document.portfolios
+        assert_empty spec.transactions
+        assert_equal "deposit", spec.cash_transactions.sole.kind
+        assert_equal BigDecimal("100"), spec.cash_transactions.sole.amount
+      end
+
+      test "an account with neither trades nor cash still yields no empty portfolio" do
+        body = <<~CSV
+          transaction_date,account_type,activity_type,activity_sub_type,description,symbol,name,currency,quantity,unit_price,commission,net_cash_amount
+          2025-01-02,TFSA,Teleportation,WARP,Something new,,,CAD,1,,,5
+        CSV
+
+        assert_empty ActivitiesCsvParser.call(body).portfolios
       end
 
       test "a trade missing its price or quantity is dropped, not imported at zero" do

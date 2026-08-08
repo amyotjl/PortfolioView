@@ -2,8 +2,7 @@ import { useMutation, useQueryCache } from '@pinia/colada'
 import { apiDownload, apiUpload } from '@/api/client'
 import { saveBlob } from '@/lib/download'
 import { importResponseSchema, type ImportReport, type OnConflictMode } from '@/types'
-import { PORTFOLIOS_KEY } from '@/composables/usePortfolios'
-import { TRANSACTIONS_KEY } from '@/composables/useTransactions'
+import { invalidateAllPortfolioSeries } from '@/composables/portfolioSeriesCache'
 
 /**
  * Portfolio export / import (issue #64).
@@ -59,17 +58,17 @@ export function useImportPortfolios() {
     onSuccess: (report) => {
       // A preview wrote nothing, so invalidating would refetch for no reason.
       if (report.dry_run) return
-      // An import creates portfolios AND their transactions, and the server bumps
-      // series_version — so the same keys a transaction mutation invalidates must
-      // be dropped here (docs/STATUS.md § frontend building blocks).
+      // An import creates portfolios AND their transactions — and since #80, their
+      // CASH ROWS too — and the server bumps series_version, so the same keys a
+      // ledger mutation invalidates must be dropped here.
       //
-      // Invalidated by PREFIX and without a portfolio id, unlike useTransactions'
-      // per-portfolio helper: an import touches portfolios this client has never
-      // seen, so there is no id list to iterate.
-      cache.invalidateQueries({ key: [...PORTFOLIOS_KEY] })
-      for (const key of [TRANSACTIONS_KEY, 'candles', 'summary', 'allocations']) {
-        cache.invalidateQueries({ key: [key] })
-      }
+      // Invalidated by PREFIX and without a portfolio id, unlike the per-portfolio
+      // helper: an import touches portfolios this client has never seen, so there
+      // is no id list to iterate. The key SET is shared with the per-portfolio
+      // helper (composables/portfolioSeriesCache.ts) — this used to be a third
+      // hand-copied list, which is how it would have quietly missed `['cash', …]`
+      // and served a stale basis after an activity-ledger import.
+      invalidateAllPortfolioSeries(cache)
     },
   })
 }

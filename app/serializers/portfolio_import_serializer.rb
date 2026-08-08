@@ -33,6 +33,10 @@ class PortfolioImportSerializer
       status: portfolio.status,
       transactions_created: portfolio.transactions_created,
       recurring_created: portfolio.recurring_created,
+      # Cash rows written for this portfolio (issue #80). Reported per portfolio
+      # AND in `totals` because a broker ledger's cash is most of what the user is
+      # importing, and a count is the only place they can confirm it landed.
+      cash_created: portfolio.cash_created,
       errors: portfolio.errors,
       warnings: portfolio.warnings
     }

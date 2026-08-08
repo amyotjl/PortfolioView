@@ -12,6 +12,7 @@ import SelectButton from 'primevue/selectbutton'
 import Button from 'primevue/button'
 import FormField from '@/components/ui/FormField.vue'
 import FormAlert from '@/components/ui/FormAlert.vue'
+import AdvisoryNotice from '@/components/ui/AdvisoryNotice.vue'
 import {
   useHoldingPreflight,
   useInstrumentPrice,
@@ -275,10 +276,19 @@ function onSymbolSelect(event: { value: InstrumentSearchResult }): void {
 </script>
 
 <template>
+  <!--
+    `:aria-label="title"` names the dialog. PrimeVue 4's unstyled Drawer sets
+    `role="dialog"` but renders its header as a plain `<div>` with no id and wires no
+    `aria-labelledby`, so this drawer had NO accessible name — and since #80 the
+    Transactions page mounts a second drawer (cash), which makes an unnamed
+    `getByRole('dialog')` mean "whichever one happens to be open". See the fuller note
+    in CashFormDrawer.vue.
+  -->
   <Drawer
     v-model:visible="visible"
     position="right"
     :header="title"
+    :aria-label="title"
     :dismissable-mask="!props.busy"
     :closable="!props.busy"
     :pt="drawerPt"
@@ -349,15 +359,10 @@ function onSymbolSelect(event: { value: InstrumentSearchResult }): void {
       <!--
         Weekend copy (#49 AC): the transaction is still accepted; this explains
         that the market was shut. Not an error, so it is styled as information and
-        announced politely rather than assertively.
+        announced politely rather than assertively — which is exactly what
+        AdvisoryNotice is (this markup was inlined here twice before #80).
       -->
-      <p
-        v-if="closedNotice"
-        class="rounded-md border border-line bg-panel-hi px-3 py-2 text-sm text-ink-muted"
-        role="status"
-      >
-        {{ closedNotice }}
-      </p>
+      <AdvisoryNotice :message="closedNotice" tone="info" />
 
       <div class="grid grid-cols-2 gap-4">
         <FormField label="Shares" :error="errors.shares" required>
@@ -402,14 +407,9 @@ function onSymbolSelect(event: { value: InstrumentSearchResult }): void {
         Advisory sell pre-flight (#49 AC). role="status" not "alert": the server
         is authoritative and a real rejection arrives as a 422 in FormAlert above.
       -->
-      <p
-        v-if="sellWarning"
-        class="rounded-md border border-warn bg-warn-soft px-3 py-2 text-sm text-ink"
-        role="status"
-      >
-        {{ sellWarning }}
+      <AdvisoryNotice :message="sellWarning" tone="warn">
         <span v-if="isPreflightLoading" class="text-ink-subtle">(checking…)</span>
-      </p>
+      </AdvisoryNotice>
 
       <div class="grid grid-cols-2 gap-4">
         <FormField label="Fees" :error="errors.fees">

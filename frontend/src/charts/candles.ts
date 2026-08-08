@@ -19,9 +19,18 @@
  * never Date objects (that would reintroduce the timezone drift the app avoids).
  */
 import type { EChartsOption } from 'echarts'
-import type { CandlesResponse, Candle, BenchmarkLine, Flow, DrawdownPoint } from '@/types'
+import type {
+  CandlesResponse,
+  Candle,
+  BenchmarkLine,
+  CashPoint,
+  Flow,
+  DrawdownPoint,
+} from '@/types'
 import type { ChartTheme } from './theme'
 import { escapeHtml } from './colors'
+import { cashKindLabel } from '@/lib/cash'
+import { centsToDecimalString, toCents } from '@/lib/money'
 import { formatCompactCurrency, formatCurrency, formatDate, formatPercent } from '@/lib/format'
 
 export interface DashboardChartOptions {
@@ -101,6 +110,38 @@ export function benchmarkSeriesName(benchmark: BenchmarkLine): string {
   return `Benchmark · ${benchmark.symbol}`
 }
 
+/**
+ * Cash balances by date, or an EMPTY map when the portfolio does not track cash
+ * (#80). The empty map is what makes every cash-aware branch below collapse back to
+ * exactly today's output when `payload.cash === null`.
+ *
+ * The series is END-OF-DAY and the backend emits one point per swept day, so a
+ * candle date missing from it means "no cash movement had happened yet" — read as 0.
+ */
+function cashByDate(cash: readonly CashPoint[] | null): Map<string, number> {
+  if (!cash) return new Map()
+  const out = new Map<string, number>()
+  for (const point of cash) {
+    const cents = toCents(point.v)
+    if (cents !== null) out.set(point.t, cents)
+  }
+  return out
+}
+
+/**
+ * Human label for a flow item's `kind`, falling through to the raw string.
+ *
+ * `flows[].items[].kind` widens beyond buy|sell on the cash basis, and the schema
+ * models it as `z.string()` for that reason. buy/sell are deliberately NOT in the
+ * label table: they pass through verbatim, which is what keeps a trade-basis tooltip
+ * byte-identical to before this feature. An unrecognised kind renders as itself
+ * rather than blanking the row — and the flow bars color by the SIGN of `amount`,
+ * never by `kind`, so an unknown kind cannot break the chart either.
+ */
+export function flowKindLabel(kind: string): string {
+  return cashKindLabel(kind)
+}
+
 // --- Tooltip ---------------------------------------------------------------
 
 const PORTFOLIO_SERIES = 'Portfolio'
@@ -124,6 +165,9 @@ function metricRow(color: string, label: string, value: string, ink: string, mut
 interface TooltipContext {
   candlesByDate: Map<string, Candle>
   benchmarkByDate: Map<string, number>
+  /** Empty unless the portfolio tracks cash — see `cashByDate`. */
+  cashByDate: Map<string, number>
+  tracksCash: boolean
   flowsByDate: Map<string, Flow>
   drawdownByDate: Map<string, number>
   filledDates: Set<string>
@@ -154,10 +198,58 @@ function renderTooltip(params: unknown, ctx: TooltipContext): string {
 
   const candle = ctx.candlesByDate.get(date)
   if (candle) {
-    rows.push(metricRow(theme.up, 'Close', formatCurrency(candle.c), theme.ink, theme.inkMuted))
-    rows.push(
-      `<div style="color:${theme.inkSubtle};font-size:11px;font-variant-numeric:tabular-nums;margin:1px 0 2px 16px">Open ${formatCurrency(candle.o)} · High ${formatCurrency(candle.h)} · Low ${formatCurrency(candle.l)}</div>`,
-    )
+    /*
+     * THIS IS WHERE "CASH OVER TIME" EARNS ITS PLACE — on demand, for zero pixels.
+     * Cash is deliberately in neither the candle nor a fourth series in grid 0: the
+     * candlestick's grammar says "this is a market move", so a deposit drawn as a
+     * tall green candle is a lie about performance. The tooltip can state the
+     * relationship exactly instead.
+     *
+     * A premise worth recording, because it is the opposite of the obvious guess:
+     * with `yAxis[0].scale: true` the axis fits [min, max], so a CONSTANT cash offset
+     * would shift both bounds equally and leave visible variance unchanged. The
+     * flattening risk comes from cash CHANGING — a $50k mid-window deposit forces the
+     * axis to span $50k and collapses the equity's daily wiggles to a pixel or two.
+     *
+     * When cash is untracked this branch is skipped entirely and the rows below are
+     * byte-identical to before #80.
+     */
+    if (ctx.tracksCash) {
+      const holdingsCents = toCents(candle.c)
+      const cashCents = ctx.cashByDate.get(date) ?? 0
+      if (holdingsCents !== null) {
+        rows.push(
+          metricRow(
+            theme.ink,
+            'Total',
+            formatCurrency(centsToDecimalString(holdingsCents + cashCents)),
+            theme.ink,
+            theme.inkMuted,
+          ),
+        )
+      }
+      rows.push(
+        metricRow(theme.up, 'Holdings', formatCurrency(candle.c), theme.ink, theme.inkMuted),
+      )
+      rows.push(
+        `<div style="color:${theme.inkSubtle};font-size:11px;font-variant-numeric:tabular-nums;margin:1px 0 2px 16px">Open ${formatCurrency(candle.o)} · High ${formatCurrency(candle.h)} · Low ${formatCurrency(candle.l)}</div>`,
+      )
+      // warn, never `down`: negative cash is a bookkeeping gap, not a loss.
+      rows.push(
+        metricRow(
+          cashCents < 0 ? theme.warn : theme.inkMuted,
+          'Cash',
+          formatCurrency(centsToDecimalString(cashCents)),
+          theme.ink,
+          theme.inkMuted,
+        ),
+      )
+    } else {
+      rows.push(metricRow(theme.up, 'Close', formatCurrency(candle.c), theme.ink, theme.inkMuted))
+      rows.push(
+        `<div style="color:${theme.inkSubtle};font-size:11px;font-variant-numeric:tabular-nums;margin:1px 0 2px 16px">Open ${formatCurrency(candle.o)} · High ${formatCurrency(candle.h)} · Low ${formatCurrency(candle.l)}</div>`,
+      )
+    }
   }
 
   if (ctx.showBenchmark && ctx.benchmark && ctx.benchmarkByDate.has(date)) {
@@ -186,8 +278,13 @@ function renderTooltip(params: unknown, ctx: TooltipContext): string {
       ),
     )
     for (const item of flow.items) {
+      // `AAPL buy +$1,000.00` on the trade basis (byte-identical to before #80,
+      // because flowKindLabel passes buy/sell through), `Deposit +$5,000.00` on the
+      // cash basis — where there is no instrument, so `ticker` is null and the
+      // leading token is dropped rather than rendered as "null".
+      const prefix = item.ticker === null ? '' : `${escapeHtml(item.ticker)} `
       rows.push(
-        `<div style="color:${theme.inkSubtle};font-size:11px;font-variant-numeric:tabular-nums;margin-left:16px">${escapeHtml(item.ticker)} ${escapeHtml(item.kind)} ${signedMoney(item.amount)}</div>`,
+        `<div style="color:${theme.inkSubtle};font-size:11px;font-variant-numeric:tabular-nums;margin-left:16px">${prefix}${escapeHtml(flowKindLabel(item.kind))} ${signedMoney(item.amount)}</div>`,
       )
     }
   }
@@ -238,9 +335,19 @@ export function buildDashboardChartOption(
   const dates = extractDates(payload.candles)
   const hasBenchmarkLine = showBenchmark && payload.benchmark !== null
 
+  /*
+   * THE DISCRIMINATOR IS THE PAYLOAD'S OWN `cash`, never a `deposit_basis` threaded
+   * in through `opts` from /summary. A pure builder that depends on a second endpoint
+   * flickers while that query is pending, and an in-payload discriminator cannot
+   * disagree with the payload it labels.
+   */
+  const tracksCash = payload.cash !== null
+
   const ctx: TooltipContext = {
     candlesByDate: new Map(payload.candles.map((c) => [c.t, c])),
     benchmarkByDate: new Map((payload.benchmark?.values ?? []).map((p) => [p.t, toNum(p.v)])),
+    cashByDate: cashByDate(payload.cash),
+    tracksCash,
     flowsByDate: new Map(payload.flows.map((f) => [f.t, f])),
     drawdownByDate: new Map(payload.drawdown.map((p) => [p.t, toNum(p.v)])),
     filledDates: new Set(payload.meta.filled_dates),
@@ -328,9 +435,33 @@ export function buildDashboardChartOption(
     animation: false,
     backgroundColor: 'transparent',
     textStyle: { color: theme.ink },
+    /*
+     * PANE TITLES ARE BASIS-DEPENDENT, and both changes are corrections rather than
+     * cosmetics:
+     *
+     *  - grid 0 plots holdings only in BOTH bases, but on the cash basis "Portfolio
+     *    value" would now be a different number from what the tiles call total value.
+     *    "Holdings value" is precise. On the trade basis holdings ARE the portfolio
+     *    value, so the old title is still exactly right and is kept — which is also
+     *    what keeps an untracked payload byte-identical.
+     *  - grid 1 carries ONLY deposits and withdrawals on the cash basis (trades are
+     *    an internal transfer under a full cash account and are absent from `flows`),
+     *    so leaving it labelled "Net cash flow" would have the pane lying about what
+     *    the bars are.
+     */
     title: [
-      { text: 'Portfolio value', top: '2%', left: '1.5%', textStyle: paneTitle(theme) },
-      { text: 'Net cash flow', top: '64%', left: '1.5%', textStyle: paneTitle(theme) },
+      {
+        text: tracksCash ? 'Holdings value' : 'Portfolio value',
+        top: '2%',
+        left: '1.5%',
+        textStyle: paneTitle(theme),
+      },
+      {
+        text: tracksCash ? 'Deposits & withdrawals' : 'Net cash flow',
+        top: '64%',
+        left: '1.5%',
+        textStyle: paneTitle(theme),
+      },
       { text: 'Drawdown from peak', top: '80.5%', left: '1.5%', textStyle: paneTitle(theme) },
     ],
     legend: hasBenchmarkLine

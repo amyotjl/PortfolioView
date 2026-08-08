@@ -7,25 +7,23 @@ import {
   type PaginationMeta,
   type Transaction,
 } from '@/types'
-import { PORTFOLIOS_KEY } from '@/composables/usePortfolios'
+import {
+  TRANSACTIONS_KEY,
+  invalidatePortfolioSeries,
+} from '@/composables/portfolioSeriesCache'
 
 /**
  * Transactions are SERVER state and live only in the Pinia Colada cache.
  *
- * CACHE INVALIDATION IS THE LOAD-BEARING PART. Every transaction mutation moves
- * the portfolio's whole derived series: the backend bumps `series_version` on
- * create/update/destroy (Transaction model callback), which invalidates the
- * server-side caches for candles/summary/allocations. The client has to mirror
- * that or the dashboard silently shows pre-mutation numbers. So one shared
- * helper invalidates ALL of it — transactions, candles, summary, allocations,
- * and portfolios (whose payload carries `series_version`, and whose list view
- * renders sparklines).
- *
- * Miss one of these and the bug is invisible in the transactions page itself and
- * only shows up as a stale dashboard, so they are invalidated together in one
- * place rather than per-mutation.
+ * CACHE INVALIDATION IS THE LOAD-BEARING PART, and it does NOT live here.
+ * Every transaction mutation moves the portfolio's whole derived series, and so
+ * does every recurring-rule mutation and every cash movement — so the shared list
+ * lives in `composables/portfolioSeriesCache.ts` and all three composables call
+ * `invalidatePortfolioSeries`. This file used to claim to be "the one place" while
+ * `useRecurringTransactions` carried a hand-copied duplicate; #80 made the claim
+ * true instead of just written down.
  */
-export const TRANSACTIONS_KEY = 'transactions'
+export { TRANSACTIONS_KEY }
 
 export function transactionsKey(
   portfolioId: number,
@@ -44,19 +42,6 @@ export interface TransactionInput {
   fees: string
   executed_on: string
   notes: string | null
-}
-
-/**
- * Every cache key a transaction mutation must drop. Keyed by prefix so all
- * pages of the transactions list and every date-range variant of the candles
- * query are covered, not just the currently-mounted one.
- */
-function invalidateSeries(cache: ReturnType<typeof useQueryCache>, portfolioId: number): void {
-  cache.invalidateQueries({ key: [TRANSACTIONS_KEY, portfolioId] })
-  cache.invalidateQueries({ key: ['candles', portfolioId] })
-  cache.invalidateQueries({ key: ['summary', portfolioId] })
-  cache.invalidateQueries({ key: ['allocations', portfolioId] })
-  cache.invalidateQueries({ key: [...PORTFOLIOS_KEY] })
 }
 
 export function useTransactionsQuery(
@@ -89,7 +74,7 @@ export function useCreateTransaction(portfolioId: MaybeRefOrGetter<number>) {
       apiPost(`/portfolios/${toValue(portfolioId)}/transactions`, input, {
         schema: transactionResponseSchema,
       }),
-    onSuccess: () => invalidateSeries(cache, toValue(portfolioId)),
+    onSuccess: () => invalidatePortfolioSeries(cache, toValue(portfolioId)),
   })
 }
 
@@ -100,7 +85,7 @@ export function useUpdateTransaction(portfolioId: MaybeRefOrGetter<number>) {
       apiPatch(`/portfolios/${toValue(portfolioId)}/transactions/${id}`, input, {
         schema: transactionResponseSchema,
       }),
-    onSuccess: () => invalidateSeries(cache, toValue(portfolioId)),
+    onSuccess: () => invalidatePortfolioSeries(cache, toValue(portfolioId)),
   })
 }
 
@@ -112,6 +97,6 @@ export function useDeleteTransaction(portfolioId: MaybeRefOrGetter<number>) {
     // surface the error rather than assume success.
     mutation: (id: number) =>
       apiDelete(`/portfolios/${toValue(portfolioId)}/transactions/${id}`),
-    onSuccess: () => invalidateSeries(cache, toValue(portfolioId)),
+    onSuccess: () => invalidatePortfolioSeries(cache, toValue(portfolioId)),
   })
 }

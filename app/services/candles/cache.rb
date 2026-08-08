@@ -5,7 +5,7 @@ module Candles
   #
   # Key scheme (frozen — single source of truth):
   #
-  #   candles/v1/{pid}/{series_version}/{prices_version}/{from}/{to}/{benchmark_id}
+  #   candles/v2/{pid}/{series_version}/{prices_version}/{from}/{to}/{benchmark_id}
   #
   # - series_version  bumps on any transaction/recurring mutation, backfill
   #   completion, or late-discovered historical split (wired on the models), so
@@ -23,7 +23,12 @@ module Candles
   # until it closes; a fully-priced closed window caches forever under its
   # natural key.
   class Cache
-    VERSION = "v1".freeze
+    # v2 (issue #80): the payload gained `cash` and three meta keys. series_version
+    # alone does NOT cover a payload-shape change — an untracked portfolio's data
+    # never changes, so its key would never rotate and a warm v1 entry (missing
+    # the new keys) would keep being served to a client whose schema requires them.
+    # Bump this on every shape change to the cached payload.
+    VERSION = "v2".freeze
     NONE = "none".freeze
 
     def self.fetch(**kwargs, &block) = new(**kwargs).fetch(&block)

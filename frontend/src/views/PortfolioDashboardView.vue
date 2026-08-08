@@ -4,8 +4,11 @@ import Button from 'primevue/button'
 import { usePortfolioCandlesQuery } from '@/composables/usePortfolioCandles'
 import { useSummaryQuery } from '@/composables/useSummary'
 import { useDashboardParams } from '@/composables/useDashboardParams'
+import { negativeCashNotice } from '@/lib/cash'
+import { toCents } from '@/lib/money'
 import { mapApiError } from '@/lib/formErrors'
 import { buttonPt } from '@/primevue/pt'
+import AdvisoryNotice from '@/components/ui/AdvisoryNotice.vue'
 import RangeControls from '@/components/dashboard/RangeControls.vue'
 import StatTileRow from '@/components/dashboard/StatTileRow.vue'
 import ChartCard from '@/components/dashboard/ChartCard.vue'
@@ -33,8 +36,38 @@ const summaryQuery = useSummaryQuery(portfolioId)
 const payload = computed(() => candles.data.value ?? null)
 const isInitialLoading = computed(() => candles.status.value === 'pending')
 const isError = computed(() => candles.status.value === 'error')
-const isEmpty = computed(
-  () => candles.status.value === 'success' && (payload.value?.candles.length ?? 0) === 0,
+
+/** True iff the portfolio records cash — read from the payload, never from /summary. */
+const tracksCash = computed(() => payload.value?.cash !== null && payload.value?.cash !== undefined)
+
+/**
+ * Holdings-only candles that are all zero. Compared in exact integer cents, not with
+ * `Number(c.c) !== 0`.
+ */
+const hasHoldingsToChart = computed(
+  () => payload.value?.candles.some((c) => (toCents(c.c) ?? 0) !== 0) ?? false,
+)
+
+/**
+ * THE EMPTY PREDICATE, WIDENED (#80) — and widened only for cash-tracked portfolios,
+ * so an untracked one behaves exactly as before.
+ *
+ * `candles.length === 0` alone is no longer sufficient: a portfolio with a real
+ * deposit and no trades now returns a full series whose candle legs are all zero
+ * (candles are holdings-only). Rendering that would paint a flat line at $0.00 and a
+ * benchmark comparison against nothing.
+ */
+const isEmpty = computed(() => {
+  if (candles.status.value !== 'success') return false
+  if ((payload.value?.candles.length ?? 0) === 0) return true
+  return tracksCash.value && !hasHoldingsToChart.value
+})
+
+/** Which empty-state copy to show — "your cash is recorded" vs "nothing here yet". */
+const emptyVariant = computed<'no-history' | 'cash-only'>(() =>
+  tracksCash.value && (payload.value?.cash?.some((p) => (toCents(p.v) ?? 0) !== 0) ?? false)
+    ? 'cash-only'
+    : 'no-history',
 )
 const isRefetching = computed(
   () => candles.asyncStatus.value === 'loading' && payload.value !== null,
@@ -46,6 +79,27 @@ const errorMessage = computed(
 const summaryData = summaryQuery.summary
 const summaryLoading = computed(() => summaryQuery.status.value === 'pending')
 const asOf = computed(() => summaryData.value?.as_of ?? null)
+
+/**
+ * Negative-cash advisory, below the tile row.
+ *
+ * Driven by /summary rather than by the windowed candles payload on purpose: the tiles
+ * it sits under are lifetime figures, and a range change must not make a screen-reader
+ * re-announce a fact that has not changed.
+ */
+const cashNotice = computed(() => negativeCashNotice(summaryData.value?.cash_balance ?? null))
+
+/**
+ * The chart card's caption. On the cash basis it has to state the relationship between
+ * the panes once, because the candlestick is now holdings-only while the tiles above
+ * report a total that includes cash — and because a trade no longer appears in the
+ * flow pane at all.
+ */
+const chartCaption = computed(() =>
+  tracksCash.value
+    ? 'Candlesticks are holdings value; hover any day for total value, holdings and cash. The lower pane shows deposits & withdrawals only — under a cash account a trade moves money between cash and holdings without changing your total.'
+    : 'Candlesticks are portfolio value; the accent line is the cash-flow-matched benchmark.',
+)
 
 /** Honest surfacing of the payload's meta flags (docs/PLAN.md § Dashboard). */
 const notices = computed<string[]>(() => {
@@ -98,19 +152,33 @@ function retry(): void {
       <span class="sr-only">Loading dashboard…</span>
     </template>
 
-    <!-- Empty portfolio -->
-    <DashboardEmptyState v-else-if="isEmpty" :portfolio-id="portfolioId" />
+    <!--
+      Empty portfolio. The tile row is rendered above it in the cash-only variant:
+      the reader's deposit IS on screen as Total value / Cash, which is precisely
+      what makes "no holdings to chart" an honest thing to say next to it.
+    -->
+    <template v-else-if="isEmpty">
+      <template v-if="emptyVariant === 'cash-only'">
+        <StatTileRow :summary="summaryData" :loading="summaryLoading" :as-of="asOf" />
+        <AdvisoryNotice :message="cashNotice" tone="warn" />
+      </template>
+      <DashboardEmptyState :portfolio-id="portfolioId" :variant="emptyVariant" />
+    </template>
 
     <!-- Loaded -->
     <template v-else-if="payload">
       <StatTileRow :summary="summaryData" :loading="summaryLoading" :as-of="asOf" />
+      <AdvisoryNotice :message="cashNotice" tone="warn" />
 
       <ChartCard title="Value, cash flow & drawdown" :refetching="isRefetching">
         <template #caption>
           <p v-for="(note, i) in notices" :key="i">{{ note }}</p>
-          <p v-if="notices.length === 0">
-            Candlesticks are portfolio value; the accent line is the cash-flow-matched benchmark.
-          </p>
+          <!--
+            On the cash basis the caption is shown even alongside a meta notice: it
+            explains what the two panes now mean, which a reader needs regardless of
+            whether some days were forward-filled.
+          -->
+          <p v-if="tracksCash || notices.length === 0">{{ chartCaption }}</p>
         </template>
         <template #chart>
           <DashboardChart :payload="payload" :show-benchmark="showBenchmark" />
@@ -130,6 +198,10 @@ function retry(): void {
           <p>
             When the portfolio sits below its contributions, the shortfall is the band above
             the value line.
+          </p>
+          <p v-if="tracksCash">
+            Total value here includes your cash, so buying something moves money between cash
+            and holdings without changing the line.
           </p>
         </template>
         <template #chart>

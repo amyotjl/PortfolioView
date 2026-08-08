@@ -1,15 +1,13 @@
 import { z } from 'zod'
+import { decimalField } from './decimalField'
 
 /**
  * Client-side schema for the transaction drawer (create + edit).
  *
- * DECIMALS STAY STRINGS. shares/price/fees are `numeric(20,8)`, `numeric(16,6)`
- * and `numeric(12,2)` server-side and cross the wire as JSON strings
- * (docs/API_SHAPES.md). So the form binds them to text inputs and validates the
- * *string*, rather than using a numeric input that would round-trip through
- * IEEE-754 — an 8dp share count is exactly the value a float loses. Nothing here
- * ever calls parseFloat; we only check shape and sign, and hand the untouched
- * string to the API.
+ * The decimal-string validator this form is built on now lives in
+ * `forms/decimalField.ts` (extracted byte-identical in #80 so the transaction,
+ * recurring and cash forms share one copy) — its module note explains why these
+ * values never become numbers.
  *
  * These rules mirror the server's (Transaction model validations + the
  * transactions CHECK constraints: shares > 0, price > 0, fees >= 0). The server
@@ -18,35 +16,6 @@ import { z } from 'zod'
  * split-adjusted replay of the whole timeline, so it can only be decided by the
  * server, which answers 422 with the first offending date under `base`.
  */
-
-/** Plain decimal, no exponent/sign tricks: `12`, `12.5`, `.5`, `0.00000001`. */
-const DECIMAL = /^(?:\d+(?:\.\d*)?|\.\d+)$/
-
-/**
- * Validate a decimal string by shape, then by scale, then by sign — all without
- * arithmetic. Sign is decided by "does it contain a nonzero digit", which is
- * exact for an unsigned decimal and avoids a float comparison entirely.
- */
-function decimalField(options: {
-  label: string
-  scale: number
-  allowZero: boolean
-}): z.ZodType<string> {
-  const { label, scale, allowZero } = options
-  return z
-    .string()
-    .trim()
-    .min(1, `${label} is required`)
-    .refine((value) => DECIMAL.test(value), `${label} must be a number`)
-    .refine((value) => {
-      const decimals = value.split('.')[1] ?? ''
-      return decimals.length <= scale
-    }, `${label} allows at most ${scale} decimal place${scale === 1 ? '' : 's'}`)
-    .refine(
-      (value) => allowZero || /[1-9]/.test(value),
-      `${label} must be greater than zero`,
-    )
-}
 
 export const transactionFormSchema = z.object({
   // forceSelection on the AutoComplete means this is always a directory symbol,

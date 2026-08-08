@@ -21,6 +21,7 @@ function portfolio(overrides: Partial<ImportPortfolioResult> = {}): ImportPortfo
     status: 'created',
     transactions_created: 1,
     recurring_created: 0,
+    cash_created: 0,
     errors: [],
     warnings: [],
     ...overrides,
@@ -50,6 +51,7 @@ function report(overrides: ReportOverrides = {}): ImportReport {
       transactions_created: portfolios.reduce((sum, p) => sum + p.transactions_created, 0),
       recurring_created: portfolios.reduce((sum, p) => sum + p.recurring_created, 0),
       splits_created: 0,
+      cash_created: portfolios.reduce((sum, p) => sum + p.cash_created, 0),
       ...totals,
     },
   }
