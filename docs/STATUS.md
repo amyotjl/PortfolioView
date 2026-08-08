@@ -1,10 +1,25 @@
 # Status (living document)
 
-## #80 — liquid cash (deposits/withdrawals). Branch `m11/080-liquid-cash`, NOT merged
+## #80 — liquid cash (deposits/withdrawals). **MERGED 2026-08-08**
 
-**Last updated 2026-08-07.** Ten commits on the branch; the first independent gate returned
-**DO-NOT-MERGE** with three blockers, all fixed, and a **re-gate is in flight**. Do not merge on the
-strength of this section — check the issue for the current verdict.
+**#80, #79 and the #66 gate fixes were all merged into `main` on 2026-08-08** on the project owner's
+instruction ("merge everything"), as three `--no-ff` merges in that order, with **no conflicts**.
+
+**#80 was gated twice and both verdicts were DO-NOT-MERGE before it passed** — the first found three
+blockers, the second found a fourth (B5). All four are fixed and verified.
+**#79 and the #66 gate fixes were NOT independently gated**, the same standing as the seven M10
+branches; where to look first if either misbehaves is recorded in their merge-commit messages.
+
+**The assembled tree was verified after all three merges**, which is the one check no per-branch run
+can make (M9's #58 defect lived in the seam between two individually-gated issues):
+Rails **1023 runs / 4546 assertions / 0 failures**, RuboCop **215 files / 0 offences**, Vitest
+**447/447 across 31 files**, `vue-tsc` exit 0, e2e **9 passed / 0 failed**.
+
+**Eight stale `m9/*` branch refs were deliberately NOT merged.** They report as "ahead" and
+`git cherry` shows two unapplied patches on each, but that is a patch-id artifact of rebasing — the
+work is already in `main` (verified directly: `app/controllers/api/v1/syncs_controller.rb`, the
+`resource :sync` routes and `SyncCard.vue` are all present). Merging them would resurrect superseded
+intermediate states. They are safe to delete.
 
 [#80](https://github.com/amyotjl/PortfolioView/issues/80) carries the full design, the acceptance
 criteria and 16 ranked mutation-provable tests. `docs/PLAN.md` is amended (`cash-balance modeling`
