@@ -141,25 +141,29 @@ understated return, with the parser telling the user to hand-edit `kind`. Now th
 
 ### Still open
 
-- **B5 IS NOT FIXED. It is the one known blocker and the reason this branch has no PASS verdict.**
-  Instance (3) in the pattern above: opening an **imported** internal-kind row (`fee`, `tax`,
-  `interest`, `dividend_cash`) in the cash edit drawer and saving **without touching anything**
-  rewrites its `kind` to `withdrawal` — moving `net_deposits` and pointing the shadow ETF at a sell
-  that never happened. Measured: a `fee` of `-12.5` seeds as `"12.50"`, and an untouched save returns
-  `kind: withdrawal` with the sign correctly preserved. Manual deposits and withdrawals are
-  unaffected; only imported rows are reachable, which on the owner's real Wealthsimple ledger means
-  all four internal kinds.
-  **The fix, decided but not implemented:** carry the row's original `kind` in form state and submit
-  it unchanged unless the user explicitly changes it; and for an internal kind **do not render the
-  deposit/withdrawal SelectButton at all** — show the kind as a labelled read-only value. `formKindFor`
-  in `frontend/src/forms/cash.ts` is where the substitution happens. **Do not "fix" this by widening
-  the SelectButton to all six kinds** — the drawer deliberately offers only the two a user can
-  legitimately create, and offering `dividend_cash` as something to hand-enter invites the exact
-  miscategorisation the external/internal split exists to prevent. Keep `eca95cf`'s sign boundary
-  intact; the sign already round-trips correctly.
-  The test that would have caught it is an e2e untouched-save on an internal-kind row (zero extra
-  registrations — reuse the session). Also still missing: a **runtime** assertion that every
-  `CASH_KIND_OPTIONS` value has a `CASH_KIND_SIGN` entry.
+- **B5 is FIXED in `26a222a` but that commit is UNVERIFIED — no gate has run against it.** The Docker
+  daemon went down partway through the work, so **Vitest, `vue-tsc` and the browser reproduction were
+  never run** on it, and CLAUDE.md forbids starting Docker Desktop unilaterally. **Run those three
+  first**; until then the branch's real state is "twelve verified commits plus one unverified fix".
+  What it does: `locked_kind` carries an imported row's own kind through form state and submits it
+  verbatim, and the drawer does not render the deposit/withdrawal SelectButton at all for such a row
+  — it shows the type as a read-only `dl/dt/dd`. `values.kind` still holds the sign-matching offered
+  kind, deliberately, because that is what `signOnTheWire` reads; a fix preserving the kind while
+  dropping the sign would pass a kind-only assertion. The two offered kinds are **not** locked, so a
+  deliberate deposit↔withdrawal edit still works.
+  Known risk in that commit, stated because it is exactly what an unrun gate would catch:
+  `locked_kind` is **required** (not `.optional()`), so every `CashFormValues` literal needs it. The
+  factories in `forms/cash.spec.ts` and `forms/decimalField.spec.ts` and the `emptyCashForm`/
+  `toCashForm` expectations were updated **by hand**; every other consumer goes through the exported
+  functions rather than a literal, but that was established by grep, not by a type-check.
+  Also landed there: the **runtime** `CASH_KIND_SIGN` coverage assertion, and a fourth instance of the
+  same substitution bug in the success toast, which quoted the form's kind and would have announced
+  "Withdrawal of $12.50" for a fee the save correctly left a fee.
+  **Do not "fix" any of this by widening the SelectButton to all six kinds** — the drawer deliberately
+  offers only the two a user can legitimately create, and offering `dividend_cash` as something to
+  hand-enter invites the exact miscategorisation the external/internal split exists to prevent.
+  Still missing: the **e2e** untouched-save on an internal-kind row, which is the layer that would
+  have caught B5 in the first place (zero extra registrations — reuse the session).
 
 - `cash_negative_since` reaches the wire but has **no frontend consumer** — and it is the only place
   the "negative since when" date exists, since the balance string cannot answer it. Commented at its
