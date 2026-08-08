@@ -450,6 +450,58 @@ test.describe('smoke: register -> portfolio -> transaction -> dashboard', () => 
     await expect(editDrawer).toBeHidden()
     await expect(cashSection.getByRole('cell', { name: '-$2,500.00' })).toBeVisible()
 
+    // --- 9c. An IMPORTED kind the drawer cannot offer survives an edit (B5) --
+    // The third instance of this file's recurring lesson, and the one a unit test
+    // structurally cannot reach: `locked_kind` has no `defineField`, so whether it
+    // survives into vee-validate's `values` at submit time is a property of the FORM
+    // LIBRARY, not of the pure functions. If it does not, `toCashInput` receives
+    // undefined, the schema rejects the submit, and every unit test still passes.
+    //
+    // The bug: an imported `fee` opened here and saved WITHOUT TOUCHING ANYTHING came
+    // back a `withdrawal`. `withdrawal` is external, so that silently reclassified a
+    // broker charge as a user contribution — net_deposits moved and the shadow ETF
+    // started matching a sell that never happened. Costs no registrations.
+    const fee = await createCashTransaction(page, portfolio.id, {
+      kind: 'fee',
+      amount: '-4.95',
+      occurred_on: '2026-04-16',
+      notes: 'account fee',
+    })
+    expect(fee.cash_transaction.kind).toBe('fee')
+
+    await page.goto(`/portfolios/${portfolio.id}/transactions`)
+    await expect(cashSection.getByRole('cell', { name: 'Fee', exact: true })).toBeVisible()
+    await cashSection
+      .getByRole('button', { name: /Edit fee/ })
+      .first()
+      .click()
+    const feeDrawer = page.getByRole('dialog', { name: 'Edit cash movement', exact: true })
+    await expect(feeDrawer).toBeVisible()
+
+    // The SelectButton is NOT rendered for a kind it cannot represent — showing it
+    // was the bug, because it had no way to display "Fee" and no memory of it.
+    await expect(
+      feeDrawer.getByRole('group', { name: 'Type', exact: true }),
+      'the Type SelectButton must not be offered for an unofferable kind',
+    ).toHaveCount(0)
+    await expect(feeDrawer.getByRole('term').filter({ hasText: 'Type' })).toBeVisible()
+    await expect(feeDrawer.getByRole('definition')).toHaveText('Fee')
+    // Still the MAGNITUDE, so the shared decimal validator accepts it.
+    await expect(feeDrawer.getByRole('textbox', { name: 'Amount', exact: true })).toHaveValue('4.95')
+
+    await feeDrawer.getByRole('button', { name: 'Save changes', exact: true }).click()
+    await expect(feeDrawer).toBeHidden()
+
+    // Read back from the SERVER, not the table: the row could render correctly from a
+    // stale cache while the persisted kind had changed underneath it.
+    const afterEdit = await (
+      await page.request.get(`/api/v1/portfolios/${portfolio.id}/cash_transactions`)
+    ).json()
+    const savedFee = afterEdit.cash_transactions.find((row) => row.id === fee.cash_transaction.id)
+    expect(savedFee.kind, 'an untouched save must not reclassify a fee').toBe('fee')
+    // The sign is the broker's and must round-trip verbatim in both directions.
+    expect(Number(savedFee.amount), 'the fee must stay negative').toBe(-4.95)
+
     // --- 10. No unexpected API failures or uncaught errors -----------------
     expect(failures, `unexpected failures during the journey:\n${failures.join('\n')}`).toEqual([])
   })
