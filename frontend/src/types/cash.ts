@@ -19,13 +19,18 @@ import { paginationMetaSchema } from './transactions'
  * `.default(...)` the value — an existing trades-only portfolio would silently
  * start claiming a $0.00 cash balance it never recorded.
  *
- * SIGN RULE, stated once and applied everywhere in the contract:
- * a single MOVEMENT is an unsigned magnitude plus a direction carried by `kind`;
- * an AGGREGATE is signed. So `cash_transaction.amount` is a magnitude while
- * `summary.cash_balance`, `candles.cash[].v` and `candles.flows[].amount` are
- * signed. (Emitting movements signed was considered and rejected: an edit form
- * repopulating from GET would hand `-500` to the shared DECIMAL regex in
- * `forms/decimalField.ts`, which deliberately rejects a sign.)
+ * SIGN RULE, stated once and applied everywhere in the contract: EVERY MONEY FIGURE
+ * ON THE WIRE IS SIGNED, in both directions. `cash_transaction.amount` as much as
+ * `summary.cash_balance`, `candles.cash[].v` and `candles.flows[].amount` —
+ * `deposit` positive and `withdrawal` negative, enforced by a DB CHECK plus a model
+ * validation, so a wrong sign is a 422 on `amount` rather than a coerced value.
+ *
+ * The unsigned-magnitude-plus-`kind` alternative was designed first and REJECTED,
+ * because `tax` and `fee` are genuinely ± under one kind name (a refund, a
+ * reimbursement) and a kind-derived sign cannot express them. The client's FORM is
+ * still unsigned — the shared DECIMAL regex in `forms/decimalField.ts` rejects a
+ * sign — and `forms/cash.ts` converts in both directions at that boundary. That is
+ * a frontend concern only; anything that talks to the API talks in signed figures.
  */
 
 /**
@@ -73,10 +78,10 @@ export type ManualCashKind = (typeof MANUAL_CASH_KINDS)[number]
 export const cashKindSchema = z.string()
 
 /**
- * One ledger row. `amount` is an UNSIGNED magnitude for the two external kinds
- * (direction is in `kind`); an internal kind may legitimately carry a sign (a
- * dividend reversal, a fee reimbursement), so the schema constrains only that it
- * is a decimal string.
+ * One ledger row. `amount` is SIGNED: positive for a `deposit`, negative for a
+ * `withdrawal`, and the broker's own sign for an internal kind (a dividend
+ * reversal, a fee reimbursement). The schema constrains only that it is a decimal
+ * string — the sign rules are the server's to enforce, and it does, with a 422.
  *
  * `occurred_on`, deliberately NOT `executed_on`: a cash row must never
  * duck-type as a `Transaction` in the services that take injectable arrays and

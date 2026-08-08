@@ -14,6 +14,7 @@ import AdvisoryNotice from '@/components/ui/AdvisoryNotice.vue'
 import {
   cashFormSchema,
   emptyCashForm,
+  toCashForm,
   CASH_FORM_FIELDS,
   CASH_KIND_OPTIONS,
   type CashFormValues,
@@ -123,19 +124,12 @@ watch(visible, (open) => {
   if (!open) return
   formError.value = null
 
+  // `toCashForm` is the INVERSE of the `toCashInput` the parent submits, and it has
+  // to be: the wire amount is signed, so seeding it verbatim hands `decimalField` a
+  // `-500` it rejects outright and makes every withdrawal un-editable. It also picks
+  // the offered kind by sign for an imported internal kind. See forms/cash.ts.
   resetForm({
-    values: props.cashTransaction
-      ? {
-          // A row written by the IMPORTER may carry one of the four internal kinds
-          // this form does not offer. Fall back to the nearest external kind rather
-          // than seeding an out-of-range SelectButton value, and let the server stay
-          // authoritative about what an edit may change.
-          kind: props.cashTransaction.kind === 'withdrawal' ? 'withdrawal' : 'deposit',
-          amount: props.cashTransaction.amount,
-          occurred_on: props.cashTransaction.occurred_on,
-          notes: props.cashTransaction.notes,
-        }
-      : emptyCashForm(todayIso()),
+    values: props.cashTransaction ? toCashForm(props.cashTransaction) : emptyCashForm(todayIso()),
   })
 })
 
@@ -161,10 +155,22 @@ defineExpose({ applyServerError })
 </script>
 
 <template>
+  <!--
+    `:aria-label="title"` is LOAD-BEARING, and it is the same class of gap as #69/#70.
+    PrimeVue 4's unstyled Drawer puts `role="dialog"` on its root and renders the
+    header as a plain `<div>` with NO id and NO `aria-labelledby` — so the drawer has
+    no accessible name at all, and a `<Dialog>` (which does wire one) behaves
+    differently from a `<Drawer>`. That matters beyond announcement: this page mounts
+    TWO drawers (trades and cash), and without a name the only way to address either
+    is an unnamed `getByRole('dialog')`, which silently means "whichever one is open"
+    and becomes a strict-mode violation the moment both are. `$attrs` reaches the root
+    through `ptmi('root')`, so one attribute fixes both problems.
+  -->
   <Drawer
     v-model:visible="visible"
     position="right"
     :header="title"
+    :aria-label="title"
     :dismissable-mask="!props.busy"
     :closable="!props.busy"
     :pt="drawerPt"

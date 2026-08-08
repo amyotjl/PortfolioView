@@ -67,6 +67,27 @@ function chartCard(scope, page, heading) {
 }
 
 /**
+ * The dashboard's Cash tile as a number.
+ *
+ * A DELTA is asserted rather than an absolute figure: on the cash basis a buy moves
+ * cash too, so the balance here also depends on the two trades this file happens to
+ * seed. Pinning "$7,500.00" would make an unrelated change to a seeded price look
+ * like a cash bug (measured: the real figure is $4,400.00 — 10,000 deposited, 2,500
+ * withdrawn, 3,100 spent on shares).
+ */
+async function cashTileAmount(page) {
+  const tile = page
+    .getByRole('region', { name: 'Lifetime performance' })
+    .locator('div')
+    .filter({ has: page.getByText('Cash', { exact: true }) })
+    .last()
+  const text = await tile.innerText()
+  const match = text.match(/-?\$[\d,]+\.\d{2}/)
+  expect(match, `the Cash tile should show a currency figure, got: ${text}`).not.toBeNull()
+  return Number(match[0].replace(/[$,]/g, ''))
+}
+
+/**
  * Assert a named card's canvas is painted, scoped to the card rather than to a
  * global nth() index — adding a chart to the dashboard must not silently shift
  * which chart another assertion was checking.
@@ -154,7 +175,12 @@ test.describe('smoke: register -> portfolio -> transaction -> dashboard', () => 
     await expect(page.getByRole('heading', { name: 'Transactions', level: 1 })).toBeVisible()
 
     await page.getByRole('button', { name: 'Add transaction' }).first().click()
-    const drawer = page.getByRole('dialog')
+    // BY NAME, not a bare `getByRole('dialog')`: since #80 this page mounts two
+    // drawers (trades and cash), so an unnamed locator means "whichever one is
+    // rendered". PrimeVue 4's unstyled Drawer wires no accessible name of its own —
+    // the drawers pass `:aria-label="title"` for exactly this reason (see
+    // select-a11y.spec.js's `dialogNamed`).
+    const drawer = page.getByRole('dialog', { name: 'Add transaction', exact: true })
     await expect(drawer).toBeVisible()
 
     // forceSelection means the value must come from the directory list, so the
@@ -301,9 +327,13 @@ test.describe('smoke: register -> portfolio -> transaction -> dashboard', () => 
       amount: '10000.00',
       occurred_on: '2026-04-01',
     })
-    // A movement's amount crosses the wire UNSIGNED (kind carries the direction) while
-    // the aggregate balance is signed — the contract's one sign rule, both halves.
-    expect(deposit.cash_transaction.amount).toBe('10000.00')
+    // EVERY money figure on the wire is signed, movements included: a deposit is
+    // positive and a withdrawal negative. Compared NUMERICALLY on purpose — money
+    // strings are `BigDecimal#to_s("F")` and drop trailing zeros, so the API returns
+    // `'10000.0'`, not `'10000.00'`. An earlier version of this line hardcoded the
+    // padded form and failed against a correct serializer. The padded, user-visible
+    // form is asserted where a reader actually sees it, in section 9 below.
+    expect(Number(deposit.cash_transaction.amount)).toBe(10000)
     expect(deposit.meta.cash_balance, 'the response should carry the new balance').toBeTruthy()
     expect(deposit.meta.cash_negative).toBe(false)
 
@@ -352,15 +382,73 @@ test.describe('smoke: register -> portfolio -> transaction -> dashboard', () => 
     // less than /summary's current_value by exactly the cash balance.
     await expect(page.getByText(/Allocation covers your holdings only/)).toBeVisible()
 
+    // Read before the withdrawal below, so the balance can be asserted as a movement.
+    const cashBefore = await cashTileAmount(page)
+
     // --- 9. The cash ledger is on the Transactions page --------------------
     await page.goto(`/portfolios/${portfolio.id}/transactions`)
     const cashSection = page.getByRole('region', { name: 'Cash', exact: true })
     await expect(cashSection).toBeVisible()
     await expect(cashSection.getByRole('cell', { name: 'Deposit', exact: true })).toBeVisible()
+    // The RENDERED, padded figure — the one a reader sees, and the reason the wire
+    // assertion above does not need to care about trailing zeros.
     await expect(cashSection.getByRole('cell', { name: '+$10,000.00' })).toBeVisible()
     // Trades keep their own section and their own pagination — two lists, not one
     // merged ledger whose page 1 would not be the 50 most recent events.
     await expect(page.getByRole('region', { name: 'Trades', exact: true })).toBeVisible()
+
+    // --- 9b. A WITHDRAWAL, recorded through the drawer ----------------------
+    // THE PATH THE SUITE WAS MISSING, and the whole reason it is here. Every backend
+    // test posts an already-signed body and this file only ever posted a DEPOSIT, so
+    // nothing exercised `toCashInput`, whose job is to turn the form's unsigned
+    // magnitude into the negative figure a withdrawal has to be. It didn't, and the
+    // real drawer 422'd on `amount` while 1,434 tests stayed green. Clicking it is the
+    // only assertion that covers the composed path, and it costs no registrations.
+    const cashDrawer = page.getByRole('dialog', { name: 'Add cash movement', exact: true })
+    await cashSection.getByRole('button', { name: 'Add cash movement' }).first().click()
+    await expect(cashDrawer).toBeVisible()
+
+    await cashDrawer.getByRole('button', { name: 'Withdrawal', exact: true }).click()
+    await cashDrawer.getByRole('textbox', { name: 'Amount', exact: true }).fill('2500.00')
+    // Inside the cached price window, like every other date in this file.
+    await cashDrawer.getByRole('combobox', { name: 'Date', exact: true }).fill('2026-04-15')
+    await cashDrawer.getByRole('button', { name: 'Add cash movement', exact: true }).click()
+
+    // The drawer closes ONLY on success, so this is a 201 by construction — and the
+    // response listener at the top of this test fails the run on any 4xx besides the
+    // signed-out /session probe, which pins the 422 specifically.
+    await expect(cashDrawer).toBeHidden()
+    await expect(cashSection.getByRole('cell', { name: '-$2,500.00' })).toBeVisible()
+    await expect(cashSection.getByRole('cell', { name: 'Withdrawal', exact: true })).toBeVisible()
+
+    // The balance moved the RIGHT WAY and by the right amount: exactly $2,500 lower
+    // than before. Scoped to the Cash tile, because net deposits changes by the same
+    // amount and a region-wide text query would pass without ever looking at cash.
+    await page.goto(`/portfolios/${portfolio.id}`)
+    await expect(page.getByRole('heading', { name: 'Dashboard', level: 1 })).toBeVisible()
+    const cashAfter = await cashTileAmount(page)
+    expect(
+      Number((cashBefore - cashAfter).toFixed(2)),
+      `cash should fall by 2500: ${cashBefore} -> ${cashAfter}`,
+    ).toBe(2500)
+
+    // And the round trip is editable: the edit drawer is seeded with the MAGNITUDE,
+    // because the shared decimal validator rejects the signed figure the API returns.
+    await page.goto(`/portfolios/${portfolio.id}/transactions`)
+    await cashSection
+      .getByRole('button', { name: /Edit withdrawal/ })
+      .first()
+      .click()
+    const editDrawer = page.getByRole('dialog', { name: 'Edit cash movement', exact: true })
+    await expect(editDrawer).toBeVisible()
+    await expect(editDrawer.getByRole('textbox', { name: 'Amount', exact: true })).toHaveValue(
+      '2500.00',
+    )
+    // Saving it unchanged must be a no-op that still validates — not a 422, and not a
+    // sign flip. Re-signing on submit is what makes that true.
+    await editDrawer.getByRole('button', { name: 'Save changes', exact: true }).click()
+    await expect(editDrawer).toBeHidden()
+    await expect(cashSection.getByRole('cell', { name: '-$2,500.00' })).toBeVisible()
 
     // --- 10. No unexpected API failures or uncaught errors -----------------
     expect(failures, `unexpected failures during the journey:\n${failures.join('\n')}`).toEqual([])

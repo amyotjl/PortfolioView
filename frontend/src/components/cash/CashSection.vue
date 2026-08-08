@@ -14,7 +14,7 @@ import {
   useDeleteCashTransaction,
 } from '@/composables/useCashTransactions'
 import { useSummaryQuery } from '@/composables/useSummary'
-import { cashKindLabel, negativeCashNotice } from '@/lib/cash'
+import { cashKindLabel, cashMagnitude, negativeCashNotice } from '@/lib/cash'
 import { toCashInput, type CashFormValues } from '@/forms/cash'
 import { mapApiError } from '@/lib/formErrors'
 import { formatCurrency } from '@/lib/format'
@@ -128,7 +128,9 @@ function askDelete(cashTransaction: CashTransaction): void {
 const deleteMessage = computed(() => {
   const target = deletingCash.value
   if (!target) return ''
-  return `Delete the ${cashKindLabel(target.kind).toLowerCase()} of ${formatCurrency(target.amount)} on ${target.occurred_on}? This can’t be undone.`
+  // The MAGNITUDE: the wire amount is signed, and "the withdrawal of -$2,500.00"
+  // double-states a direction the kind name already carries.
+  return `Delete the ${cashKindLabel(target.kind).toLowerCase()} of ${formatCurrency(cashMagnitude(target.amount))} on ${target.occurred_on}? This can’t be undone.`
 })
 
 async function confirmDelete(): Promise<void> {

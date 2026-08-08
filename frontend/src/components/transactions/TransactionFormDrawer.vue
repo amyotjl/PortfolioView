@@ -276,10 +276,19 @@ function onSymbolSelect(event: { value: InstrumentSearchResult }): void {
 </script>
 
 <template>
+  <!--
+    `:aria-label="title"` names the dialog. PrimeVue 4's unstyled Drawer sets
+    `role="dialog"` but renders its header as a plain `<div>` with no id and wires no
+    `aria-labelledby`, so this drawer had NO accessible name — and since #80 the
+    Transactions page mounts a second drawer (cash), which makes an unnamed
+    `getByRole('dialog')` mean "whichever one happens to be open". See the fuller note
+    in CashFormDrawer.vue.
+  -->
   <Drawer
     v-model:visible="visible"
     position="right"
     :header="title"
+    :aria-label="title"
     :dismissable-mask="!props.busy"
     :closable="!props.busy"
     :pt="drawerPt"

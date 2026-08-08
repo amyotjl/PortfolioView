@@ -78,9 +78,13 @@ export async function createTransaction(page, portfolioId, transaction) {
 /**
  * Record a cash movement (#80).
  *
- * `amount` is an UNSIGNED magnitude; `kind` carries the direction. The response's
- * `meta` carries the post-write balance, which is what a caller asserts on rather
- * than recomputing it.
+ * `amount` IS SIGNED — positive for a deposit, negative for a withdrawal. An
+ * unsigned figure is a 422 on `amount`; the server refuses to guess a direction
+ * from `kind` because `tax`/`fee` are genuinely ± under one kind name. The SPA's
+ * form is unsigned and converts in `frontend/src/forms/cash.ts`.
+ *
+ * The response's `meta` carries the post-write balance, which is what a caller
+ * asserts on rather than recomputing it.
  */
 export async function createCashTransaction(page, portfolioId, cashTransaction) {
   const body = await mutate(

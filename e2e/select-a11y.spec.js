@@ -51,9 +51,36 @@ const INVEST_BY_LABEL = 'Invest by'
 /** #80: the cash drawer's Deposit/Withdrawal SelectButton — the same trap, third time. */
 const CASH_TYPE_LABEL = 'Type'
 
+/**
+ * Every dialog on the pages this spec drives, by the accessible name it must expose.
+ * A `Drawer` only has one because the call site passes `:aria-label`; a `Dialog`
+ * derives it from its header. See `dialogNamed`.
+ */
+const PORTFOLIO_DIALOG = 'New portfolio'
+const TRADE_DRAWER = 'Add transaction'
+const CASH_DRAWER = 'Add cash movement'
+const RECURRING_DRAWER = 'New recurring buy'
+
 /** #70: the Ticker AutoComplete's hint, which must be ANNOUNCED, not just shown. */
 const TICKER_HINT = 'Search the local directory — no API quota is used.'
 const TICKER_ERROR = 'Pick a ticker from the list'
+
+/**
+ * EVERY DIALOG IS ADDRESSED BY ITS ACCESSIBLE NAME, never by a bare
+ * `getByRole('dialog')`.
+ *
+ * The Transactions page mounts TWO drawers since #80 (trades and cash). PrimeVue 4's
+ * unstyled `Drawer` puts `role="dialog"` on its root but — unlike `Dialog`, which
+ * derives `aria-labelledby` from its header's id — wires NO accessible name at all,
+ * so an unnamed locator means "whichever drawer happens to be rendered" and cannot
+ * tell the two apart. The drawers now pass `:aria-label="title"` (which reaches the
+ * root through `ptmi('root')`): that is both the a11y fix and what makes these
+ * locators unambiguous. A named locator also fails legibly — "0 dialogs named Add
+ * transaction" rather than a strict-mode violation.
+ */
+function dialogNamed(scope, name) {
+  return scope.getByRole('dialog', { name, exact: true })
+}
 
 /** Accessible-name lookup, always exact — see the note above. */
 function comboboxNamed(scope, name) {
@@ -88,7 +115,8 @@ test.describe('a11y: Selects are named by their field label (#65)', () => {
 
     // --- 1. Benchmark (PortfolioFormDialog, pre-dates M7) -------------------
     await page.getByRole('button', { name: 'New portfolio' }).first().click()
-    const dialog = page.getByRole('dialog')
+    // A `Dialog`, so PrimeVue names it from its header on its own.
+    const dialog = dialogNamed(page, PORTFOLIO_DIALOG)
     await expect(dialog).toBeVisible()
 
     const benchmark = comboboxNamed(dialog, BENCHMARK_LABEL)
@@ -127,7 +155,9 @@ test.describe('a11y: Selects are named by their field label (#65)', () => {
     await expect(page.getByRole('heading', { name: 'Transactions', level: 1 })).toBeVisible()
 
     await page.getByRole('button', { name: 'Add transaction' }).first().click()
-    const drawer = page.getByRole('dialog')
+    // Named, not bare: this page carries the cash drawer too (see dialogNamed).
+    const drawer = dialogNamed(page, TRADE_DRAWER)
+    await expect(drawer, 'the trade drawer must be nameable, not just present').toHaveCount(1)
     await expect(drawer).toBeVisible()
 
     const kind = comboboxNamed(drawer, KIND_LABEL)
@@ -202,14 +232,19 @@ test.describe('a11y: Selects are named by their field label (#65)', () => {
     // an aria-labelledby. Revert that derivation and this assertion resolves 0 — the
     // non-vacuity probe the merge gate runs.
     //
-    // The transaction drawer is closed first: two open drawers would make
-    // `getByRole('dialog')` ambiguous.
+    // The transaction drawer is closed first because its mask covers the page, not
+    // because the locators need it: both drawers are addressed by name, so which one
+    // an assertion means is never in doubt.
     await drawer.getByRole('button', { name: 'Cancel', exact: true }).click()
     await expect(drawer).toBeHidden()
 
     await page.getByRole('button', { name: 'Add cash movement' }).first().click()
-    const cashDrawer = page.getByRole('dialog')
+    const cashDrawer = dialogNamed(page, CASH_DRAWER)
+    await expect(cashDrawer, 'the cash drawer must be nameable, not just present').toHaveCount(1)
     await expect(cashDrawer).toBeVisible()
+    // And the two names must be DISTINCT — the trade drawer is gone, not merely
+    // behind this one. An unnamed `getByRole('dialog')` cannot state that at all.
+    await expect(dialogNamed(page, TRADE_DRAWER)).toHaveCount(0)
 
     const cashType = groupNamed(cashDrawer, CASH_TYPE_LABEL)
     await expect(cashType, 'the cash Type SelectButton should be named by its label').toHaveCount(1)
@@ -254,7 +289,7 @@ test.describe('a11y: Selects are named by their field label (#65)', () => {
     await expect(page.getByRole('heading', { name: 'Recurring buys', level: 1 })).toBeVisible()
 
     await page.getByRole('button', { name: 'New recurring buy' }).first().click()
-    const recurringDrawer = page.getByRole('dialog')
+    const recurringDrawer = dialogNamed(page, RECURRING_DRAWER)
     await expect(recurringDrawer).toBeVisible()
 
     const frequency = comboboxNamed(recurringDrawer, FREQUENCY_LABEL)

@@ -58,7 +58,16 @@ const asOfLabel = computed(() =>
       <p v-if="asOfLabel" class="text-xs text-ink-subtle">{{ asOfLabel }}</p>
     </div>
 
-    <p v-if="scopeNotice" class="max-w-3xl text-xs text-ink-subtle">{{ scopeNotice }}</p>
+    <!--
+      `text-ink-muted`, not `text-ink-subtle`. Measured on the rendered page: subtle is
+      #858d9c on #f4f6f9 = 3.12:1 light and #697386 on #0a0c11 = 4.10:1 dark, and at
+      12px/400 this is normal text, so both fail AA's 4.5:1 (the large-text exception
+      needs 18.66px at 600). Muted measures 5.81:1 and 7.62:1. This sentence is the one
+      that explains why two totals on the same screen disagree — it is the last thing
+      that should be hard to read. (The `asOfLabel` above keeps subtle: it is a
+      redundant timestamp, not load-bearing prose, and changing it is not this issue.)
+    -->
+    <p v-if="scopeNotice" class="max-w-3xl text-xs text-ink-muted">{{ scopeNotice }}</p>
 
     <div v-if="status === 'pending'" class="grid gap-4 md:grid-cols-2">
       <div

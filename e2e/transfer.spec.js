@@ -235,8 +235,29 @@ test.describe('export / import portfolios', () => {
     // including that a DERIVED ratio is an inference, and that it is global.
     await expect(dialog.getByText(`${ledgerTicker}.TO`, { exact: false }).first()).toBeVisible()
     await expect(dialog.getByText(/3.0:1 split/)).toBeVisible()
-    await expect(dialog.getByText(/not a cash balance/)).toBeVisible()
-    await expect(dialog.getByText(/understates return/)).toBeVisible()
+    // WHAT HAPPENED TO THE CASH, in the parser's current words. The deposit and the
+    // dividend are ingested into the cash ledger (#80), so the warning is a POSITIVE
+    // statement of where they went and what that means for contributed capital.
+    //
+    // This assertion used to claim the opposite — "not a cash balance" and
+    // "understates return" — which were true only while there was nowhere to put the
+    // cash. `activities_csv_parser_test.rb` and `portfolio_transfers_controller_test.rb`
+    // now `assert_no_match` those exact strings, so leaving them here had two suites
+    // contradicting each other about the same sentence.
+    await expect(
+      dialog.getByText(
+        /1 cash movement totalling 5,000\.00 and 1 dividend payment totalling 12\.50 are recorded/,
+      ),
+    ).toBeVisible()
+    // `’` is the typographic apostrophe the parser emits in "portfolio’s".
+    await expect(dialog.getByText(/recorded in the portfolio’s cash ledger/)).toBeVisible()
+    await expect(dialog.getByText(/not counted as a new contribution/)).toBeVisible()
+    // The stale caveats must be GONE, not merely unasserted — the same check the two
+    // Rails suites make.
+    await expect(dialog.getByText(/not a cash balance|understates return/)).toHaveCount(0)
+    // Tense-neutral, because the identical strings serve a dry run where nothing has
+    // been written yet (a Rails test greps every dry-run warning for this).
+    await expect(dialog.getByText(/were imported|was imported/)).toHaveCount(0)
 
     await shoot(page, 'import-activities-light')
     await dialog.getByRole('button', { name: 'Done' }).click()

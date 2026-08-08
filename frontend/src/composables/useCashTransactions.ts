@@ -38,7 +38,12 @@ export function cashKey(portfolioId: number, page: number): [string, number, num
 export interface CashInput {
   /** `deposit` | `withdrawal` from the drawer; the importer writes four more. */
   kind: string
-  /** UNSIGNED magnitude; `kind` carries the direction. */
+  /**
+   * SIGNED, always — positive for a `deposit`, negative for a `withdrawal`. An
+   * unsigned body is a 422 on `amount`. The drawer's form is unsigned and
+   * `forms/cash.ts`'s `toCashInput` applies the sign; nothing should build this
+   * object by hand from form values.
+   */
   amount: string
   occurred_on: string
   notes: string | null

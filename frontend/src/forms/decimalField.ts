@@ -20,10 +20,12 @@ import { z } from 'zod'
  * message string), because `transaction.spec.ts` asserts those messages and
  * `recurring.spec.ts` asserts the same ones through the old duplicate.
  *
- * Sign is deliberately not modelled: the regex rejects a leading `+`/`-`
- * outright, which is also why the cash API emits a movement's `amount` as an
- * unsigned magnitude — an edit form repopulating from a signed GET would hand
- * `-500` straight to this validator.
+ * Sign is deliberately not modelled: the regex rejects a leading `+`/`-` outright.
+ * That is a statement about FORMS, not about the wire — cash amounts cross the wire
+ * SIGNED (docs/API_SHAPES.md), so a form that repopulates from a GET must strip the
+ * sign before it gets here or every withdrawal becomes un-editable with "Amount must
+ * be a number" on a figure the server itself sent. `forms/cash.ts` owns that
+ * conversion in both directions; do not relax this regex to paper over a caller.
  */
 
 /** Plain decimal, no exponent/sign tricks: `12`, `12.5`, `.5`, `0.00000001`. */

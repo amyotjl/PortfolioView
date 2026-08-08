@@ -2,7 +2,7 @@
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
 import Button from 'primevue/button'
-import { cashKindLabel, signedCashAmount } from '@/lib/cash'
+import { cashKindLabel, cashMagnitude, signedCashAmount } from '@/lib/cash'
 import { formatCurrency, formatDate } from '@/lib/format'
 import { buttonPt, dataTablePt } from '@/primevue/pt'
 import type { CashTransaction } from '@/types'
@@ -14,10 +14,11 @@ import type { CashTransaction } from '@/types'
  * Decimal strings are rendered through the decimal-safe formatters; nothing here
  * converts them to numbers.
  *
- * The wire sends a movement's `amount` as an UNSIGNED magnitude with `kind`
- * carrying the direction, so the Type column and the Amount column are two halves
- * of one fact and both are always shown. The sign shown in Amount comes from
- * `signedCashAmount`, which never invents one for a bidirectional kind (`tax`,
+ * The wire sends a movement's `amount` SIGNED (`deposit` positive, `withdrawal`
+ * negative, an internal kind either way — docs/API_SHAPES.md), so the Type column
+ * and the Amount column are two halves of one fact and both are always shown. The
+ * sign shown in Amount comes from `signedCashAmount`, which uses the string's own
+ * sign when there is one and never invents one for a bidirectional kind (`tax`,
  * `fee`) — see lib/cash.ts.
  *
  * Amount is NOT colored by sign. up/down are reserved app-wide for real gain/loss
@@ -40,12 +41,13 @@ const NUMERIC_HEADER =
 
 /**
  * Row-naming action labels, e.g. `Delete deposit of $5,000.00 on 2026-08-03`. The
- * magnitude is unsigned here and the date is the raw ISO string, matching
+ * MAGNITUDE (the wire figure is signed) and the raw ISO date, matching
  * TransactionsTable's labels — a screen-reader user needs the row identified, not
- * the arithmetic restated.
+ * the arithmetic restated, and "delete withdrawal of -$2,500.00" states a direction
+ * the kind name already carries.
  */
 function actionLabel(verb: string, row: CashTransaction): string {
-  return `${verb} ${cashKindLabel(row.kind).toLowerCase()} of ${formatCurrency(row.amount)} on ${row.occurred_on}`
+  return `${verb} ${cashKindLabel(row.kind).toLowerCase()} of ${formatCurrency(cashMagnitude(row.amount))} on ${row.occurred_on}`
 }
 </script>
 

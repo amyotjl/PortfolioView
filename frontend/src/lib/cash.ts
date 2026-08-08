@@ -65,14 +65,32 @@ export function isKnownCashKind(kind: string): boolean {
 }
 
 /**
+ * The unsigned magnitude of a wire amount, as a 2dp decimal string.
+ *
+ * The wire is SIGNED in both directions (docs/API_SHAPES.md), so anything that
+ * wants to say "how much moved" — the edit form, a confirmation sentence — has to
+ * drop the sign. Exact integer cents, never `parseFloat`; an unparseable figure
+ * comes back with only its sign character removed, so it still renders as itself
+ * rather than as `NaN`.
+ */
+export function cashMagnitude(amount: string): string {
+  const cents = toCents(amount)
+  if (cents === null) return amount.trim().replace(/^[+-]/, '')
+  return centsToDecimalString(Math.abs(cents))
+}
+
+/**
  * Ledger display for one movement: the magnitude, signed by DIRECTION.
  *
- * The wire sends a movement's `amount` as an unsigned magnitude with `kind`
- * carrying the direction, so a table has to reunite them. Three cases, and none of
+ * A movement's `amount` arrives signed, so the sign in the string is normally the
+ * one to use. The unsigned branches still matter: the drawer and
+ * `withdrawalProjectionNotice` speak in magnitudes, and an internal kind's sign is
+ * the broker's rather than something a label can imply. Three cases, and none of
  * them can double-sign:
  *
- *  - the string already carries a sign (an internal kind may: a dividend reversal,
- *    a fee reimbursement) -> use it verbatim;
+ *  - the string already carries a sign (every `withdrawal` does, and an internal
+ *    kind may be either way: a dividend reversal, a fee reimbursement) -> use it
+ *    verbatim;
  *  - an unambiguous direction (`deposit`/`interest`/`dividend_cash` in,
  *    `withdrawal` out) -> apply it;
  *  - `tax` / `fee` / an unknown kind with no sign in the string -> NO invented
@@ -190,6 +208,17 @@ export function withdrawalProjectionNotice(options: {
  * divergence to disclose. (That is a statement about this caption only. The Cash
  * stat TILE must still render at `'0.00'`: the tile reports a tracked balance,
  * this sentence explains a discrepancy that does not exist.)
+ *
+ * NEGATIVE CASH GETS ITS OWN SENTENCE, AND NO PERCENTAGE. With cash below zero the
+ * positive wording degenerates into nonsense that was measured on screen:
+ * "$65,799.30 of $24,807.40 total. The remaining -$40,991.90 is cash (-165.24%)" —
+ * holdings exceeding the total, a "remainder" that is negative, and a share of a
+ * whole that is smaller than its part. A negative component has no share of a total
+ * to report (the ratio is unbounded and flips sign with the denominator), so the
+ * negative branch states the scope relationship in the only terms that stay true:
+ * holdings are what is charted, and cash is what brings the portfolio total down
+ * below them. It does NOT re-explain the cause — `negativeCashNotice` sits directly
+ * above it and owns that — and it stays tense-neutral like everything else here.
  */
 export function allocationScopeNotice(options: {
   holdingsValue: string | null | undefined
@@ -209,6 +238,13 @@ export function allocationScopeNotice(options: {
   const holdingsShown = formatCurrency(centsToDecimalString(holdingsCents))
   const totalShown = formatCurrency(centsToDecimalString(totalCents))
   const cashShown = formatCurrency(centsToDecimalString(cashCents))
+
+  if (cashCents < 0) {
+    return (
+      `Allocation covers your holdings only — ${holdingsShown}. Cash of ${cashShown} sits ` +
+      `outside it and brings this portfolio’s total down to ${totalShown}.`
+    )
+  }
 
   const scope = `Allocation covers your holdings only — ${holdingsShown} of ${totalShown} total.`
   if (totalCents === 0) {

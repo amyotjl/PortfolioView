@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { cashFormSchema, emptyCashForm, toCashInput, type CashFormValues } from './cash'
+import {
+  cashFormSchema,
+  emptyCashForm,
+  toCashForm,
+  toCashInput,
+  type CashFormValues,
+} from './cash'
+import { toCents } from '@/lib/money'
+import type { CashTransaction } from '@/types'
 
 function valid(overrides: Partial<Record<keyof CashFormValues, unknown>> = {}) {
   return {
@@ -57,9 +65,10 @@ describe('cashFormSchema', () => {
       expect(errorFor(valid({ amount: '0.00' }), 'amount')).toContain('greater than zero')
     })
 
-    it('rejects a SIGNED amount: direction is carried by kind, not by the number', () => {
-      // Also the reason the API emits a movement's amount unsigned — an edit form
-      // repopulating from a signed GET would hit exactly this rejection.
+    it('rejects a SIGNED amount: the FORM is unsigned, the WIRE is signed', () => {
+      // Which is exactly why the conversion below has to exist in both directions:
+      // the wire amount IS signed, so an edit form seeded with it verbatim hits this
+      // rejection and no withdrawal can be edited at all.
       expect(errorFor(valid({ amount: '-500.00' }), 'amount')).toBeDefined()
       expect(errorFor(valid({ amount: '+500.00' }), 'amount')).toBeDefined()
     })
@@ -116,13 +125,123 @@ describe('emptyCashForm', () => {
   })
 })
 
+/**
+ * THE SIGN BOUNDARY, in both directions — the gap that made a withdrawal
+ * unrecordable from the UI (a 422 on `amount`) while 1,434 tests stayed green,
+ * because every backend test posted an already-signed body and e2e only ever posted
+ * a deposit. Neither of those exercises `toCashInput`, which is the function the
+ * drawer actually calls.
+ */
 describe('toCashInput', () => {
-  it('passes the amount through untouched', () => {
-    expect(toCashInput(cashFormSchema.parse(valid({ amount: '5.10' })))).toEqual({
-      kind: 'deposit',
-      amount: '5.10',
+  it('applies the sign the wire requires, for BOTH kinds', () => {
+    expect(toCashInput(cashFormSchema.parse(valid({ kind: 'deposit', amount: '1500.00' })))).toEqual(
+      {
+        kind: 'deposit',
+        amount: '1500.00',
+        occurred_on: '2026-08-03',
+        notes: null,
+      },
+    )
+    expect(
+      toCashInput(cashFormSchema.parse(valid({ kind: 'withdrawal', amount: '1500.00' }))),
+    ).toEqual({
+      kind: 'withdrawal',
+      // NEGATIVE. `{"kind":"withdrawal","amount":"1500.00"}` is a 422 on `amount`:
+      // the model requires a withdrawal to be negative and refuses to guess.
+      amount: '-1500.00',
       occurred_on: '2026-08-03',
       notes: null,
     })
+  })
+
+  it('keeps every cent exactly, in integer cents rather than a float', () => {
+    // 0.29 has no exact binary representation; a parseFloat/negate implementation
+    // emits -0.28999999999999998 for one of these and numeric(12,2) would round the
+    // cent away silently.
+    expect(toCashInput(cashFormSchema.parse(valid({ kind: 'withdrawal', amount: '0.29' }))).amount).toBe(
+      '-0.29',
+    )
+    expect(toCashInput(cashFormSchema.parse(valid({ amount: '5.10' }))).amount).toBe('5.10')
+    // A magnitude typed without cents still reaches the API as a decimal.
+    expect(toCashInput(cashFormSchema.parse(valid({ amount: '1000' }))).amount).toBe('1000.00')
+  })
+
+  it('carries kind, date and notes through unchanged', () => {
+    expect(
+      toCashInput(
+        cashFormSchema.parse(
+          valid({ kind: 'withdrawal', occurred_on: '2026-08-01', notes: '  rent  ' }),
+        ),
+      ),
+    ).toMatchObject({ kind: 'withdrawal', occurred_on: '2026-08-01', notes: 'rent' })
+  })
+})
+
+describe('toCashForm', () => {
+  /** A server row, signed exactly as `/cash_transactions` emits one. */
+  function row(overrides: Partial<CashTransaction> = {}): CashTransaction {
+    return {
+      id: 7,
+      portfolio_id: 3,
+      kind: 'withdrawal',
+      // Unpadded on purpose: money strings are BigDecimal#to_s("F") and drop
+      // trailing zeros, so this is the real shape, not '-1500.00'.
+      amount: '-1500.0',
+      occurred_on: '2026-08-03',
+      notes: null,
+      created_at: '2026-08-03T12:00:00Z',
+      updated_at: '2026-08-03T12:00:00Z',
+      ...overrides,
+    }
+  }
+
+  it('seeds the form with the MAGNITUDE, so the edit drawer validates', () => {
+    const seeded = toCashForm(row())
+    expect(seeded.kind).toBe('withdrawal')
+    expect(seeded.amount).toBe('1500.00')
+    // The point of the whole function: the signed figure the server sent would be
+    // rejected by the form's own schema.
+    expect(cashFormSchema.safeParse(seeded).success).toBe(true)
+    expect(cashFormSchema.safeParse({ ...seeded, amount: row().amount }).success).toBe(false)
+  })
+
+  it('leaves a deposit positive and passes date and notes through', () => {
+    expect(toCashForm(row({ kind: 'deposit', amount: '10000.0', notes: 'paycheque' }))).toEqual({
+      kind: 'deposit',
+      amount: '10000.00',
+      occurred_on: '2026-08-03',
+      notes: 'paycheque',
+    })
+  })
+
+  it('maps an imported internal kind to the offered kind that MATCHES THE SIGN', () => {
+    // The drawer offers deposit/withdrawal only, so an imported `fee`/`tax`/
+    // `dividend_cash` row has to be shown as one of them. Choosing by sign keeps the
+    // direction of real money: seeding a -$12.50 fee as a `deposit` would flip it to
+    // +$12.50 the moment the user pressed Save.
+    expect(toCashForm(row({ kind: 'fee', amount: '-12.5' })).kind).toBe('withdrawal')
+    expect(toCashForm(row({ kind: 'tax', amount: '40.0' })).kind).toBe('deposit')
+    expect(toCashForm(row({ kind: 'dividend_cash', amount: '3.75' })).kind).toBe('deposit')
+    expect(toCashForm(row({ kind: 'rebate', amount: '-1.0' })).kind).toBe('withdrawal')
+  })
+
+  it('round-trips signed -> form -> signed as the IDENTITY, withdrawal included', () => {
+    // The composed edit path: GET a row, seed the drawer, press Save. If either half
+    // of the conversion is missing or double-applied, the amount that goes back is
+    // not the amount that came out.
+    for (const [kind, amount, expected] of [
+      ['withdrawal', '-1500.0', '-1500.00'],
+      ['withdrawal', '-0.29', '-0.29'],
+      ['deposit', '10000.0', '10000.00'],
+      ['deposit', '5.1', '5.10'],
+    ] as const) {
+      const seeded = cashFormSchema.parse(toCashForm(row({ kind, amount })))
+      const resubmitted = toCashInput(seeded)
+      expect(resubmitted.kind, amount).toBe(kind)
+      expect(resubmitted.amount, amount).toBe(expected)
+      // Identity in VALUE, not in text: '-1500.0' and '-1500.00' are the same money,
+      // and cents are the contract's smallest unit.
+      expect(toCents(resubmitted.amount), amount).toBe(toCents(amount))
+    }
   })
 })

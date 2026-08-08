@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   allocationScopeNotice,
   cashKindLabel,
+  cashMagnitude,
   isKnownCashKind,
   negativeCashNotice,
   projectedCashCents,
@@ -27,6 +28,30 @@ describe('cashKindLabel', () => {
     expect(cashKindLabel('')).toBe('')
     expect(isKnownCashKind('rebate')).toBe(false)
     expect(isKnownCashKind('dividend_cash')).toBe(true)
+  })
+})
+
+describe('cashMagnitude', () => {
+  it('strips the wire sign in exact cents', () => {
+    // The wire is signed in both directions, so "how much moved" always has to drop
+    // the sign — for the edit form and for any sentence the kind name already
+    // directs ("delete the withdrawal of $2,500.00").
+    expect(cashMagnitude('-2500.0')).toBe('2500.00')
+    expect(cashMagnitude('10000.0')).toBe('10000.00')
+    expect(cashMagnitude('+4.95')).toBe('4.95')
+    expect(cashMagnitude('-0.29')).toBe('0.29')
+  })
+
+  it('pads to cents, because the API drops trailing zeros', () => {
+    // BigDecimal#to_s("F") emits '0.0'/'5.1', not '0.00'/'5.10'.
+    expect(cashMagnitude('5.1')).toBe('5.10')
+    expect(cashMagnitude('0.0')).toBe('0.00')
+    expect(cashMagnitude('1000')).toBe('1000.00')
+  })
+
+  it('returns an unparseable figure as itself rather than NaN', () => {
+    expect(cashMagnitude('')).toBe('')
+    expect(cashMagnitude('-abc')).toBe('abc')
   })
 })
 
@@ -217,24 +242,72 @@ describe('allocationScopeNotice', () => {
     ).toBeNull()
   })
 
-  it('handles a negative balance, where allocation EXCEEDS total value', () => {
+  /**
+   * THE NEGATIVE BRANCH, which is the state the whole feature's headline warning is
+   * about — and the one the first version of this caption got incoherent. Measured on
+   * screen before the fix:
+   *
+   *   "Allocation covers your holdings only — $65,799.30 of $24,807.40 total.
+   *    The remaining -$40,991.90 is cash (-165.24%)."
+   *
+   * Three lies in one sentence: holdings are not a subset of a smaller total, a
+   * negative figure is not a "remainder", and a share of a whole smaller than its
+   * part is not a percentage of anything. So the negative branch gets its own
+   * wording and NO percentage at all.
+   */
+  it('states the scope truthfully when cash is negative, with no percentage', () => {
+    const message = allocationScopeNotice({
+      holdingsValue: '65799.30',
+      currentValue: '24807.40',
+      cashBalance: '-40991.90',
+    })
+    expect(message).toBe(
+      'Allocation covers your holdings only — $65,799.30. Cash of -$40,991.90 sits outside ' +
+        'it and brings this portfolio’s total down to $24,807.40.',
+    )
+    // No percentage, because there is no share to state.
+    expect(message).not.toContain('%')
+    // And no "remaining", which would claim holdings are part of a smaller total.
+    expect(message).not.toContain('remaining')
+  })
+
+  it('does not duplicate the negative-cash advisory sitting above it', () => {
+    // negativeCashNotice owns the CAUSE ("some deposits are not recorded yet") and the
+    // consequence for the return percentage. This caption states scope only — two
+    // notices saying the same thing is how a user learns to skip both.
     const message = allocationScopeNotice({
       holdingsValue: '12400.00',
       currentValue: '9160.00',
       cashBalance: '-3240.00',
     })
-    expect(message).toContain('$12,400.00 of $9,160.00 total')
+    expect(message).not.toMatch(/deposit|return|withdraw/i)
+    expect(message).toContain('$12,400.00')
     expect(message).toContain('-$3,240.00')
+    expect(message).toContain('$9,160.00')
+  })
+
+  it('is tense-neutral, like every other string in this module', () => {
+    // The same sentence has to read correctly as a statement of fact today and after a
+    // refetch tomorrow; a past tense would be wrong in one of them.
+    const message = allocationScopeNotice({
+      holdingsValue: '12400.00',
+      currentValue: '9160.00',
+      cashBalance: '-3240.00',
+    })
+    expect(message).not.toMatch(/\b(was|were|had|has been)\b/)
   })
 
   it('omits the share when the total is zero rather than emitting NaN%', () => {
+    // Defensive, and only reachable with a positive balance against a zero total (a
+    // negative balance takes the branch above). Kept because `cashCents / 0` is
+    // Infinity and would render as an Infinity%.
     const message = allocationScopeNotice({
-      holdingsValue: '0.00',
+      holdingsValue: '-500.00',
       currentValue: '0.00',
-      cashBalance: '-500.00',
+      cashBalance: '500.00',
     })
     expect(message).toBe(
-      'Allocation covers your holdings only — $0.00 of $0.00 total. The remaining -$500.00 is cash.',
+      'Allocation covers your holdings only — -$500.00 of $0.00 total. The remaining $500.00 is cash.',
     )
   })
 
