@@ -78,17 +78,86 @@ module Api
         assert_equal BigDecimal("-750.00"), @portfolio.cash_transactions.sole.amount
       end
 
-      # The whole reason the wire is signed rather than an unsigned magnitude:
-      # tax and fee are legally either sign under ONE kind name, so a refund is
-      # only expressible if the caller's sign survives.
-      test "a positive tax refund and a negative dividend reversal both survive the round trip" do
-        post_cash({ kind: "tax", amount: "42.75", occurred_on: MON.iso8601 })
-        assert_response :created
-        assert_equal "42.75", JSON.parse(response.body).dig("cash_transaction", "amount")
+      # --- The sign boundary: what the client must send -------------------------
 
-        post_cash({ kind: "dividend_cash", amount: "-12.34", occurred_on: TUE.iso8601 })
+      # THE BODY THE CASH DRAWER ACTUALLY POSTS, and the reason this test exists.
+      #
+      # An unsigned magnitude with kind: "withdrawal" is a CLIENT ERROR under the
+      # settled contract, and a 422 on `amount` is the CORRECT server behaviour —
+      # not a bug to be fixed here. The server takes `amount` with the sign it was
+      # given and derives nothing from `kind`, because `tax` and `fee` are legally
+      # either sign under one kind name (a withholding vs a refund, a charge vs a
+      # reimbursement), so a kind-derived sign loses information for four of the six
+      # kinds. Converting a form's unsigned magnitude into a signed amount is the
+      # FRONTEND's job, at `toCashInput` in frontend/src/lib/cash.ts.
+      #
+      # It exists because the merge gate on #80 found the drawer could not record a
+      # withdrawal at all — it posted exactly this body — while every controller
+      # test here posted the already-signed form. The assertions were right and the
+      # INPUTS were unrepresentative, so the suite was green against a request shape
+      # no real client ever sends. That is the vacuous-coverage failure mode this
+      # repo keeps getting bitten by; if the contract is ever revisited, this test
+      # is the one that must be consciously changed rather than quietly passing.
+      test "an UNSIGNED withdrawal magnitude — the body the drawer posts — is a 422 on amount, not a silent rewrite" do
+        post_cash({ kind: "withdrawal", amount: "1500.00", occurred_on: TUE.iso8601 })
+
+        assert_response :unprocessable_entity
+        details = JSON.parse(response.body).dig("error", "details")
+        assert details.key?("amount"), "the 422 must map onto the amount field the form can highlight"
+        assert_equal [ "must be negative for a withdrawal" ], details.fetch("amount")
+        assert_equal 0, @portfolio.cash_transactions.count, "and nothing is persisted"
+      end
+
+      # The mirror: the signed bodies the client is required to send. Both manual
+      # kinds, both directions, in one place, so the boundary reads as a pair.
+      test "the correctly SIGNED forms of both manual kinds are accepted" do
+        post_cash({ kind: "deposit", amount: "1500.00", occurred_on: MON.iso8601 })
         assert_response :created
-        assert_equal "-12.34", JSON.parse(response.body).dig("cash_transaction", "amount")
+        assert_equal BigDecimal("1500"), BigDecimal(JSON.parse(response.body).dig("cash_transaction", "amount"))
+
+        post_cash({ kind: "withdrawal", amount: "-1500.00", occurred_on: TUE.iso8601 })
+        assert_response :created
+        assert_equal BigDecimal("-1500"), BigDecimal(JSON.parse(response.body).dig("cash_transaction", "amount"))
+
+        assert_equal [ BigDecimal("-1500"), BigDecimal("1500") ],
+                     @portfolio.cash_transactions.order(:occurred_on).pluck(:amount).reverse
+      end
+
+      # THE PROPERTY THAT MAKES A KIND-DERIVED SIGN UNACCEPTABLE, pinned at the
+      # HTTP layer. Each of the four internal kinds is legally EITHER sign, and
+      # both directions must round-trip with the caller's sign intact:
+      #
+      #   interest      + paid on idle cash        - a reversal
+      #   dividend_cash + cash dividend received   - a reversal/clawback
+      #   tax           - withholding              + a refund
+      #   fee           - account fee              + a reimbursement
+      #
+      # Any "simplification" that derives the sign from `kind` — a NATURAL_SIGN
+      # map, a before_validation coercion, an `.abs` in the serializer — can
+      # satisfy at most one column of this table and must fail here.
+      test "all four internal kinds accept BOTH signs through the endpoint, sign intact" do
+        matrix = {
+          "interest" => %w[1.25 -1.25],
+          "dividend_cash" => %w[12.34 -12.34],
+          "tax" => %w[-3.50 42.75],
+          "fee" => %w[-4.95 4.95]
+        }
+
+        matrix.each do |kind, amounts|
+          amounts.each do |amount|
+            body = post_cash({ kind: kind, amount: amount, occurred_on: MON.iso8601 })
+
+            assert_response :created, "#{kind} #{amount} must be accepted: #{response.body}"
+            row = body.fetch("cash_transaction")
+            assert_equal kind, row.fetch("kind")
+            assert_equal BigDecimal(amount), BigDecimal(row.fetch("amount")),
+                         "#{kind} must echo #{amount} with its sign intact, not a kind-derived one"
+            assert_equal BigDecimal(amount), CashTransaction.find(row.fetch("id")).amount,
+                         "#{kind} must PERSIST #{amount} with its sign intact"
+          end
+        end
+
+        assert_equal 8, @portfolio.cash_transactions.count
       end
 
       test "create carries the balance meta so a toast can report it immediately" do

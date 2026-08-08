@@ -25,6 +25,10 @@ class PortfolioSummarySerializer
       benchmark_return_pct: pct(@summary.benchmark_return_pct),
       vs_benchmark_edge_pct: pct(@summary.vs_benchmark_edge_pct),
       max_drawdown_pct: pct(@summary.max_drawdown_pct),
+      # Both emitted with NO current frontend reader (the SPA derives negativity
+      # from cash_balance so the figure and the warning cannot disagree) — kept
+      # deliberately, not dead code. cash_negative_since is the only place the
+      # "negative since when" date exists at all; see Portfolios::CashLedger.
       cash_negative: @summary.cash_negative,
       cash_negative_since: @summary.cash_negative_since&.iso8601,
       as_of: @summary.as_of&.iso8601

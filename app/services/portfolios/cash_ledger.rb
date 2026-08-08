@@ -52,7 +52,21 @@ module Portfolios
     # external_by_date   { Date => [Row] } — deposits/withdrawals ONLY, by
     #                    effective trading day (the flow items /candles lists)
     # net_external_total signed sum of those rows == Sum(flows[].net) == net_deposits
-    # first_negative_on  first day the CENT-ROUNDED balance is < 0 (nil if never)
+    # first_negative_on  first day the CENT-ROUNDED balance is < 0 (nil if never).
+    #
+    #                    CONTRACT SURFACE WITH NO CURRENT READER — DO NOT DELETE
+    #                    AS DEAD CODE. It reaches the wire three times
+    #                    (summary.cash_negative_since, candles meta, and the
+    #                    cash-CRUD balance meta), but the SPA derives negativity
+    #                    from the balance string instead, deliberately: the figure
+    #                    and the sentence quoting it then come from one value and
+    #                    cannot disagree. That leaves this the ONLY place the
+    #                    "negative since WHEN" information exists anywhere in the
+    #                    system — the balance string cannot answer it, and no
+    #                    other field carries the date. Removing it would silently
+    #                    foreclose the follow-up that shows it (issue #80's gate
+    #                    filed one). `cash_negative` is likewise unread but is
+    #                    recomputable from the balance; this is not.
     # min_balance        running minimum: a portfolio can end positive having
     #                    been negative, and the warning is about the dip
     # unbucketed         a cash row the trading calendar cannot place yet, which
