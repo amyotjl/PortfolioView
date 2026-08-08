@@ -141,6 +141,26 @@ understated return, with the parser telling the user to hand-edit `kind`. Now th
 
 ### Still open
 
+- **B5 IS NOT FIXED. It is the one known blocker and the reason this branch has no PASS verdict.**
+  Instance (3) in the pattern above: opening an **imported** internal-kind row (`fee`, `tax`,
+  `interest`, `dividend_cash`) in the cash edit drawer and saving **without touching anything**
+  rewrites its `kind` to `withdrawal` — moving `net_deposits` and pointing the shadow ETF at a sell
+  that never happened. Measured: a `fee` of `-12.5` seeds as `"12.50"`, and an untouched save returns
+  `kind: withdrawal` with the sign correctly preserved. Manual deposits and withdrawals are
+  unaffected; only imported rows are reachable, which on the owner's real Wealthsimple ledger means
+  all four internal kinds.
+  **The fix, decided but not implemented:** carry the row's original `kind` in form state and submit
+  it unchanged unless the user explicitly changes it; and for an internal kind **do not render the
+  deposit/withdrawal SelectButton at all** — show the kind as a labelled read-only value. `formKindFor`
+  in `frontend/src/forms/cash.ts` is where the substitution happens. **Do not "fix" this by widening
+  the SelectButton to all six kinds** — the drawer deliberately offers only the two a user can
+  legitimately create, and offering `dividend_cash` as something to hand-enter invites the exact
+  miscategorisation the external/internal split exists to prevent. Keep `eca95cf`'s sign boundary
+  intact; the sign already round-trips correctly.
+  The test that would have caught it is an e2e untouched-save on an internal-kind row (zero extra
+  registrations — reuse the session). Also still missing: a **runtime** assertion that every
+  `CASH_KIND_OPTIONS` value has a `CASH_KIND_SIGN` entry.
+
 - `cash_negative_since` reaches the wire but has **no frontend consumer** — and it is the only place
   the "negative since when" date exists, since the balance string cannot answer it. Commented at its
   origin so nobody deletes it as dead code.
