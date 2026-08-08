@@ -110,6 +110,12 @@ understated return, with the parser telling the user to hand-edit `kind`. Now th
   of an already-edited file, so a visual check can certify code that is not on disk — this actually
   happened, measuring a pre-fix value *after* the fix. **`docker compose restart vite` before any
   browser measurement.**
+  **And the sharper form, which cost a wrong conclusion:** a **mutation probe** against an e2e spec
+  without restarting Vite reverts the source, re-runs, sees **green**, and looks exactly like proof
+  that the spec is vacuous — when the browser was simply still running the fixed code. It is the one
+  failure mode that makes a probe assert the *opposite* of the truth. `vite build` does **not** help;
+  e2e runs against the dev server. Restart Vite, then confirm the source really is mutated (`grep` it)
+  before believing either a red or a green.
 - **`text-lg` is not WCAG large text.** The bold threshold is 14pt = **18.66px** and `text-lg` is
   18px, so `text-warn` at 3.68:1 was a genuine AA failure, not a covered exception. Non-hero tile
   values are `text-xl`.
@@ -141,29 +147,32 @@ understated return, with the parser telling the user to hand-edit `kind`. Now th
 
 ### Still open
 
-- **B5 is FIXED in `26a222a` but that commit is UNVERIFIED — no gate has run against it.** The Docker
-  daemon went down partway through the work, so **Vitest, `vue-tsc` and the browser reproduction were
-  never run** on it, and CLAUDE.md forbids starting Docker Desktop unilaterally. **Run those three
-  first**; until then the branch's real state is "twelve verified commits plus one unverified fix".
+- **B5 is FIXED and VERIFIED** (`26a222a` + `1b43bc4`). Gates re-run on the assembled branch:
+  Rails **1006/4482/0**, Vitest **447/447 across 31**, `vue-tsc` exit 0, e2e **9 passed / 0 failed**.
+  Non-vacuity proven at both layers by reverting the preservation: the unit round trip fails with
+  `expected 'withdrawal' to be 'fee'` (exactly 2 tests, scoped — the sign tests and the
+  offered-kinds-stay-switchable test correctly stay green), and the e2e fails with `an untouched save
+  must not reclassify a fee`.
   What it does: `locked_kind` carries an imported row's own kind through form state and submits it
   verbatim, and the drawer does not render the deposit/withdrawal SelectButton at all for such a row
   — it shows the type as a read-only `dl/dt/dd`. `values.kind` still holds the sign-matching offered
   kind, deliberately, because that is what `signOnTheWire` reads; a fix preserving the kind while
   dropping the sign would pass a kind-only assertion. The two offered kinds are **not** locked, so a
   deliberate deposit↔withdrawal edit still works.
-  Known risk in that commit, stated because it is exactly what an unrun gate would catch:
-  `locked_kind` is **required** (not `.optional()`), so every `CashFormValues` literal needs it. The
-  factories in `forms/cash.spec.ts` and `forms/decimalField.spec.ts` and the `emptyCashForm`/
-  `toCashForm` expectations were updated **by hand**; every other consumer goes through the exported
-  functions rather than a literal, but that was established by grep, not by a type-check.
-  Also landed there: the **runtime** `CASH_KIND_SIGN` coverage assertion, and a fourth instance of the
-  same substitution bug in the success toast, which quoted the form's kind and would have announced
-  "Withdrawal of $12.50" for a fee the save correctly left a fee.
+  **The e2e assertion is the load-bearing one and a unit test cannot replace it.** `locked_kind` has
+  no `defineField`, so whether it survives into vee-validate's `values` at submit time is a property
+  of the **form library**, not of the pure functions — had it not, `toCashInput` would receive
+  `undefined`, the schema would reject the submit, and every unit test would still pass. Measured: it
+  survives. The spec also asserts the SelectButton is **not rendered** for an unofferable kind, and
+  reads the saved row back **from the server**, since the table could render correctly from a stale
+  cache while the persisted kind had changed underneath it.
+  Also landed: the **runtime** `CASH_KIND_SIGN` coverage assertion (its type-level guard catches
+  nothing in a JS consumer), and a fourth instance of the same substitution bug in the success toast,
+  which quoted the form's kind and would have announced "Withdrawal of $12.50" for a fee the save
+  correctly left a fee.
   **Do not "fix" any of this by widening the SelectButton to all six kinds** — the drawer deliberately
   offers only the two a user can legitimately create, and offering `dividend_cash` as something to
   hand-enter invites the exact miscategorisation the external/internal split exists to prevent.
-  Still missing: the **e2e** untouched-save on an internal-kind row, which is the layer that would
-  have caught B5 in the first place (zero extra registrations — reuse the session).
 
 - `cash_negative_since` reaches the wire but has **no frontend consumer** — and it is the only place
   the "negative since when" date exists, since the balance string cannot answer it. Commented at its
