@@ -93,4 +93,48 @@ class Prices::SeriesWriterTest < ActiveSupport::TestCase
     assert_equal Date.new(2020, 1, 1), @instrument.earliest_price_on
     assert_equal Date.new(2024, 1, 2), @instrument.latest_price_on
   end
+  # --- #66 round 4: warnings must actually reach a log ------------------------
+
+  test "every provider warning is logged, because nothing else reads them" do
+    # DailySeries#warnings had no reader anywhere in the app: both jobs pass the
+    # series straight to this class, which ignored the field. Every adapter
+    # warning — including every suppressed corporate action — was silently
+    # dropped, while the Yahoo adapter's own docs claimed the opposite.
+    series = build_series(
+      bars: [ { date: Date.new(2026, 1, 5), open: 10, high: 11, low: 9, close: 10.5, volume: 1 } ],
+      warnings: [ "treated 9:10 on 2026-01-05 as price-only", "skipped bad EOD row" ]
+    )
+
+    logged = capture_log do
+      Prices::SeriesWriter.call(instrument: @instrument, series: series, source: "yahoo")
+    end
+
+    assert_match(/treated 9:10 on 2026-01-05 as price-only/, logged)
+    assert_match(/skipped bad EOD row/, logged)
+    assert_match(/yahoo/, logged, "name the provider, so the line is actionable")
+    assert_match(/#{@instrument.symbol}/, logged, "and the instrument")
+  end
+
+  test "a series with no warnings logs nothing" do
+    series = build_series(
+      bars: [ { date: Date.new(2026, 1, 5), open: 10, high: 11, low: 9, close: 10.5, volume: 1 } ],
+      warnings: []
+    )
+
+    logged = capture_log do
+      Prices::SeriesWriter.call(instrument: @instrument, series: series, source: "tiingo")
+    end
+
+    assert_no_match(/Prices::SeriesWriter/, logged)
+  end
+
+  def capture_log
+    buffer = StringIO.new
+    original = Rails.logger
+    Rails.logger = ActiveSupport::Logger.new(buffer)
+    yield
+    buffer.string
+  ensure
+    Rails.logger = original
+  end
 end

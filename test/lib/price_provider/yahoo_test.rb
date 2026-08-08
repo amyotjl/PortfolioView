@@ -118,8 +118,11 @@ class PriceProvider::YahooTest < ActiveSupport::TestCase
   # The two rows that matter most are `XCS.TO 9:10` and `FTN.TO 11:10`. Their
   # written forms are indistinguishable — both a small integer over 10, both near
   # 1 — and their truths are opposite. No rule reading (num, den) can separate
-  # them, which is why the previous three attempts each failed on one or the other.
-  # Only the price series separates them, and it does so decisively.
+  # them, and round 4's gate showed the PRICE SERIES cannot either: a
+  # consolidation paired with a cash return looks exactly like a distribution.
+  # So both rows are now price-only, one correctly and one at a known cost, and
+  # this table records which is which. `expected` here is simply whether the
+  # ratio falls outside NEAR_ONE_BAND.
   FACTOR_CASES = [
     # symbol, ex-date, num, den, close before, close on, expected, why
     [ "XCS.TO",  "2021-12-30",     9.0,      10.0, 111.22, 100.0, :price_only,
@@ -129,13 +132,13 @@ class PriceProvider::YahooTest < ActiveSupport::TestCase
     [ "XCS.TO",  "2025-12-30",    96.0,     100.0, 104.17, 100.0, :price_only,
       "the SAME fund's SAME annual action, four years later. Round 3 classified this " \
       "one correctly and 9:10 wrongly — one fund, one action, two verdicts" ],
-    [ "FTN.TO",  "2025-09-26",    11.0,      10.0,  96.93, 100.0, :share_count,
+    [ "FTN.TO",  "2025-09-26",    11.0,      10.0,  96.93, 100.0, :price_only,
       "a genuine 11-for-10 subdivision. Same written shape as XCS.TO 9:10 and the " \
       "opposite truth; gap 0.9693 sits at 1, not at 1/ratio 0.9091" ],
-    [ "LCS.TO",  "2024-12-17",   114.0,     100.0,  99.59, 100.0, :share_count,
+    [ "LCS.TO",  "2024-12-17",   114.0,     100.0,  99.59, 100.0, :price_only,
       "round 3 called LCS.TO split-brained: 114:100 and 112:100 suppressed while the " \
       "same fund's 6:5 was kept. All three are share-count events and now agree" ],
-    [ "LCS.TO",  "2026-01-27",     6.0,       5.0, 102.14, 100.0, :share_count,
+    [ "LCS.TO",  "2026-01-27",     6.0,       5.0, 102.14, 100.0, :price_only,
       "the third LCS.TO factor, and the one round 3 already kept" ],
     [ "TRP.TO",  "2024-10-02",  1097.0,    1000.0, 100.15, 100.0, :price_only,
       "round 1 blocker: the South Bow spin-off. +9.7% phantom shares if kept. NOTE the " \
@@ -214,11 +217,11 @@ class PriceProvider::YahooTest < ActiveSupport::TestCase
     assert_match(/distribution or a spin-off/, warning)
   end
 
-  test "a genuine 5% stock dividend with no earlier bar is kept as a share-count event" do
-    # No close before the ex-date, so the series cannot speak. What is left is the
-    # written form, and 21:20 IS a declared exchange ratio — unlike 1097:1000. This
-    # is also the inconsequential case: with no earlier bar there is no price for
-    # the factor to un-adjust either way.
+  test "an in-band factor is price-only even with no earlier bar to judge it by" do
+    # Used to be the "no bar on one side" fallback, which kept it as a share-count
+    # event on the strength of the written form. 21:20 is a real 5% stock dividend
+    # and IS now missed — the known cost. It is also the inconsequential case: with
+    # no earlier bar there is no price for the factor to un-adjust either way.
     d = Date.new(2024, 6, 3)
     body = chart(
       timestamps: [ ts(d) ],
@@ -228,56 +231,72 @@ class PriceProvider::YahooTest < ActiveSupport::TestCase
 
     series = build_adapter(stub_chart("XYZ", body)).fetch_daily("XYZ", from: d, to: d)
 
-    assert_equal [ BigDecimal("1.05") ], series.splits.map(&:ratio)
+    assert_empty series.splits
+    assert(series.warnings.any? { |w| w.include?("21:20") && w.include?("share count is left alone") })
   end
 
-  test "a declared ratio written UNREDUCED is still a declared ratio" do
-    # `declared_ratio?` reduces to lowest terms, and this is the case that makes
-    # that load-bearing. 1050:1000 is a 5% stock dividend written the long way:
-    # unreduced its denominator is 1000 and it would be dismissed as a
-    # market-derived decimal, but in lowest terms it is 21/20 — a declared
-    # exchange ratio — so the price series gets to decide, and here says the price
-    # moved.
-    #
-    # CONSTRUCTED, not observed: the sweep found no in-band factor whose reduction
-    # changes the verdict. It is guarded anyway because Yahoo demonstrably DOES
-    # write declared ratios unreduced in the same feed — GOOG's 2:1 arrives as
-    # 2002:1000 and F's 3:2 as 1748175:1000000 — and only the band guard saves
-    # those. A near-1 one would have nothing else to save it.
-    # gap 0.995, i.e. continuous — which is what a REAL 5% stock dividend looks
-    # like on Yahoo's adjusted series, because it adjusted for a price move that
-    # genuinely happened. (Setting the gap to 1/1.05 instead would describe a
-    # distribution, and the rule would correctly call it price-only.)
-    series = classify_factor(symbol: "XYZ", ex_date: Date.new(2024, 6, 3),
-                             num: 1050.0, den: 1000.0, before_close: 99.5, after_close: 100.0)
+  test "the in-band warning tells the user how to supply the split themselves" do
+    # A suppression that may be wrong has to be actionable, not just disclosed.
+    series = classify_factor(symbol: "FTN.TO", ex_date: Date.new(2025, 9, 26),
+                             num: 11.0, den: 10.0, before_close: 96.93, after_close: 100.0)
 
-    assert_equal [ BigDecimal("1.05") ], series.splits.map(&:ratio),
-      "reduced, 1050:1000 is 21/20 and the series says the price moved"
+    warning = series.warnings.find { |w| w.include?("11:10") }
+    assert warning
+    assert_match(/activity ledger/, warning, "name the source that does know")
   end
 
-  test "Factor#declared_ratio? and #label read the fraction as Yahoo wrote it" do
-    factor = PriceProvider::Factor.new(ex_date: Date.new(2024, 1, 1), ratio: BigDecimal("1.14"),
-                                       numerator: BigDecimal("114"), denominator: BigDecimal("100"))
+  test "Factor#label quotes the fraction as Yahoo wrote it, fractions included" do
+    # It used to truncate with .to_i on the belief that these are always whole
+    # numbers. Yahoo sends 1.0697:1 (BHP Steel demerger) and 0.9876:1, which
+    # printed as "1:1" and "0:1" — making the only warning naming them misleading.
+    whole = PriceProvider::Factor.new(ex_date: Date.new(2024, 1, 1), ratio: BigDecimal("4"),
+                                      numerator: BigDecimal("4"), denominator: BigDecimal("1"))
+    assert_equal "4:1", whole.label, "a whole number must not read as 4.0:1.0"
 
-    assert_equal "114:100", factor.label, "the warning must quote the feed, not a reduction"
-    assert factor.declared_ratio?(100), "114:100 is 57/50 in lowest terms"
-    assert_not factor.declared_ratio?(49), "and 50 is above a limit of 49"
+    unreduced = PriceProvider::Factor.new(ex_date: Date.new(2024, 1, 1), ratio: BigDecimal("1.14"),
+                                          numerator: BigDecimal("114"), denominator: BigDecimal("100"))
+    assert_equal "114:100", unreduced.label, "quote the feed, not a reduction"
 
-    market = PriceProvider::Factor.new(ex_date: Date.new(2024, 1, 1), ratio: BigDecimal("1.097"),
-                                       numerator: BigDecimal("1097"), denominator: BigDecimal("1000"))
-    assert_not market.declared_ratio?(100), "1097:1000 does not reduce at all"
+    fractional = PriceProvider::Factor.new(ex_date: Date.new(2002, 7, 2), ratio: BigDecimal("1.0697"),
+                                           numerator: BigDecimal("1.0697"), denominator: BigDecimal("1"))
+    assert_equal "1.0697:1", fractional.label, "measured live on BHP.AX; it used to print 1:1"
   end
 
-  test "a factor whose evidence is thin is kept, and flagged as a close call" do
-    # gap 1.0001 against hypotheses 1 and 1.0101: it leans share-count by a whisker.
-    # The lean decides — a third "cannot tell" branch would need an arbitrary
-    # default — but the warning says the evidence was thin.
-    series = classify_factor(symbol: "ESGC.TO", ex_date: Date.new(2025, 12, 30),
-                             num: 99.0, den: 100.0, before_close: 100.01, after_close: 100.0)
+  test "ONE corporate action reported on two nearby ex-dates becomes ONE split" do
+    # Measured live: VTI.CN reports 1:100 on both 2026-05-22 and 2026-05-27 for a
+    # single 1-for-100, and split_events upserts on [instrument_id, ex_date] — so
+    # two rows persisted and Holdings::Calculator divided by 10,000. AMC.AX does
+    # the same with 1:5 on 01-13 and 01-15 (25x).
+    d1, d2 = Date.new(2026, 5, 22), Date.new(2026, 5, 27)
+    body = chart(
+      timestamps: [ ts(Date.new(2026, 5, 21)), ts(d2) ],
+      quote: { "open" => [ 1.0, 100.0 ], "high" => [ 1.0, 100.0 ], "low" => [ 1.0, 100.0 ],
+               "close" => [ 1.0, 100.0 ], "volume" => [ 1, 1 ] },
+      splits: { "a" => { "date" => ts(d1), "numerator" => 1.0, "denominator" => 100.0 },
+                "b" => { "date" => ts(d2), "numerator" => 1.0, "denominator" => 100.0 } }
+    )
 
-    assert_equal 1, series.splits.size
-    assert(series.warnings.any? { |w| w.include?("CLOSE CALL") },
-      "thin evidence must be disclosed either way")
+    series = build_adapter(stub_chart("VTI.CN", body)).fetch_daily("VTI.CN", from: Date.new(2026, 5, 1))
+
+    assert_equal 1, series.splits.size, "two reports of one action must not compound"
+    assert_equal d1, series.splits.first.ex_date, "the EARLIER date is kept"
+    assert(series.warnings.any? { |w| w.include?("ONE corporate action") })
+  end
+
+  test "the same ratio far apart is NOT collapsed — that is a second real action" do
+    # BHP.AX really does carry 110:100 twice, six years apart.
+    d1, d2 = Date.new(1989, 4, 21), Date.new(1995, 5, 11)
+    body = chart(
+      timestamps: [ ts(Date.new(1989, 4, 20)), ts(d2) ],
+      quote: { "open" => [ 10.0, 10.0 ], "high" => [ 10.0, 10.0 ], "low" => [ 10.0, 10.0 ],
+               "close" => [ 10.0, 10.0 ], "volume" => [ 1, 1 ] },
+      splits: { "a" => { "date" => ts(d1), "numerator" => 3.0, "denominator" => 1.0 },
+                "b" => { "date" => ts(d2), "numerator" => 3.0, "denominator" => 1.0 } }
+    )
+
+    series = build_adapter(stub_chart("BHP.AX", body)).fetch_daily("BHP.AX", from: Date.new(1989, 1, 1))
+
+    assert_equal 2, series.splits.size
   end
 
   test "classification reads YAHOO'S adjusted closes, not the reconstructed ones" do

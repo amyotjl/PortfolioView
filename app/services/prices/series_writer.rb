@@ -38,6 +38,7 @@ module Prices
     end
 
     def call
+      log_provider_warnings
       valid, skipped = partition_bars
       write_prices(valid)
       splits_written = write_events ? write_splits : 0
@@ -57,6 +58,24 @@ module Prices
     private
 
     attr_reader :instrument, :series, :source, :write_events
+
+    # `DailySeries#warnings` HAD NO READER AT ALL until #66's fourth gate looked
+    # for one. Both jobs passed the series straight here, this class ignored the
+    # field, and no logger touched it — so every adapter warning was computed and
+    # dropped, while `PriceProvider::Yahoo`'s own documentation claimed "nothing
+    # here is ever silent". It was ALL silent, including every suppressed
+    # corporate action, which is a large part of why four gate rounds were needed
+    # to find what the adapter had been saying the whole time.
+    #
+    # Logged HERE rather than in the jobs because this is the one place every
+    # fetched series funnels through, so a new caller cannot forget. WARN, not
+    # INFO: each line reports either data this app declined to store or a
+    # correction it made to the feed, and the whole point is that someone sees it.
+    def log_provider_warnings
+      Array(series.warnings).each do |warning|
+        Rails.logger.warn("[Prices::SeriesWriter] #{source} #{instrument.symbol}: #{warning}")
+      end
+    end
 
     # Defense in depth: the adapters already validate, but a bad row must never
     # reach (and poison) the batch upsert regardless of where the series came
