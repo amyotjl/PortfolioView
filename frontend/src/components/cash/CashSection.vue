@@ -104,7 +104,10 @@ async function onSubmit(values: CashFormValues): Promise<void> {
       severity: 'success',
       summary: target ? 'Cash movement updated' : 'Cash movement added',
       // The server's post-write balance, quoted rather than recomputed client-side.
-      detail: `${cashKindLabel(values.kind)} of ${formatCurrency(values.amount)} — cash is now ${formatCurrency(response.meta.cash_balance)}`,
+      // `input.kind`, NOT `values.kind`: for an imported internal kind the form's
+      // `kind` is only a sign proxy (see forms/cash.ts), so quoting it would report
+      // "Withdrawal of $12.50" for a fee the save correctly left as a fee.
+      detail: `${cashKindLabel(input.kind)} of ${formatCurrency(values.amount)} — cash is now ${formatCurrency(response.meta.cash_balance)}`,
       life: 5000,
     })
   } catch (error) {

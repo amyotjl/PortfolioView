@@ -19,7 +19,7 @@ import {
   CASH_KIND_OPTIONS,
   type CashFormValues,
 } from '@/forms/cash'
-import { withdrawalProjectionNotice } from '@/lib/cash'
+import { cashKindLabel, withdrawalProjectionNotice } from '@/lib/cash'
 import {
   marketClosedNotice,
   todayIso,
@@ -52,6 +52,18 @@ import type { CashTransaction } from '@/types'
  * away and three of that drawer's reactive side effects are keyed on `symbol`, so
  * every guard would be a future place an `/instruments/:id/price` request leaks for
  * a deposit.
+ *
+ * THE TYPE FIELD IS NOT ALWAYS A CONTROL, which is the B5 fix. For an imported
+ * `interest`/`dividend_cash`/`tax`/`fee` row — a kind the SelectButton cannot
+ * represent — the type renders as a READ-ONLY value and the SelectButton is not
+ * rendered at all. A control that cannot express the current value must not be shown
+ * as if it can: while it was shown, an untouched Save rewrote a `fee` into a
+ * `withdrawal` and turned broker-internal money into a user contribution.
+ *
+ * `defineField('kind')` stays UNCONDITIONAL below even though the SelectButton is
+ * conditional — the field must remain registered and seeded, because it is what
+ * carries the row's SIGN through `toCashInput`. Wrapping it in the same condition
+ * would drop the sign for exactly the rows this fix exists to protect.
  */
 const visible = defineModel<boolean>('visible', { required: true })
 
@@ -106,11 +118,41 @@ const occurredOnDate = computed<Date | null>({
 const closedNotice = computed(() => marketClosedNotice(values.occurred_on ?? ''))
 
 /**
+ * The label for a kind this drawer cannot offer, or null when it can.
+ *
+ * Read from FORM STATE, not from `props.cashTransaction`, so the value displayed and
+ * the value submitted are one thing and cannot disagree. `cashKindLabel` is the same
+ * function the ledger table uses, so the drawer and the table always say "Fee", never
+ * "Fee" in one place and "fee" in the other.
+ */
+const lockedKindLabel = computed<string | null>(() =>
+  values.locked_kind ? cashKindLabel(values.locked_kind) : null,
+)
+
+/**
+ * The Amount hint has to follow the Type field. "The type above carries the
+ * direction" is true of a deposit/withdrawal and FALSE of a locked kind, whose sign
+ * is the broker's and is not shown anywhere in this drawer.
+ */
+const amountHint = computed(() =>
+  lockedKindLabel.value
+    ? 'How much money moved, in dollars. Its direction is kept exactly as recorded.'
+    : 'How much money moved, in dollars. The type above carries the direction.',
+)
+
+/**
  * Live projection while typing a withdrawal — the analogue of the sell pre-flight,
  * with the copy in `lib/cash.ts` so it is unit-testable. The entry is NEVER blocked
  * for going negative; this only says what will happen.
  */
 const projectionNotice = computed<string | null>(() => {
+  /**
+   * NOT for a locked kind, even though its `kind` is `withdrawal` as far as the sign
+   * is concerned. The copy says "Withdrawing $X takes it to $Y", and a broker fee is
+   * not a withdrawal — mislabelling money is worse than saying nothing (the rule
+   * `negativeCashNotice` is written under), and nothing is blocked either way.
+   */
+  if (values.locked_kind) return null
   if (values.kind !== 'withdrawal') return null
   return withdrawalProjectionNotice({
     cashBalance: props.cashBalance ?? null,
@@ -178,7 +220,32 @@ defineExpose({ applyServerError })
     <form id="cash-form" class="flex flex-col gap-4" novalidate @submit.prevent="onSubmit">
       <FormAlert :message="formError" />
 
-      <FormField label="Type" :error="errors.kind" required>
+      <!--
+        A KIND THE SELECTBUTTON CANNOT REPRESENT IS SHOWN, NOT OFFERED (B5).
+        `<dl>/<dt>/<dd>` rather than a disabled control or a FormField with a
+        dangling `for`: this is a label/value pair with no control to name, and the
+        term/definition roles announce the association without pretending there is
+        something to operate. `errors.kind` is repeated here because the server's key
+        for a rejected kind is `kind` either way, and it would otherwise be invisible
+        on precisely the rows whose SelectButton is gone.
+      -->
+      <div v-if="lockedKindLabel" class="flex flex-col gap-1.5">
+        <dl>
+          <dt class="mb-1.5 text-sm font-medium text-ink">Type</dt>
+          <dd class="rounded-md border border-line bg-panel-hi px-3 py-2 text-sm text-ink">
+            {{ lockedKindLabel }}
+          </dd>
+        </dl>
+        <p class="text-xs text-ink-subtle">
+          Only deposits and withdrawals are entered by hand, so this type stays as
+          recorded. Amount, date and notes are still editable.
+        </p>
+        <p v-if="errors.kind" role="alert" class="text-xs font-medium text-down">
+          {{ errors.kind }}
+        </p>
+      </div>
+
+      <FormField v-else label="Type" :error="errors.kind" required>
         <template #default="{ id }">
           <!--
             `:input-id="id"` is LOAD-BEARING FOR THE ACCESSIBLE NAME, not just for
@@ -205,7 +272,7 @@ defineExpose({ applyServerError })
         label="Amount"
         :error="errors.amount"
         required
-        hint="How much money moved, in dollars. The type above carries the direction."
+        :hint="amountHint"
       >
         <template #default="{ id, invalid, describedby }">
           <InputText

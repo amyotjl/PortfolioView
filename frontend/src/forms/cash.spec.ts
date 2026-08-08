@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
+  CASH_KIND_OPTIONS,
+  CASH_KIND_SIGN,
   cashFormSchema,
   emptyCashForm,
+  isOfferedCashKind,
   toCashForm,
   toCashInput,
   type CashFormValues,
@@ -12,6 +15,9 @@ import type { CashTransaction } from '@/types'
 function valid(overrides: Partial<Record<keyof CashFormValues, unknown>> = {}) {
   return {
     kind: 'deposit',
+    // Required, not defaulted, so every call site has to decide — forgetting a
+    // defaulted field is exactly how B5 reached production.
+    locked_kind: null,
     amount: '5000.00',
     occurred_on: '2026-08-03',
     notes: null,
@@ -114,6 +120,9 @@ describe('emptyCashForm', () => {
   it('defaults to a deposit on the given date with a blank amount', () => {
     expect(emptyCashForm('2026-08-03')).toEqual({
       kind: 'deposit',
+      // A create has no row to take a kind from, so this is structurally null — the
+      // runtime half of "the create path can never submit an internal kind".
+      locked_kind: null,
       amount: '',
       occurred_on: '2026-08-03',
       notes: null,
@@ -208,10 +217,76 @@ describe('toCashForm', () => {
   it('leaves a deposit positive and passes date and notes through', () => {
     expect(toCashForm(row({ kind: 'deposit', amount: '10000.0', notes: 'paycheque' }))).toEqual({
       kind: 'deposit',
+      // Null for an OFFERED kind, so a deliberate deposit<->withdrawal change by the
+      // user still goes through unchanged.
+      locked_kind: null,
       amount: '10000.00',
       occurred_on: '2026-08-03',
       notes: 'paycheque',
     })
+  })
+
+  /**
+   * B5, and the test that was missing when it shipped.
+   *
+   * Every layer was covered in isolation and the COMPOSED path was covered by
+   * nothing, so an imported `fee` opened in the edit drawer and saved without the
+   * user touching anything came back a `withdrawal`. `withdrawal` is in
+   * `EXTERNAL_KINDS`, so that silently reclassified broker-internal money as a user
+   * contribution: `net_deposits` moved and the benchmark's shadow ETF started
+   * matching a sell that never happened.
+   *
+   * The assertion is therefore on the FULL round trip `wire row -> toCashForm ->
+   * toCashInput`, not on either half. Both `kind` and the exact signed amount have to
+   * survive it, because the two interact: the form's `kind` is a sign proxy for a
+   * locked row, so a fix that preserved the kind while dropping the sign would look
+   * correct on a `kind`-only assertion.
+   */
+  it('preserves an unofferable kind AND its sign through an untouched save (B5)', () => {
+    const cases: Array<[string, string]> = [
+      ['fee', '-12.5'], // a broker charge
+      ['fee', '4.95'], // ...and a reimbursement: same kind, opposite sign
+      ['tax', '-3.5'], // withholding
+      ['tax', '42.75'], // ...and a refund
+      ['interest', '1.25'],
+      ['interest', '-1.25'], // a reversal
+      ['dividend_cash', '12.34'],
+      ['dividend_cash', '-12.34'], // a reversal
+    ]
+
+    for (const [kind, amount] of cases) {
+      const seeded = cashFormSchema.parse(toCashForm(row({ kind, amount })))
+      const sent = toCashInput(seeded)
+
+      expect(sent.kind, `${kind} ${amount} must not be reclassified`).toBe(kind)
+      expect(toCents(sent.amount), `${kind} ${amount} must keep its exact sign`).toBe(
+        toCents(amount),
+      )
+      // The magnitude is what the user sees and edits, so it must be sign-free.
+      expect(seeded.amount.startsWith('-')).toBe(false)
+    }
+  })
+
+  it('keeps an unofferable kind editable in every field except its type', () => {
+    // The fix must not freeze the row: amount, date and notes are still the user's.
+    const seeded = cashFormSchema.parse(toCashForm(row({ kind: 'fee', amount: '-12.5' })))
+    const sent = toCashInput({ ...seeded, amount: '20.00', occurred_on: '2026-09-01', notes: 'ATM' })
+
+    expect(sent.kind).toBe('fee')
+    expect(sent.amount).toBe('-20.00') // re-signed from the row's own direction
+    expect(sent.occurred_on).toBe('2026-09-01')
+    expect(sent.notes).toBe('ATM')
+  })
+
+  it('does NOT lock the two offered kinds, so a user can still switch direction', () => {
+    // The other half of the fix: freezing `kind` for everyone would be a regression,
+    // not a fix. A user editing a deposit into a withdrawal must still work.
+    const seeded = cashFormSchema.parse(toCashForm(row({ kind: 'deposit', amount: '500.0' })))
+    expect(seeded.locked_kind).toBeNull()
+
+    const switched = toCashInput({ ...seeded, kind: 'withdrawal' })
+    expect(switched.kind).toBe('withdrawal')
+    expect(switched.amount).toBe('-500.00')
   })
 
   it('maps an imported internal kind to the offered kind that MATCHES THE SIGN', () => {
@@ -242,6 +317,42 @@ describe('toCashForm', () => {
       // Identity in VALUE, not in text: '-1500.0' and '-1500.00' are the same money,
       // and cents are the contract's smallest unit.
       expect(toCents(resubmitted.amount), amount).toBe(toCents(amount))
+    }
+  })
+})
+
+/**
+ * The sign map's protection is COMPILE-TIME ONLY, which a re-gate probe measured:
+ * swapping it for an inlined ternary passes every test and `vue-tsc`, because for
+ * today's two kinds the two are behaviourally identical. Its real value is a
+ * `TS2741` when the offered-kind enum widens — and that catches nothing at all in a
+ * JS-only consumer, or when someone adds an option without a sign.
+ *
+ * So this pins the coverage at runtime, in BOTH directions: no offered kind without a
+ * sign, and no sign for a kind that is not offered.
+ */
+describe('CASH_KIND_SIGN covers every offered kind', () => {
+  it('has an entry for every option the SelectButton renders', () => {
+    for (const option of CASH_KIND_OPTIONS) {
+      expect(CASH_KIND_SIGN[option.value], option.value).toBeDefined()
+      expect(Math.abs(CASH_KIND_SIGN[option.value]), option.value).toBe(1)
+    }
+  })
+
+  it('has no entry for a kind that is not offered', () => {
+    expect(Object.keys(CASH_KIND_SIGN).sort()).toEqual(
+      CASH_KIND_OPTIONS.map((option) => option.value).sort(),
+    )
+  })
+
+  it('agrees with isOfferedCashKind, which the lock decision reads', () => {
+    // If these two ever disagree, a kind is either signed but treated as locked, or
+    // locked but silently signed — the two halves of B5.
+    for (const kind of Object.keys(CASH_KIND_SIGN)) {
+      expect(isOfferedCashKind(kind), kind).toBe(true)
+    }
+    for (const internal of ['interest', 'dividend_cash', 'tax', 'fee', 'rebate']) {
+      expect(isOfferedCashKind(internal), internal).toBe(false)
     }
   })
 })

@@ -50,6 +50,7 @@ const recurring = (overrides: Record<string, unknown>) => ({
 
 const cash = (overrides: Record<string, unknown>) => ({
   kind: 'deposit',
+  locked_kind: null,
   amount: '100.00',
   occurred_on: '2026-07-24',
   notes: null,
