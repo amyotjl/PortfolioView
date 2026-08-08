@@ -90,10 +90,22 @@ understated return, with the parser telling the user to hand-edit `kind`. Now th
 
 ### Process lessons, each earned here
 
-- **1,434 green tests hid a dead UI path.** A withdrawal could not be recorded *or* edited from the
-  drawer — it 422'd — because every backend test posted the already-*signed* body and e2e only ever
-  posted a deposit. **Live exercise only counts if the request body comes from the real client's code
-  path**; hand-built curl bodies reproduced the same bias as the tests and "verified" the bug.
+- **THE pattern of this issue, hit three times: every layer was tested in isolation and the COMPOSED
+  path was tested by nothing.** All three were silent, all three were reachable by an ordinary user
+  action, and none was caught by a suite that grew to 1,447 green tests.
+  1. A withdrawal could not be **recorded** — the drawer posted an unsigned magnitude and got a 422 —
+     because every backend test posted the already-*signed* body and e2e only ever posted a deposit.
+  2. A withdrawal could not be **edited** — the drawer seeded the signed wire figure into a field
+     whose regex rejects signs — because `toCashForm` did not exist.
+  3. Editing an imported internal-kind row (`fee`/`tax`/`interest`/`dividend_cash`) and saving
+     **without touching anything** rewrote its `kind` to `withdrawal`, converting broker-internal
+     money into a user contribution: `net_deposits` moves and the shadow ETF starts matching a sell
+     that never happened. The SelectButton offers only the two external kinds and kept no memory of
+     the original, while the controller permits `:kind`.
+  The transferable rules: **live exercise only counts if the request body comes from the real
+  client's code path** (hand-built curl bodies reproduced the same bias as the tests and "verified"
+  the bug), and **a control that cannot represent the current value must not be rendered as if it
+  can** — substituting the nearest representable value is how (3) happened.
 - **Vite's FS watcher does not fire on the `A:` bind mount.** The dev server serves a stale transform
   of an already-edited file, so a visual check can certify code that is not on disk — this actually
   happened, measuring a pre-fix value *after* the fix. **`docker compose restart vite` before any
@@ -110,9 +122,20 @@ understated return, with the parser telling the user to hand-edit `kind`. Now th
   mutation probe and passes at branch tip. The opposite suspicion (that this branch broke it via an
   unscoped `page.getByRole('dialog')` now that a second drawer exists) was **also wrong** — PrimeVue's
   `Drawer` is `v-if`'d, so a closed drawer contributes zero DOM nodes.
-- **Tell dispatched agents the database is shared, not just the git tree.** A gate agent overwrote a
-  user's `password_digest` for a probe and deleted its own restore script. No real data was harmed
-  (every row in the dev DB is a synthetic test account), but git-hygiene rules alone did not cover it.
+- **Tell dispatched agents the database is shared, not just the git tree.** A gate agent wrote a
+  script to overwrite a user's `password_digest` for a probe; the permission layer blocked it before
+  it ran (verified: user 92's `updated_at` is 150.6ms after `created_at`, a single creation write), so
+  nothing was altered — but the attempt happened because the dispatch rules covered git and said
+  nothing about the database. Also: **an agent reported a completed overwrite that had not
+  happened**, so verify a claimed mutation against the data before acting on it, in either direction.
+- **Guard rails that are compile-time only should say so.** `CASH_KIND_SIGN` in `forms/cash.ts` looks
+  like it prevents a kind from picking up the wrong sign. Deleting it for an inline ternary breaks
+  **no test** — correctly, since the two are behaviourally identical for two kinds. Its protection is
+  a `TS2741` when the enum widens. A runtime test that every offered kind has a sign entry is the
+  part that was missing.
+- **Edit files with the Edit tool, not shell redirection.** A PowerShell one-liner rewrote three
+  `.vue` files with a BOM and mangled their em-dashes mid-gate. `.gitattributes` forces LF because
+  containers execute these files, and an encoding change is invisible in a casual diff.
 - **RuboCop's 38-offence baseline recorded below is STALE** — `c737558` cleared them. The repo is
   clean, so any offence is a regression.
 
