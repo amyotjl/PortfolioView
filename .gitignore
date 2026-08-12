@@ -36,6 +36,12 @@ Thumbs.db
 /coverage
 /e2e/test-results/
 /e2e/playwright-report/
+/e2e/screenshots/
+/e2e/scratch/
+
+# README media is captured HERE and copied into docs/media/ by hand — the raw
+# output (including a ~2MB intermediate .webm) is not what ships.
+/e2e/capture-out/
 
 # Ignore key files for decrypting credentials and more.
 /config/*.key

@@ -4,3 +4,8 @@
 *.jpg binary
 *.ico binary
 *.woff2 binary
+# README media. `text=auto` above would already detect these as binary, but the
+# cost of being wrong is a silently corrupted asset, so say it explicitly.
+*.gif binary
+*.mp4 binary
+*.webm binary
