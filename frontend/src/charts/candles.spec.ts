@@ -11,7 +11,12 @@ import {
 import { LIGHT_CHART_THEME as theme } from './theme'
 import type { CandlesResponse } from '@/types'
 
-const APPROX = 'Portfolio H/L are bounds; component extremes may not co-occur.'
+/**
+ * The value the API ACTUALLY sends (`Portfolios::Valuation::APPROXIMATION`), not
+ * a human sentence. This fixture used to hold prose, and that is precisely why
+ * the tooltip shipped printing the raw code: the assertion echoed the fixture.
+ */
+const APPROX_CODE = 'component_extrema'
 
 /**
  * The TRADE-BASIS fixture: `cash: null`, `flow_basis: 'trades'`. Every expectation
@@ -46,7 +51,7 @@ const fixture: CandlesResponse = {
     partial: false,
     filled_dates: ['2026-01-06'],
     benchmark_clamped: true,
-    approximation: APPROX,
+    approximation: APPROX_CODE,
     flow_basis: 'trades',
     cash_negative: false,
     cash_negative_since: null,
@@ -97,8 +102,16 @@ const EMPTY: CandlesResponse = {
   },
 }
 
+/**
+ * The chart box's fixed height, mirroring `h-[560px]` on DashboardChart.vue's
+ * wrapper. Percentage grid geometry only becomes a legibility question once it is
+ * resolved against real pixels, so the layout assertion below needs this number.
+ * If that class changes, change this with it.
+ */
+const CHART_BOX_PX = 560
+
 interface OptShape {
-  grid: unknown[]
+  grid: Array<{ top?: string; height?: string }>
   title: Array<{ text?: string }>
   series: Array<{
     name?: string
@@ -108,7 +121,7 @@ interface OptShape {
     data?: unknown[]
     areaStyle?: unknown
   }>
-  dataZoom: Array<{ xAxisIndex?: number[] }>
+  dataZoom: Array<{ xAxisIndex?: number[]; type?: string; bottom?: number | string; height?: number }>
   axisPointer: { link?: unknown }
   xAxis: Array<{ type?: string; data?: unknown[] }>
   yAxis: Array<{ max?: number }>
@@ -188,6 +201,29 @@ describe('grid linkage', () => {
     }
   })
 
+  /**
+   * The date labels and the slider share the space below grid 2, and the card's
+   * chart box is a fixed 560px — so "some room left over" is not enough, the room
+   * has to fit an ~18px label row AND the slider. Grid 2 ending at 95% (its
+   * original value) left 28px for 16px of slider plus those labels, and the dates
+   * rendered behind the slider on every dashboard. Measured in a browser, not
+   * derived: at 560px, 92% + 14px slider leaves a clear gap.
+   */
+  it('reserves room below the last grid for the date labels AND the slider', () => {
+    const opt = build(true)
+    const last = opt.grid[2]
+    const bottomEdge = parseFloat(last.top!) + parseFloat(last.height!)
+    expect(bottomEdge).toBeLessThanOrEqual(92)
+
+    const slider = opt.dataZoom.find((zoom) => zoom.type === 'slider')!
+    // Flush to the bottom, so the whole reserved band above it is the labels'.
+    expect(slider.bottom).toBe(0)
+
+    const reservedPx = (1 - bottomEdge / 100) * CHART_BOX_PX
+    // 18px is the rendered height of a 12px label row.
+    expect(reservedPx - (slider.height ?? 0)).toBeGreaterThanOrEqual(18)
+  })
+
   it('places the candlestick, flow bar and drawdown on grids 0/1/2', () => {
     const opt = build(false)
     expect(seriesNamed(opt, 'Portfolio')?.type).toBe('candlestick')
@@ -221,14 +257,22 @@ describe('benchmark presence by flag', () => {
 })
 
 describe('axis tooltip', () => {
-  it('includes the H/L-bounds disclaimer whenever meta.approximation is set', () => {
+  it('renders the H/L-bounds disclaimer as PROSE, never as the raw wire code', () => {
     const html = build(true).tooltip.formatter([{ axisValue: '2026-01-05' }])
-    expect(html).toContain(APPROX)
+    expect(html).toContain('High and low are bounds')
+    expect(html).not.toContain(APPROX_CODE)
+  })
+
+  it('falls back to a generic caveat for an approximation code it does not know', () => {
+    const opt = build(true, { ...fixture, meta: { ...fixture.meta, approximation: 'future_code' } })
+    const html = opt.tooltip.formatter([{ axisValue: '2026-01-05' }])
+    expect(html).toContain('approximate')
+    expect(html).not.toContain('future_code')
   })
 
   it('omits the disclaimer when meta.approximation is empty', () => {
     const opt = build(true, { ...fixture, meta: { ...fixture.meta, approximation: '' } })
-    expect(opt.tooltip.formatter([{ axisValue: '2026-01-05' }])).not.toContain(APPROX)
+    expect(opt.tooltip.formatter([{ axisValue: '2026-01-05' }])).not.toContain('bounds')
   })
 
   it('flags a forward-filled date (meta.filled_dates)', () => {
@@ -348,7 +392,7 @@ describe('tooltip cash rows', () => {
   })
 
   it('still carries the H/L bounds disclaimer on the cash basis', () => {
-    expect(render(CASH_FIXTURE, '2026-01-05')).toContain(APPROX)
+    expect(render(CASH_FIXTURE, '2026-01-05')).toContain('High and low are bounds')
   })
 })
 

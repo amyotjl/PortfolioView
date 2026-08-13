@@ -1,5 +1,68 @@
 # Status (living document)
 
+## README media + three dashboard-chart fixes. Branch `docs/readme-screenshots`, 2026-08-12
+
+**NOT MERGED and NOT independently gated.** Three commits on `docs/readme-screenshots`:
+`d9a67c4` (demo seeder), `649e678` (chart fixes), `86679ee` (README + media).
+
+Gates run by the author on the branch: Vitest **449/449 across 31 files**, `vue-tsc` exit 0,
+RuboCop **218 files / 0 offences**, e2e **9 passed / 0 failed**. The Rails suite was NOT re-run —
+nothing under `app/` changed (the new Ruby lives in `lib/demo/` and `lib/tasks/demo.rake`, which
+the suite does not load).
+
+### `bin/rails demo:instruments` + `demo:seed` — the account the screenshots come from
+
+Three portfolios for `demo@portfolioview.app` / `demo-portfolio-2026`: a USD growth book against
+SPY, a non-registered USD dividend book against VTI (which **trails** its benchmark — deliberately
+kept), and a CAD TFSA with **no benchmark**, since the curated list is USD and there is no FX.
+
+**The trades are invented; every price is real.** Each trade is priced from the actual
+`daily_prices` close for its date, and the seeder replays splits and dividends as it steps forward
+— both change what the next contribution can buy (an unadjusted pre-split NVDA close near $1,200
+misvalues the position at the next rebalance). Deterministic, so a re-run reproduces the same
+screenshots; it **fails loudly** on a symbol with no backfilled history rather than building a
+zero-value portfolio. A scripted withdrawal **raises** rather than overdraw: negative cash is legal
+per #80, but here it would raise the dashboard's negative-cash warning over an ordinary transfer
+out, so the plan funds it with a sell first.
+
+### Three defects the screenshots exposed, all in `charts/candles.ts`
+
+1. **The date axis rendered BEHIND the zoom slider** on every dashboard. Grid 2 ended at 95%, which
+   at the card's fixed 560px leaves 28px for an 18px label row plus a 16px slider. Grid 2 now ends
+   at 92%, slider flush at `bottom: 0`. The new spec resolves the percentages against 560px —
+   "some room left over" is not the property that matters.
+2. **The two short panes asked for seven ticks in ~60px** and smeared. `splitNumber: 3` on grids 1
+   and 2 only; grid 0 keeps the default since it is the pane values are read off.
+3. **The tooltip printed `component_extrema`** — `meta.approximation` is a machine code on the wire
+   and the tooltip echoed it verbatim under a divider. Now mapped to prose, with a generic sentence
+   for an unknown code. **Why 1,447 green tests missed it: the unit fixture set `approximation` to
+   a ready-made English sentence and the assertion checked the tooltip contained it** — a fixture
+   encoding the wrong reading of the contract, so it passed on data the API never sends. Same
+   family as the M8 `o`-semantics fixture. The fixture now carries the real wire value.
+
+### Capture scripts — `e2e/capture-readme.mjs` (stills) and `e2e/capture-tour.mjs` (GIF/MP4)
+
+Standalone `.mjs`, **not specs**, because the default `testMatch` (`**/*.spec.js`) would otherwise
+adopt them and make the suite depend on demo data. Traps recorded in their headers:
+
+- **`fullPage: true` IS USELESS HERE.** AppShell scrolls an inner `<main class="overflow-y-auto">`,
+  so the "full page" is exactly the viewport. Long shots resize the viewport instead.
+- **`locator.screenshot()` on an element taller than the viewport** scroll-stitches against that
+  inner scroller and yields a correct top strip, a black void, and a repeated table header.
+- **`scrollIntoViewIfNeeded()` is the wrong scroll** for a tall element: it is satisfied by showing
+  the BOTTOM, so a crop clamps to y=0 and captures the middle plus the sticky top bar.
+- **The dashboard's URL state is `?range=…&benchmark=true`, and presets are UPPERCASE.**
+  `range=5y` and `benchmark=1` are dropped in silence and look like a correct shot of another view.
+- **Theme via `localStorage` before first paint**, never by clicking the toggle (the 400ms
+  `transition-colors` trap already recorded in this file).
+- **`rm(dir, {recursive:true})` fails EACCES on rmdir** against the A:-drive bind mount even though
+  writing and unlinking inside it work.
+- **The Playwright image has no ffmpeg**, and its bundled `/ms-playwright/ffmpeg-NNNN/` build is
+  VP8-only with no GIF encoder and no `fps`/palettegen — so the tour installs ffmpeg via apt.
+- GIF size is duration × area × fps: measured 960px/10fps/128c = 7.2MB down to 800px/8fps/48c =
+  3.4MB, which is what ships. Raw output stays in the gitignored `e2e/capture-out/`; `docs/media/`
+  holds only the copies the README uses (~5.8MB total).
+
 ## #80 — liquid cash (deposits/withdrawals). **MERGED 2026-08-08**
 
 **#80, #79 and the #66 gate fixes were all merged into `main` on 2026-08-08** on the project owner's

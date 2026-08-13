@@ -1,19 +1,121 @@
 # PortfolioView
 
-Track personal stock portfolios and visualize them: candlestick chart of total portfolio
-value, cash-flow-matched benchmark comparison (e.g. "would SPY have done better with my
-exact deposits?"), allocation pies, and recurring transactions that materialize themselves.
+Track personal stock portfolios and see what actually drove the number: a candlestick chart of
+total portfolio value, a cash-flow-matched benchmark that answers *"would SPY have done better
+with my exact deposits?"*, allocation and sector breakdowns, a real cash ledger, and recurring
+transactions that materialize themselves.
+
+![A tour of PortfolioView: the portfolio list, the linked dashboard chart with its shared crosshair, the benchmark comparison, and the allocation views](docs/media/tour.gif)
+
+<sub>Same tour as an [MP4](docs/media/tour.mp4) (sharper, a fifth of the size). Everything below is
+the real app against the demo account — see [Demo data](#demo-data-and-screenshots).</sub>
 
 **Stack:** Rails 8 (JSON API, Solid Queue/Cache) · Vue 3 + Vite + TypeScript · PostgreSQL 16 ·
-Apache ECharts · PrimeVue + Tailwind. Market data: Tiingo (EOD prices, splits, dividends) + FMP (sector metadata).
+Apache ECharts · PrimeVue + Tailwind. Market data: Tiingo (EOD prices, splits, dividends), FMP
+(sector metadata), Yahoo (Canadian listings).
 
-The full design — schema, split-handling model, frozen API contract, milestones — lives in
-[docs/PLAN.md](docs/PLAN.md). Read it before contributing; the split math and API contract
-are load-bearing decisions.
+## What it looks like
 
-**AI agents working in this repo**: start with [CLAUDE.md](CLAUDE.md) (environment gotchas,
-commit/merge conventions) and [docs/STATUS.md](docs/STATUS.md) (live milestone/issue
-tracker), then PLAN.md and [docs/API_SHAPES.md](docs/API_SHAPES.md) (as-built API contract).
+### One chart, three linked panes
+
+![The dashboard: eight stat tiles above a candlestick chart of portfolio value with the SPY benchmark line, a deposits and withdrawals pane, and a drawdown-from-peak pane](docs/media/dashboard.png)
+
+Value, cash flow and drawdown share one x-axis and one crosshair, so a dip in the top pane can be
+read against the money that moved that day. Candles are **holdings** value; cash rides alongside
+rather than inside them, because a deposit drawn as a tall green candle would lie about
+performance.
+
+Hover any trading day and every pane answers at once:
+
+![The candlestick chart at a six-month range, with the shared tooltip open on a single day showing total, holdings, open/high/low, cash and drawdown](docs/media/candlesticks.png)
+
+The high and low are honest bounds, not observations — the highs of different holdings need not
+occur at the same moment, and the tooltip says so rather than implying an intraday range the EOD
+data cannot support.
+
+### Contributed capital versus growth
+
+![A stacked area chart separating contributed capital from market growth over three and a half years](docs/media/contribution-growth.png)
+
+The staircase is money you put in. Everything above it is the market. When a portfolio falls below
+what was contributed, the shortfall is drawn as a band above the value line instead of quietly
+disappearing.
+
+### Where the money actually is
+
+![Two donut charts, by instrument and by sector, above a treemap of holdings grouped into sector blocks](docs/media/allocation.png)
+
+Instrument and sector donuts share a palette with the treemap below them, so the same holding is
+the same colour in all three. Allocation covers holdings only, and the caption states how much of
+the total is cash rather than silently omitting it.
+
+### Cash is a first-class ledger
+
+![The cash ledger listing deposits, dividends and quarterly interest with dates, amounts and notes](docs/media/cash.png)
+
+Deposits, withdrawals, dividends, interest, fees and tax. Only deposits and withdrawals count as
+contributions — a broker dividend is *return*, not money you added, and treating it as a
+contribution would understate your gain. Recording cash is optional: a portfolio with no cash rows
+behaves exactly as it did before the ledger existed.
+
+### Trades and recurring buys
+
+![The trades table listing every buy and sell with date, ticker, side, shares, price and fees](docs/media/trades.png)
+
+![Two recurring buy rules, monthly and quarterly, showing the next run date](docs/media/recurring.png)
+
+Recurring rules materialize into real transactions on schedule, and a rule created today never
+backfills months of trades you did not make.
+
+### Multiple portfolios, including Canadian listings
+
+![The portfolios overview with three cards, each showing its benchmark, total value and a value sparkline](docs/media/portfolios.png)
+
+![A CAD portfolio's dashboard, with no benchmark and a notice that 22 trading days were forward-filled](docs/media/dashboard-cad.png)
+
+TSX / TSX-V / CBOE Canada listings are priced through a separate provider, and the dashboard says
+so when it has had to forward-fill a day. The CAD book carries **no benchmark on purpose**: the
+curated list is USD and there is no FX conversion in v1, so an edge number there would be
+confidently wrong.
+
+## Demo data and screenshots
+
+The account above is generated, and the distinction worth stating is:
+
+- **The trades are invented.** A fixed schedule of monthly contributions, deterministic buys, one
+  trim, one funded withdrawal.
+- **Every price is real.** Each trade is priced from the actual `daily_prices` close for its date,
+  and splits and dividends are replayed as they happened. So the returns, the drawdown, the
+  benchmark edge and the shape of every chart are what the app genuinely computes over real market
+  history — not numbers chosen to look good. The dividend-income portfolio in the demo *trails* its
+  benchmark, because that is what the data says.
+
+Reproduce it on your own stack:
+
+```sh
+docker compose exec web ./bin/rails demo:instruments   # create the symbols; price backfill is async
+docker compose exec web ./bin/rails demo:seed          # three portfolios, priced from real history
+```
+
+`demo:seed` is idempotent (it rebuilds the demo user's portfolios) and deterministic, so a re-run
+after a price refresh reproduces the same screenshots. It refuses to run against a symbol whose
+history has not been backfilled rather than quietly building a portfolio worth zero. Sign in as
+`demo@portfolioview.app` / `demo-portfolio-2026`.
+
+The media itself is captured by two scripts, so it can be regenerated rather than re-shot by hand:
+
+```sh
+# Stills, dark theme, 2x
+docker compose --profile e2e run --rm e2e \
+  bash -c "npm install --no-audit --no-fund && node capture-readme.mjs"
+
+# The animated tour (needs ffmpeg, which the Playwright image does not ship)
+docker compose --profile e2e run --rm e2e \
+  bash -c "apt-get update -qq && apt-get install -y -qq ffmpeg && node capture-tour.mjs"
+```
+
+Both write to `e2e/capture-out/`; copy what you want into `docs/media/`. Neither is part of the e2e
+suite — they are standalone scripts precisely so they never run as tests.
 
 ## Running locally (development)
 
@@ -95,13 +197,23 @@ Notes:
 - Never run the dev stack and the production profile at the same time — both want
   `localhost:3000`.
 
-## Development workflow
+## Design and contributing
+
+The full design — schema, split-handling model, frozen API contract, milestones — lives in
+[docs/PLAN.md](docs/PLAN.md). Read it before contributing; the split math and API contract
+are load-bearing decisions. [docs/API_SHAPES.md](docs/API_SHAPES.md) records what the API
+actually returns, verified against live responses.
 
 Work is tracked as GitHub issues labeled by specialist agent (`agent:backend-expert`,
 `agent:database-expert`, `agent:ui-expert`, `agent:tester`, `agent:project-manager`),
 grouped into milestones M0–M9. Agent definitions live in `.claude/agents/`.
 
+**AI agents working in this repo**: start with [CLAUDE.md](CLAUDE.md) (environment gotchas,
+commit/merge conventions) and [docs/STATUS.md](docs/STATUS.md) (live milestone/issue
+tracker), then PLAN.md and API_SHAPES.md.
+
 ## Secrets
 
-API keys (Tiingo, FMP) go in `.env` (gitignored) — see `.env.example` once the price
-pipeline lands (milestone M2).
+API keys (Tiingo, FMP, Twelve Data) go in `.env`, which is gitignored — see `.env.example` for the
+template. The test environment blanks every provider key on purpose, so the suite can never
+silently depend on a real network call.

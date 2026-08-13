@@ -144,6 +144,29 @@ export function flowKindLabel(kind: string): string {
 
 // --- Tooltip ---------------------------------------------------------------
 
+/**
+ * Human copy for `meta.approximation`, which is a machine CODE on the wire —
+ * `Portfolios::Valuation::APPROXIMATION` is the literal string
+ * `"component_extrema"`, and this tooltip used to print it verbatim, so every
+ * hovered day ended with the word `component_extrema` under a divider.
+ *
+ * It survived because the unit fixture set `approximation` to a ready-made
+ * English sentence, which the tooltip then echoed — a fixture encoding the wrong
+ * reading of the contract, so the assertion passed on data the API never sends.
+ * The fixture now carries the real wire value.
+ *
+ * An UNKNOWN code gets the generic sentence rather than being echoed or dropped:
+ * echoing leaks an identifier, and dropping hides a caveat the backend thought
+ * worth flagging.
+ */
+export function approximationNotice(code: string): string {
+  if (!code) return ''
+  if (code === 'component_extrema') {
+    return 'High and low are bounds: the highs of different holdings need not occur at the same moment.'
+  }
+  return 'Some values for this day are approximate.'
+}
+
 const PORTFOLIO_SERIES = 'Portfolio'
 const FLOW_SERIES = 'Net cash flow'
 const DRAWDOWN_SERIES = 'Drawdown'
@@ -310,11 +333,20 @@ function renderTooltip(params: unknown, ctx: TooltipContext): string {
 const GRID_LEFT = 62
 const GRID_RIGHT = 18
 
-/** Three stacked grids; the price pane takes ~56% of the height (per PLAN.md). */
+/**
+ * Three stacked grids; the price pane takes ~56% of the height (per PLAN.md).
+ *
+ * THE BOTTOM 8% IS RESERVED, and that is not slack to reclaim: below grid 2 sit
+ * BOTH the shared date axis labels (only grid 2 draws them) and the dataZoom
+ * slider. Grid 2 used to end at 95%, which at the card's fixed 560px leaves 28px
+ * for an 18px label row plus a 16px slider — so the dates rendered *behind* the
+ * slider, half-legible, on every dashboard. Keep grid 2's bottom edge at 92% and
+ * the slider flush at `bottom: 0` unless you re-measure the result in a browser.
+ */
 const GRIDS = [
-  { left: GRID_LEFT, right: GRID_RIGHT, top: '9%', height: '54%' },
-  { left: GRID_LEFT, right: GRID_RIGHT, top: '69%', height: '11%' },
-  { left: GRID_LEFT, right: GRID_RIGHT, top: '85%', height: '10%' },
+  { left: GRID_LEFT, right: GRID_RIGHT, top: '8%', height: '52%' },
+  { left: GRID_LEFT, right: GRID_RIGHT, top: '66%', height: '11%' },
+  { left: GRID_LEFT, right: GRID_RIGHT, top: '82%', height: '10%' },
 ] as const
 
 function percentAxis(n: number): string {
@@ -353,7 +385,7 @@ export function buildDashboardChartOption(
     filledDates: new Set(payload.meta.filled_dates),
     benchmark: payload.benchmark,
     showBenchmark,
-    approximation: payload.meta.approximation,
+    approximation: approximationNotice(payload.meta.approximation),
     theme,
   }
 
@@ -458,11 +490,11 @@ export function buildDashboardChartOption(
       },
       {
         text: tracksCash ? 'Deposits & withdrawals' : 'Net cash flow',
-        top: '64%',
+        top: '61%',
         left: '1.5%',
         textStyle: paneTitle(theme),
       },
-      { text: 'Drawdown from peak', top: '80.5%', left: '1.5%', textStyle: paneTitle(theme) },
+      { text: 'Drawdown from peak', top: '77.5%', left: '1.5%', textStyle: paneTitle(theme) },
     ],
     legend: hasBenchmarkLine
       ? {
@@ -494,18 +526,27 @@ export function buildDashboardChartOption(
         axisLabel: { show: true, color: theme.inkSubtle, formatter: (v: string) => formatDate(v) },
       },
     ],
+    /**
+     * `splitNumber: 3` on the two SHORT panes only. They are 11% and 10% of a
+     * 560px box — about 60px — and ECharts' default tick count is chosen without
+     * reference to that, so over a multi-year range the flow pane asks for
+     * $25K/$20K/$15K/$10K/$5K/$0/−$5K in 60px and the labels overlap into an
+     * unreadable smear. Grid 0 keeps the default: it is the pane people read
+     * values off, and it has the height to carry them.
+     */
     yAxis: [
       { ...valueAxisBase, gridIndex: 0, scale: true, axisLabel: { color: theme.inkSubtle, formatter: formatCompactCurrency } },
-      { ...valueAxisBase, gridIndex: 1, scale: true, axisLabel: { color: theme.inkSubtle, formatter: formatCompactCurrency } },
-      { ...valueAxisBase, gridIndex: 2, max: 0, axisLabel: { color: theme.inkSubtle, formatter: percentAxis } },
+      { ...valueAxisBase, gridIndex: 1, scale: true, splitNumber: 3, axisLabel: { color: theme.inkSubtle, formatter: formatCompactCurrency } },
+      { ...valueAxisBase, gridIndex: 2, max: 0, splitNumber: 3, axisLabel: { color: theme.inkSubtle, formatter: percentAxis } },
     ],
     dataZoom: [
       { type: 'inside', xAxisIndex: [0, 1, 2] },
       {
         type: 'slider',
         xAxisIndex: [0, 1, 2],
-        bottom: '1%',
-        height: 16,
+        // Flush to the bottom edge: the date labels own the band above it.
+        bottom: 0,
+        height: 14,
         borderColor: theme.line,
         fillerColor: 'transparent',
         dataBackground: { lineStyle: { color: theme.lineStrong }, areaStyle: { color: theme.panelHi } },
