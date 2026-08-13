@@ -1,9 +1,16 @@
 # Status (living document)
 
-## README media + three dashboard-chart fixes. Branch `docs/readme-screenshots`, 2026-08-12
+## README media + three dashboard-chart fixes. **MERGED 2026-08-12, NOT independently gated**
 
-**NOT MERGED and NOT independently gated.** Three commits on `docs/readme-screenshots`:
-`d9a67c4` (demo seeder), `649e678` (chart fixes), `86679ee` (README + media).
+Merged into `main` as a single `--no-ff` merge of `docs/readme-screenshots` on the project
+owner's explicit instruction ("merge all and push it"), with **no independent tester verdict** —
+the same standing as the seven M10 branches and the #79 / #66-gate merges. Do not cite it as
+precedent for skipping the gate. Four commits: `d9a67c4` (demo seeder), `649e678` (chart fixes),
+`86679ee` (README + media), `5ecca27` (this entry).
+
+**The only runtime code in it is `frontend/src/charts/candles.ts`.** If anything on the dashboard
+looks wrong after this, that file is where to look first; everything else is docs, media, two
+standalone capture scripts and `lib/demo/`.
 
 Gates run by the author on the branch: Vitest **449/449 across 31 files**, `vue-tsc` exit 0,
 RuboCop **218 files / 0 offences**, e2e **9 passed / 0 failed**. The Rails suite was NOT re-run —
