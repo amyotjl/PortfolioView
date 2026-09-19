@@ -19,7 +19,7 @@ gem "solid_cable"
 
 # Provider HTTP for the hand-rolled market-data adapters in app/lib/price_provider
 # (docs/PLAN.md § Stack: no maintained Tiingo gem exists; plain Faraday is safer).
-gem "faraday", "~> 2.9"
+gem "faraday", "~> 2.14"
 gem "faraday-retry", "~> 2.2"
 
 # Weekly Tiingo symbol-directory import (Directory::ImportJob): the free
