@@ -28,7 +28,7 @@ gem "faraday-retry", "~> 2.2"
 # resolved in the lock via selenium, but only in the test group — promoted here
 # so it ships in production too).
 gem "csv"
-gem "rubyzip", "~> 3.0", require: "zip"
+gem "rubyzip", "~> 3.7", require: "zip"
 
 # Reduces boot times through caching; required in config/boot.rb
 gem "bootsnap", require: false
